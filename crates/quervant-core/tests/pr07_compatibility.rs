@@ -822,6 +822,26 @@ fn a5_keys(response: &SearchResponse) -> Vec<String> {
         .collect()
 }
 
+/// Complete logical membership for `MatchAll`. Sorting the observed keys is
+/// intentional here because the requirement is exact membership, never order;
+/// duplicates are preserved so a dropped or repeated key fails.
+fn a5_assert_match_all_keys(snapshot: &ReaderSnapshot, expected: &[String]) {
+    let response = search(snapshot, &Query::MatchAll);
+    assert_eq!(response.total_hits, expected.len() as u64, "MatchAll total");
+    assert_eq!(
+        response.hits.len(),
+        expected.len(),
+        "MatchAll returned length"
+    );
+    let mut observed = a5_keys(&response);
+    observed.sort_unstable();
+    assert_eq!(
+        observed.as_slice(),
+        expected,
+        "complete logical key membership"
+    );
+}
+
 #[test]
 fn a5_i06_legacy_adaptive_commit_reopen_and_compact() {
     // 1. The pinned fixture objects must never be regenerated or rewritten.
@@ -862,15 +882,13 @@ fn a5_i06_legacy_adaptive_commit_reopen_and_compact() {
         &hits(&gen1_body),
         &expected_rust_scores(&LEGACY_DOCS, body_len, body_rust_tf),
     );
-    let mut all_keys = a5_keys(&search(&gen1, &Query::MatchAll));
-    all_keys.sort();
-    assert_eq!(
-        all_keys,
-        LEGACY_DOCS
-            .iter()
-            .map(|(key, _, _)| (*key).to_owned())
-            .collect::<Vec<_>>()
-    );
+    let mut expected_legacy_keys: Vec<String> = LEGACY_DOCS
+        .iter()
+        .map(|(key, _, _)| (*key).to_owned())
+        .collect();
+    expected_legacy_keys.sort_unstable();
+    assert_eq!(expected_legacy_keys.len(), 8);
+    a5_assert_match_all_keys(&gen1, &expected_legacy_keys);
     let (gen1_title_bits, gen1_body_bits) = (a5_bits(&gen1_title), a5_bits(&gen1_body));
 
     // 3. Generation 2 appends one adaptive segment to the two legacy ones.
@@ -916,6 +934,11 @@ fn a5_i06_legacy_adaptive_commit_reopen_and_compact() {
         .copied()
         .chain(APPENDED_DOCS.iter().copied())
         .collect();
+    let mut expected_all_keys: Vec<String> =
+        corpus.iter().map(|(key, _, _)| (*key).to_owned()).collect();
+    expected_all_keys.sort_unstable();
+    assert_eq!(expected_all_keys.len(), 10);
+    a5_assert_match_all_keys(&gen2, &expected_all_keys);
     let gen2_title = search(&gen2, &term("title", "rust"));
     assert_eq!(gen2_title.total_hits, 6);
     assert_hits_match(
@@ -985,6 +1008,7 @@ fn a5_i06_legacy_adaptive_commit_reopen_and_compact() {
     assert!(!required.contains(&A5_FEATURE_SPLIT));
     assert!(guard.reader().field_norms().is_some());
     drop(guard);
+    a5_assert_match_all_keys(&gen3, &expected_all_keys);
     let gen3_title = search(&gen3, &term("title", "rust"));
     assert_eq!(gen3_title.total_hits, 6);
     assert_hits_match(
@@ -1030,6 +1054,9 @@ fn a5_i06_legacy_adaptive_commit_reopen_and_compact() {
         )),
         gen2_or_bits
     );
+    // Held generations keep their own complete membership after compaction.
+    a5_assert_match_all_keys(&gen1, &expected_legacy_keys);
+    a5_assert_match_all_keys(&gen2, &expected_all_keys);
 
     // 8. Compaction never rewrites an existing immutable object in place.
     for (relative, before) in &immutable {

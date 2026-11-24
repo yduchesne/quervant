@@ -5877,6 +5877,23 @@ fn a5_u05_source_validation_order_is_preserved() {
     let order = vec![posting(9, 0, Vec::new())];
     let error = encode_adaptive_postings_block(4, &order, &limits).expect_err("must fail");
     a3_assert_corrupt_with(&error, "postings", "doc id out of range");
+
+    // An in-range zero frequency must independently produce its own typed error
+    // from every encoder. Equality across encoders alone would not pin the
+    // expected variant, so each result is asserted here directly.
+    let zero = [Posting {
+        doc_id: 0,
+        freq: 0,
+        occurrences: Vec::new(),
+    }];
+    for result in [
+        encode_postings_block(4, &zero, &limits),
+        encode_split_postings_block(4, &zero, &limits),
+        encode_adaptive_postings_block(4, &zero, &limits),
+    ] {
+        let error = result.expect_err("an in-range zero frequency must fail");
+        assert!(matches!(error, SegmentError::ZeroFrequency { doc_id: 0 }));
+    }
 }
 
 #[test]
@@ -6220,103 +6237,225 @@ fn a5_u07_lazy_full_and_lean_parity() {
 
 #[test]
 fn a5_u08_cancellation_advance_and_conversion() {
+    use super::postings::{DocFreqPosting, Occurrence, PostingsReader};
     use crate::analysis::CancellationFlag;
 
     let limits = SegmentLimits::default();
-    let docs: Vec<u64> = (0..3).collect();
-    let postings = a3_postings(&docs, &[1, 1, 1], true);
-    let bytes = a5_encode_with(3, &postings, &limits);
 
-    // Cancellation before the first, subsequent, final and post-EOF attempts.
-    let flag = CancellationFlag::new();
-    flag.cancel();
-    let mut reader = super::postings::PostingsReader::new_adaptive(&bytes, 3, &limits)
-        .expect("reader")
-        .into_doc_freq();
-    assert!(matches!(
-        reader.next_with(&flag),
-        Err(SegmentError::Cancelled)
-    ));
+    // Fixed representation family matrix: compact singleton, compact short and
+    // the retained split (long) payload, all opened through `new_adaptive`.
+    for (count, marker) in [
+        (1usize, A5_COMPACT_SINGLETON_POSITIONAL),
+        (3, A5_COMPACT_SHORT_POSITIONAL),
+        (129, A3_SPLIT_MARKER_POSITIONAL),
+    ] {
+        let docs: Vec<u64> = (0..count as u64).collect();
+        let freqs = vec![1u64; count];
+        let postings = a3_postings(&docs, &freqs, true);
+        let bytes = a5_encode_with(count as u64, &postings, &limits);
+        assert_eq!(bytes[0], marker, "count {count} representation marker");
 
-    let counting = A2CountingCancel {
-        polls: std::cell::Cell::new(0),
-        cancel_after: 1,
-    };
-    let mut reader = super::postings::PostingsReader::new_adaptive(&bytes, 3, &limits)
-        .expect("reader")
-        .into_doc_freq();
-    assert_eq!(
-        reader.next_with(&counting).expect("first"),
-        Some(super::postings::DocFreqPosting { doc_id: 0, freq: 1 })
-    );
-    assert!(matches!(
-        reader.next_with(&counting),
-        Err(SegmentError::Cancelled)
-    ));
+        // Paired full/lean cancellation at every required boundary.
+        let boundaries: &[u64] = if count == 1 {
+            &[0, 1]
+        } else {
+            &[0, 1, count as u64]
+        };
+        for &cancel_after in boundaries {
+            let full_cancel = A2CountingCancel {
+                polls: std::cell::Cell::new(0),
+                cancel_after,
+            };
+            let mut full =
+                PostingsReader::new_adaptive(&bytes, count as u64, &limits).expect("reader");
+            for ordinal in 0..cancel_after {
+                let posting = full
+                    .next_with(&full_cancel)
+                    .expect("record")
+                    .expect("posting");
+                assert_eq!(
+                    (posting.doc_id, posting.freq),
+                    (ordinal, 1),
+                    "count {count} boundary {cancel_after}: full record {ordinal}"
+                );
+            }
+            assert!(
+                matches!(full.next_with(&full_cancel), Err(SegmentError::Cancelled)),
+                "count {count} boundary {cancel_after}: full cancellation"
+            );
+            assert_eq!(
+                full_cancel.polls.get(),
+                cancel_after + 1,
+                "count {count} boundary {cancel_after}: full poll count"
+            );
 
-    // Cancellation before the final exhaustion check.
-    let final_flag = A2CountingCancel {
-        polls: std::cell::Cell::new(0),
-        cancel_after: 3,
-    };
-    let mut reader = super::postings::PostingsReader::new_adaptive(&bytes, 3, &limits)
-        .expect("reader")
-        .into_doc_freq();
-    for _ in 0..3 {
-        assert!(reader.next_with(&final_flag).expect("posting").is_some());
-    }
-    assert!(matches!(
-        reader.next_with(&final_flag),
-        Err(SegmentError::Cancelled)
-    ));
+            let lean_cancel = A2CountingCancel {
+                polls: std::cell::Cell::new(0),
+                cancel_after,
+            };
+            let mut lean = PostingsReader::new_adaptive(&bytes, count as u64, &limits)
+                .expect("reader")
+                .into_doc_freq();
+            for ordinal in 0..cancel_after {
+                let posting = lean
+                    .next_with(&lean_cancel)
+                    .expect("record")
+                    .expect("posting");
+                assert_eq!(
+                    (posting.doc_id, posting.freq),
+                    (ordinal, 1),
+                    "count {count} boundary {cancel_after}: lean record {ordinal}"
+                );
+            }
+            assert!(
+                matches!(lean.next_with(&lean_cancel), Err(SegmentError::Cancelled)),
+                "count {count} boundary {cancel_after}: lean cancellation"
+            );
+            assert_eq!(
+                lean_cancel.polls.get(),
+                cancel_after + 1,
+                "count {count} boundary {cancel_after}: lean poll count"
+            );
+        }
 
-    // Repeated uncancelled EOF is a stable `None`.
-    let mut reader = super::postings::PostingsReader::new_adaptive(&bytes, 3, &limits)
-        .expect("reader")
-        .into_doc_freq();
-    while reader.next().expect("decode").is_some() {}
-    assert!(reader.next().expect("repeat EOF").is_none());
-    assert!(reader.next().expect("repeat EOF").is_none());
+        // Full-mode EOF, repeated EOF and cancelled post-EOF attempt.
+        let mut full = PostingsReader::new_adaptive(&bytes, count as u64, &limits).expect("reader");
+        for ordinal in 0..count as u64 {
+            let posting = full.next().expect("record").expect("posting");
+            assert_eq!((posting.doc_id, posting.freq), (ordinal, 1));
+        }
+        assert!(
+            full.next().expect("first EOF").is_none(),
+            "count {count}: first exhaustion"
+        );
+        assert!(full.next().expect("repeat EOF").is_none());
+        assert!(full.next().expect("repeat EOF").is_none());
+        let eof_flag = CancellationFlag::new();
+        eof_flag.cancel();
+        assert!(
+            matches!(full.next_with(&eof_flag), Err(SegmentError::Cancelled)),
+            "count {count}: cancelled next after EOF"
+        );
 
-    // Cancelled next after EOF still reports cancellation.
-    let flag = CancellationFlag::new();
-    let mut reader = super::postings::PostingsReader::new_adaptive(&bytes, 3, &limits)
-        .expect("reader")
-        .into_doc_freq();
-    while reader.next().expect("decode").is_some() {}
-    flag.cancel();
-    assert!(matches!(
-        reader.next_with(&flag),
-        Err(SegmentError::Cancelled)
-    ));
+        // Lean-mode EOF, repeated EOF and cancelled post-EOF attempt.
+        let mut lean = PostingsReader::new_adaptive(&bytes, count as u64, &limits)
+            .expect("reader")
+            .into_doc_freq();
+        for ordinal in 0..count as u64 {
+            let posting = lean.next().expect("record").expect("posting");
+            assert_eq!((posting.doc_id, posting.freq), (ordinal, 1));
+        }
+        assert!(lean.next().expect("first EOF").is_none());
+        assert!(lean.next().expect("repeat EOF").is_none());
+        assert!(lean.next().expect("repeat EOF").is_none());
+        let eof_flag = CancellationFlag::new();
+        eof_flag.cancel();
+        assert!(matches!(
+            lean.next_with(&eof_flag),
+            Err(SegmentError::Cancelled)
+        ));
 
-    // Full advance across clean intervening postings and the cached-target case.
-    let mut reader =
-        super::postings::PostingsReader::new_adaptive(&bytes, 3, &limits).expect("reader");
-    let advanced = reader.advance(2).expect("advance").expect("posting");
-    assert_eq!(advanced.doc_id, 2);
-    // Cached target: no cancellation poll on this no-read path.
-    let flag = CancellationFlag::new();
-    flag.cancel();
-    assert_eq!(
-        reader
-            .advance_with(2, &flag)
+        // Full advance reaches the last posting; the cached target returns
+        // without a poll while a larger target must attempt a read.
+        let target = count as u64 - 1;
+        let mut full = PostingsReader::new_adaptive(&bytes, count as u64, &limits).expect("reader");
+        let reached = full.advance(target).expect("advance").expect("posting");
+        assert_eq!((reached.doc_id, reached.freq), (target, 1));
+        let cached_flag = CancellationFlag::new();
+        cached_flag.cancel();
+        let cached = full
+            .advance_with(target, &cached_flag)
             .expect("cached advance")
-            .expect("posting")
-            .doc_id,
-        2
-    );
-    assert!(matches!(
-        reader.advance_with(3, &flag),
-        Err(SegmentError::Cancelled)
-    ));
+            .expect("posting");
+        assert_eq!(
+            (cached.doc_id, cached.freq),
+            (target, 1),
+            "count {count}: cached full advance ignores cancellation"
+        );
+        assert!(
+            matches!(
+                full.advance_with(count as u64, &cached_flag),
+                Err(SegmentError::Cancelled)
+            ),
+            "count {count}: advance past the cache attempts a read"
+        );
 
-    // Conversion then lean next continues at the next unread posting.
-    let mut full =
-        super::postings::PostingsReader::new_adaptive(&bytes, 3, &limits).expect("reader");
-    assert_eq!(full.next().expect("first").expect("posting").doc_id, 0);
-    let mut lean = full.into_doc_freq();
-    assert_eq!(lean.next().expect("second").expect("posting").doc_id, 1);
+        // Conversion after one record continues at the next unread posting.
+        let mut full = PostingsReader::new_adaptive(&bytes, count as u64, &limits).expect("reader");
+        assert_eq!(full.next().expect("first").expect("posting").doc_id, 0);
+        let mut lean = full.into_doc_freq();
+        if count == 1 {
+            assert!(
+                lean.next().expect("singleton conversion").is_none(),
+                "a singleton has no next record after conversion"
+            );
+        } else {
+            assert_eq!(
+                lean.next().expect("second"),
+                Some(DocFreqPosting { doc_id: 1, freq: 1 })
+            );
+        }
+    }
+
+    // Compact corrupt-intervening posting: a full advance must never jump over
+    // the invalid middle occurrence. The fixture is authored byte-for-byte and
+    // compacts doc0 valid, doc1 zero-length, doc2 valid.
+    let corrupt = A5RawCompact::new(A5_COMPACT_SHORT_POSITIONAL, 3)
+        .df(3)
+        .streams(
+            &[0, 1, 1],
+            &[1, 1, 1],
+            &[0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1],
+        )
+        .encode();
+    let mut reader = PostingsReader::new_adaptive(&corrupt, 3, &limits).expect("constructs");
+    let first = reader.next().expect("first").expect("posting");
+    assert_eq!((first.doc_id, first.freq), (0, 1));
+    assert_eq!(
+        first.occurrences,
+        vec![Occurrence {
+            position: 0,
+            position_length: 1,
+            value_index: 0,
+            start_offset: 0,
+            end_offset: 1,
+        }]
+    );
+    let error = reader
+        .advance(2)
+        .expect_err("advance must not skip the corrupt intervening posting");
+    a3_assert_corrupt_with(&error, "postings", "zero position length");
+    let mut reader = PostingsReader::new_adaptive(&corrupt, 3, &limits).expect("constructs");
+    assert!(reader.next().expect("first").is_some());
+    let error = reader
+        .advance_with(2, &CancellationFlag::new())
+        .expect_err("advance_with must not skip the corrupt intervening posting");
+    a3_assert_corrupt_with(&error, "postings", "zero position length");
+
+    // Long (retained split) counterpart selected under the adaptive feature.
+    let docs: Vec<u64> = (0..129).collect();
+    let freqs = vec![1u64; 129];
+    let mut raw = A3RawSplit::valid(&docs, &freqs, true);
+    assert_eq!(raw.positions.len(), 645);
+    assert_eq!(raw.positions[6], 1);
+    raw.positions[6] = 0;
+    let corrupt = raw.encode();
+    let mut reader = PostingsReader::new_adaptive(&corrupt, 129, &limits).expect("constructs");
+    assert_eq!(
+        reader.next().expect("first").expect("posting").doc_id,
+        0,
+        "the first long posting is valid"
+    );
+    let error = reader
+        .advance(2)
+        .expect_err("long advance must not skip the corrupt intervening posting");
+    a3_assert_corrupt_with(&error, "postings", "zero position length");
+    let mut reader = PostingsReader::new_adaptive(&corrupt, 129, &limits).expect("constructs");
+    assert!(reader.next().expect("first").is_some());
+    let error = reader
+        .advance_with(2, &CancellationFlag::new())
+        .expect_err("long advance_with must not skip the corrupt posting");
+    a3_assert_corrupt_with(&error, "postings", "zero position length");
 }
 
 #[test]
@@ -6459,6 +6598,116 @@ fn a5_u10_decode_and_conversion_witnesses() {
         Some(super::postings::DocFreqPosting { doc_id: 2, freq: 1 })
     );
     assert!(lean.next().expect("EOF").is_none());
+
+    // Conversion after the final data record but before EOF verification. The
+    // pending stream-tail and frequency-sum checks must still run on the next
+    // lean read; a valid payload must instead report a stable exhaustion.
+    struct FinalRecordCase {
+        label: &'static str,
+        marker: u8,
+        freq_total: u64,
+        docs: &'static [u8],
+        freqs: &'static [u8],
+        positions: &'static [u8],
+        positional: bool,
+        expected_error: Option<&'static str>,
+    }
+    let final_record_cases = [
+        FinalRecordCase {
+            label: "valid doc-only",
+            marker: A5_COMPACT_SINGLETON_DOC_ONLY,
+            freq_total: 1,
+            docs: &[0],
+            freqs: &[1],
+            positions: &[],
+            positional: false,
+            expected_error: None,
+        },
+        FinalRecordCase {
+            label: "valid positional",
+            marker: A5_COMPACT_SINGLETON_POSITIONAL,
+            freq_total: 1,
+            docs: &[0],
+            freqs: &[1],
+            positions: &[0, 1, 0, 0, 1],
+            positional: true,
+            expected_error: None,
+        },
+        FinalRecordCase {
+            label: "header sum mismatch",
+            marker: A5_COMPACT_SINGLETON_DOC_ONLY,
+            freq_total: 2,
+            docs: &[0],
+            freqs: &[1],
+            positions: &[],
+            positional: false,
+            expected_error: Some("frequency total mismatch"),
+        },
+        FinalRecordCase {
+            label: "document tail",
+            marker: A5_COMPACT_SINGLETON_DOC_ONLY,
+            freq_total: 1,
+            docs: &[0, 0],
+            freqs: &[1],
+            positions: &[],
+            positional: false,
+            expected_error: Some("doc stream trailing bytes"),
+        },
+        FinalRecordCase {
+            label: "frequency tail",
+            marker: A5_COMPACT_SINGLETON_DOC_ONLY,
+            freq_total: 1,
+            docs: &[0],
+            freqs: &[1, 1],
+            positions: &[],
+            positional: false,
+            expected_error: Some("frequency stream trailing bytes"),
+        },
+        FinalRecordCase {
+            label: "position tail",
+            marker: A5_COMPACT_SINGLETON_POSITIONAL,
+            freq_total: 1,
+            docs: &[0],
+            freqs: &[1],
+            positions: &[0, 1, 0, 0, 1, 0],
+            positional: true,
+            expected_error: Some("position stream trailing bytes"),
+        },
+    ];
+    for case in final_record_cases {
+        let bytes = A5RawCompact::new(case.marker, case.freq_total)
+            .streams(case.docs, case.freqs, case.positions)
+            .encode();
+        let mut full = PostingsReader::new_adaptive(&bytes, 1, &limits)
+            .unwrap_or_else(|error| panic!("{}: construction failed: {error:?}", case.label));
+        // Exactly one full read: the cursor is now positioned at the final data
+        // record, so EOF verification has not yet run.
+        let posting = full
+            .next()
+            .unwrap_or_else(|error| panic!("{}: first read failed: {error:?}", case.label))
+            .expect("posting");
+        assert_eq!((posting.doc_id, posting.freq), (0, 1), "{}", case.label);
+        if case.positional {
+            assert_eq!(posting.occurrences.len(), 1, "{}", case.label);
+        } else {
+            assert!(posting.occurrences.is_empty(), "{}", case.label);
+        }
+        let mut lean = full.into_doc_freq();
+        match case.expected_error {
+            None => {
+                assert!(
+                    lean.next().expect("verified EOF").is_none(),
+                    "{}: valid payload must exhaust",
+                    case.label
+                );
+                assert!(lean.next().expect("repeat EOF").is_none(), "{}", case.label);
+            }
+            Some(detail) => {
+                let error = lean.next().expect_err("pending verification must fail");
+                a3_assert_corrupt_with(&error, A5_ADAPTIVE_CONTEXT, detail);
+            }
+        }
+    }
 }
 
 #[test]
@@ -6934,34 +7183,105 @@ fn a5_u15_encoder_cost_witnesses() {
 
     let limits = SegmentLimits::default();
 
-    // Singleton doc-only: 2*n doc/frequency widths + 4 header widths.
-    encode_observation::reset();
-    let postings = a3_postings(&[3], &[2], false);
-    let bytes = encode_adaptive_postings_block(4, &postings, &limits).expect("encode");
-    let counts = encode_observation::counts();
-    assert_eq!(counts.validation_calls, 1);
-    assert_eq!(counts.compact_validation_calls, 1);
-    // 2 document/frequency widths + 4 header widths.
-    assert_eq!(counts.width_calls, 2 + 4);
-    assert_eq!(counts.compact_output_buffers, 1);
-    assert!(counts.initial_capacity >= bytes.len());
-    assert_eq!(
-        counts.initial_capacity, counts.final_capacity,
-        "the admitted output buffer never grows"
+    // Four compact mode combinations with literal work/capacity expectations.
+    // Each row resets the thread-local witnesses immediately before its single
+    // encode, so the counters describe exactly this encode.
+    type CostRow = (
+        &'static str,
+        &'static [u64],
+        &'static [u64],
+        bool,
+        u64,
+        u8,
+        u64,
+        u64,
+        usize,
     );
-
-    // Short positional: 2*n + 5*m widths + 5 header widths (the df field).
-    encode_observation::reset();
-    let postings = a3_postings(&[1, 4, 9], &[2, 1, 3], true);
-    let occurrences: u64 = postings.iter().map(|posting| posting.freq).sum();
-    let bytes = encode_adaptive_postings_block(10, &postings, &limits).expect("encode");
-    let counts = encode_observation::counts();
-    assert_eq!(counts.validation_calls, 1);
-    assert_eq!(counts.compact_validation_calls, 1);
-    assert_eq!(counts.width_calls, 2 * 3 + 5 * occurrences + 5);
-    assert_eq!(counts.compact_output_buffers, 1);
-    assert!(counts.initial_capacity >= bytes.len());
-    assert_eq!(counts.initial_capacity, counts.final_capacity);
+    let rows: [CostRow; 4] = [
+        (
+            "singleton doc-only",
+            &[3],
+            &[2],
+            false,
+            4,
+            A5_COMPACT_SINGLETON_DOC_ONLY,
+            0,
+            6,
+            8,
+        ),
+        (
+            "singleton positional",
+            &[3],
+            &[2],
+            true,
+            4,
+            A5_COMPACT_SINGLETON_POSITIONAL,
+            2,
+            16,
+            18,
+        ),
+        (
+            "short doc-only",
+            &[1, 4, 9],
+            &[2, 1, 3],
+            false,
+            10,
+            A5_COMPACT_SHORT_DOC_ONLY,
+            0,
+            11,
+            13,
+        ),
+        (
+            "short positional",
+            &[1, 4, 9],
+            &[2, 1, 3],
+            true,
+            10,
+            A5_COMPACT_SHORT_POSITIONAL,
+            6,
+            41,
+            43,
+        ),
+    ];
+    for (label, docs, freqs, positional, segment_docs, marker, occurrences, widths, encoded) in rows
+    {
+        let postings = a3_postings(docs, freqs, positional);
+        let actual_occurrences: u64 = postings
+            .iter()
+            .map(|posting| posting.occurrences.len() as u64)
+            .sum();
+        assert_eq!(actual_occurrences, occurrences, "{label} occurrence count");
+        let independent_widths =
+            2 * docs.len() as u64 + 5 * occurrences + if docs.len() == 1 { 4 } else { 5 };
+        assert_eq!(
+            independent_widths, widths,
+            "{label} independent width formula"
+        );
+        encode_observation::reset();
+        let bytes =
+            encode_adaptive_postings_block(segment_docs, &postings, &limits).expect("encode");
+        let counts = encode_observation::counts();
+        assert_eq!(counts.validation_calls, 1, "{label} validation calls");
+        assert_eq!(
+            counts.compact_validation_calls, 1,
+            "{label} measuring validation calls"
+        );
+        assert_eq!(counts.width_calls, widths, "{label} width calls");
+        assert_eq!(
+            counts.compact_output_buffers, 1,
+            "{label} compact output buffers"
+        );
+        assert!(
+            counts.initial_capacity >= bytes.len(),
+            "{label} admitted capacity covers the output"
+        );
+        assert_eq!(
+            counts.initial_capacity, counts.final_capacity,
+            "{label} admitted output buffer never grows"
+        );
+        assert_eq!(bytes[0], marker, "{label} marker");
+        assert_eq!(bytes.len(), encoded, "{label} encoded length");
+    }
 
     // Long lists do zero compact work: one validation, no measurement, no buffer.
     encode_observation::reset();

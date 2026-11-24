@@ -1333,6 +1333,115 @@ fn a5_zeta_request() -> UnifiedRequest {
     )
 }
 
+fn a5_assert_i05_search_contract(
+    snapshot: &ReaderSnapshot,
+    specs: &[DocSpec],
+) -> [BTreeMap<String, u64>; 3] {
+    assert_eq!(
+        specs.len(),
+        129,
+        "I03/I05 uses the frozen 129-document corpus"
+    );
+    let alpha_frequency: usize = specs.iter().map(|spec| spec.alpha).sum();
+    let filler_frequency: usize = specs.iter().map(|spec| spec.filler).sum();
+    assert_eq!((alpha_frequency, filler_frequency), (321, 256));
+    assert_eq!(alpha_frequency + filler_frequency, 577);
+
+    let ascending_keys: Vec<String> = specs
+        .iter()
+        .map(|spec| format!("k{:05}", spec.ordinal))
+        .collect();
+    let expected_phrase: Vec<String> = specs
+        .iter()
+        .filter(|spec| spec.ordinal % 4 != 0)
+        .map(|spec| format!("k{:05}", spec.ordinal))
+        .collect();
+    let expected_zeta: Vec<String> = specs
+        .iter()
+        .filter(|spec| spec.ordinal % 5 != 0)
+        .map(|spec| format!("k{:05}", spec.ordinal))
+        .collect();
+    assert_eq!(expected_phrase.len(), 96);
+    assert_eq!(expected_zeta.len(), 103);
+    let expected_alpha = a5_compacted_alpha_scores(specs);
+    assert_eq!(expected_alpha.len(), 129);
+
+    let alpha = search_ok(snapshot, &request(term(), 300, ascend()));
+    assert_eq!(alpha.total_hits, 129);
+    assert_eq!(alpha.hits.len(), 129);
+    assert_eq!(keys(&alpha), ascending_keys, "full alpha keys and order");
+    let alpha_bits = bits_by_key(&alpha);
+    assert_eq!(alpha_bits, expected_alpha, "full alpha frozen score bits");
+
+    let phrase = search_ok(snapshot, &a5_phrase_request());
+    assert_eq!(phrase.total_hits, 96);
+    assert_eq!(phrase.hits.len(), 96);
+    assert_eq!(
+        keys(&phrase),
+        expected_phrase,
+        "input-derived phrase members"
+    );
+    let phrase_bits = bits_by_key(&phrase);
+
+    let zeta = search_ok(snapshot, &a5_zeta_request());
+    assert_eq!(zeta.total_hits, 103);
+    assert_eq!(zeta.hits.len(), 103);
+    assert_eq!(keys(&zeta), expected_zeta, "input-derived zeta members");
+    let zeta_bits = bits_by_key(&zeta);
+
+    let expected_relevance = a5_relevance_prefix(&expected_alpha, 100);
+    assert_eq!(expected_relevance.len(), 100);
+    for top_k in [10usize, 100] {
+        let explicit = search_ok(snapshot, &request(term(), top_k, ascend()));
+        assert_eq!(explicit.total_hits, 129);
+        assert_eq!(explicit.hits.len(), top_k);
+        assert_eq!(
+            keys(&explicit),
+            ascending_keys[..top_k].to_vec(),
+            "k{top_k} explicit prefix"
+        );
+        let observed = bits_by_key(&explicit);
+        for key in &ascending_keys[..top_k] {
+            assert_eq!(
+                observed[key], expected_alpha[key],
+                "k{top_k} explicit bits {key}"
+            );
+        }
+
+        let relevance = search_ok(snapshot, &request(term(), top_k, Sort::default()));
+        assert_eq!(relevance.total_hits, 129);
+        assert_eq!(relevance.hits.len(), top_k);
+        assert_eq!(
+            keys(&relevance),
+            expected_relevance[..top_k].to_vec(),
+            "k{top_k} relevance prefix"
+        );
+        let observed = bits_by_key(&relevance);
+        for key in &expected_relevance[..top_k] {
+            assert_eq!(
+                observed[key], expected_alpha[key],
+                "k{top_k} relevance bits {key}"
+            );
+        }
+    }
+
+    let conjunction = search_ok(snapshot, &request(Query::And(vec![term()]), 300, ascend()));
+    assert_eq!(conjunction.total_hits, 129);
+    assert_eq!(conjunction.hits.len(), 129);
+    assert_eq!(
+        keys(&conjunction),
+        ascending_keys,
+        "generic fallback keys and order"
+    );
+    assert_eq!(
+        bits_by_key(&conjunction),
+        expected_alpha,
+        "generic fallback frozen score bits"
+    );
+
+    [alpha_bits, phrase_bits, zeta_bits]
+}
+
 /// Verify the compacted generation-3 state of the I03/I05 fixture.
 fn a5_assert_compacted_generation(root: &std::path::Path) {
     let directory: Arc<dyn Directory> =
@@ -1373,39 +1482,7 @@ fn a5_assert_compacted_generation(root: &std::path::Path) {
     drop(guard);
 
     let specs = batch(129, |ordinal| ordinal % 4 + 1);
-    let alpha = search_ok(&snapshot, &request(term(), 300, ascend()));
-    assert_eq!(alpha.total_hits, 129);
-    assert_eq!(
-        keys(&alpha),
-        specs
-            .iter()
-            .map(|spec| format!("k{:05}", spec.ordinal))
-            .collect::<Vec<_>>(),
-        "the full alpha key set survives the reopen"
-    );
-    assert_eq!(bits_by_key(&alpha), a5_compacted_alpha_scores(&specs));
-    let phrase = search_ok(&snapshot, &a5_phrase_request());
-    assert_eq!(phrase.total_hits, 96);
-    let zeta = search_ok(&snapshot, &a5_zeta_request());
-    assert_eq!(zeta.total_hits, 103);
-
-    // Explicit/relevance ordering and generic fallback keep exact bits.
-    for sort in [ascend(), Sort::default()] {
-        for top_k in [10usize, 100] {
-            let response = search_ok(&snapshot, &request(term(), top_k, sort.clone()));
-            assert_eq!(response.total_hits, 129);
-            let expected = a5_compacted_alpha_scores(&specs);
-            if matches!(sort, Sort { .. }) {
-                let observed = bits_by_key(&response);
-                for key in keys(&response) {
-                    assert_eq!(observed[&key], expected[&key], "k{top_k} bits {key}");
-                }
-            }
-        }
-    }
-    let conjunction = search_ok(&snapshot, &request(Query::And(vec![term()]), 300, ascend()));
-    assert_eq!(conjunction.total_hits, 129);
-    assert_eq!(bits_by_key(&conjunction), a5_compacted_alpha_scores(&specs));
+    let _ = a5_assert_i05_search_contract(&snapshot, &specs);
 }
 
 #[test]
@@ -1508,16 +1585,8 @@ fn a5_i05_compaction_reclassifies_adaptive_terms() {
     assert_eq!(zeta_dfs, vec![51, 52], "zeta counts per input segment");
 
     let specs = batch(129, |ordinal| ordinal % 4 + 1);
-    let gen2_alpha = search_ok(&snapshot2, &request(term(), 300, ascend()));
-    assert_eq!(gen2_alpha.total_hits, 129);
-    let gen2_alpha_bits = bits_by_key(&gen2_alpha);
-    assert_eq!(gen2_alpha_bits, a5_compacted_alpha_scores(&specs));
-    let gen2_phrase = search_ok(&snapshot2, &a5_phrase_request());
-    assert_eq!(gen2_phrase.total_hits, 96);
-    let gen2_phrase_bits = bits_by_key(&gen2_phrase);
-    let gen2_zeta = search_ok(&snapshot2, &a5_zeta_request());
-    assert_eq!(gen2_zeta.total_hits, 103);
-    let gen2_zeta_bits = bits_by_key(&gen2_zeta);
+    let [gen2_alpha_bits, gen2_phrase_bits, gen2_zeta_bits] =
+        a5_assert_i05_search_contract(&snapshot2, &specs);
 
     // A single public compaction publishes generation 3 itself.
     {
