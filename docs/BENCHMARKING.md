@@ -48,6 +48,51 @@ PERF-02-A adds a Quervant-only `perf-02/warm` study. Arm `A` is the accepted pro
 - The paired effect is a **cumulative** A1–A3 treatment difference. It does not attribute the change to A1, A2 or A3 individually and is not a per-stage speedup claim.
 - A `COMPLETE` result is not an accepted performance win. Adoption and merge require independent human review against the predeclared primary/guard thresholds recorded with the configuration.
 
+#### PERF-06-A6 study amendment (`perf-06/warm`, one task)
+
+The A6 qualification reused the unchanged `perf-06/warm` path twice, under two new
+immutable configurations, to answer two different questions:
+
+| Campaign | Baseline arm A | Candidate arm B | Question |
+| --- | --- | --- | --- |
+| `quervant-perf06a6-adaptive-warm` | E `b70f624fffe0329def62701b61e997c4e303e167` | F `3bb232f868cb556ce9b4273d902164c65416af0f` | Isolated incremental effect of the merged adaptive-postings work |
+| `quervant-perf06a6-cumulative-warm` | A0 `2a74017958c8ac61948f931e8745bf8134827025` | F `3bb232f868cb556ce9b4273d902164c65416af0f` | Complete A1–A3 + A5 result against the pre-A1 source |
+
+Fixed method and limits for this one task:
+
+- Schedule, 16 warm exact-keyword lanes, 12 balanced blocks, 2 slots per arm, 5
+  warmups, 20 positive timed samples per slot, whole-block paired median-ratio
+  estimator, 10,000-resample bootstrap and seed are unchanged. Warm timing covers
+  exact-term search plus top-K projection only. No profiler, tracing subscriber,
+  GNU-time wrapper or resource sampler wrapped a query process.
+- **One invocation per campaign**, consumed by an exclusive started marker written
+  before the native process launches; a started marker is never deleted and a
+  campaign is never retried. No candidate B/B campaign, startup/throughput study,
+  cross-engine comparison or acquisition of any other kind was run.
+- A/A controls remain aliases of each campaign's own A arm and must pass on all 16
+  lanes. Treatment estimates use only same-campaign paired blocks; a cumulative
+  effect is never derived by combining results from different campaigns.
+- Predeclared A6 numerical policy: the isolated campaign uses a retention budget of
+  `gain ≥ −2.0%` and `lower 95% CI ≥ −5.0%` on every lane; the cumulative campaign
+  keeps the A4-era primary target (`IMPROVED`, `gain ≥ 5.0%`, `lower CI > 0`) on
+  four N=100K common/medium lanes and a ±10% guard band on the other twelve. The
+  native configuration thresholds stay at 0 and the analyzer's
+  IMPROVED/REGRESSED/INCONCLUSIVE status is reported separately from these policy
+  decisions.
+- Real storage evidence uses freshly built one-commit whole-index bytes per arm
+  and size, with the candidate's sizes required to agree across two independent
+  builds. Writer evidence is four single-run GNU-time process observations of the
+  already-built adapters, described as diagnostics only and never mixed into warm
+  `engine_ns`.
+- A6 required no baseline/regression suite, coverage, lint, doc, bench-compile or
+  CI-wait step under an explicit user instruction that applied to that task; this
+  is a task-scoped exception recorded in the A6 plan and execution report, **not**
+  a change to the permanent benchmarking or CI contract.
+
+See
+[A6 detailed plan](../pr-artifacts/perf-06-a/PERF06A6_DETAILED_PLAN.md) and
+[A6 execution report](../pr-artifacts/perf-06-a/PERF06A6_EXECUTION_REPORT.md).
+
 ### Configuration files
 
 - Persist each new benchmark configuration at `benchmarks/studies/<family>/<regime>/configurations/<name>-<yyyy-mm-dd>.json`, using the exact basename `<name>-<yyyy-mm-dd>.json`.

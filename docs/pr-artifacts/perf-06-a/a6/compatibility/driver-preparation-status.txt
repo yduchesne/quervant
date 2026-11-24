@@ -1,0 +1,22 @@
+PERF-06-A6 compatibility driver preparation status
+
+class: D08 qualification-driver preparation defect (compile error, production unchanged)
+driver_source_sha256: 927c4d09759c5f29cd35005e8079f77b25028bcd349ea66744b1054130e3b5fc
+driver_source_bytes: 22842
+E_worktree_head: b70f624fffe0329def62701b61e997c4e303e167
+F_worktree_head: 3bb232f868cb556ce9b4273d902164c65416af0f
+E_build_exit: 101
+F_build_exit: 101
+E_binary_present: no
+F_binary_present: no
+modes_attempted: NONE (create-e, advance-f, verify-f, remote-create-e, remote-append-f, remote-verify-f never launched)
+native_compatibility: BLOCKED_DRIVER_PREPARATION
+remote_compatibility: NOT_ATTEMPTED (depends on driver)
+
+exact failure (identical at E and F, compiler 1.98.1, --release --locked -p quervant-core --features s3 --example perf06_a6_compatibility):
+  error[E0277]: the trait bound `Array<u8, UInt<...>>: LowerHex` is not satisfied
+  --> crates/quervant-core/examples/perf06_a6_compatibility.rs:220:53
+  220 | fn digest(bytes: &[u8]) -> String { format!("{:x}", Sha256::digest(bytes)) }
+
+workspace sha2 requirement: 0.11 (dev-dependency), whose digest output type does not implement LowerHex.
+smallest amendment requested: a plan-author update of Appendix A's digest() helper (hex-encode the digest bytes) with a new frozen hash, or an explicit authorization to apply that one-line change.

@@ -1,0 +1,94 @@
+NATIVE_ARGV=["/usr/bin/python3", "-m", "quervant_bench", "run", "--config", "/home/yduchesne/Dev/Github/yduchesne/quervant/benchmarks/studies/perf-06/warm/configurations/quervant-perf06a6-cumulative-warm-2026-11-24.json", "--scratch-root", "/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6"]
+RESULT_JSON=/home/yduchesne/Dev/Github/yduchesne/quervant/benchmarks/studies/perf-06/warm/results/quervant-perf06a6-cumulative-warm-2026-11-24-001.json
+# Benchmark results: quervant-perf06a6-cumulative-warm
+
+- Run ID: `4578ed84-d277-4967-b3b4-786e39cd4540`
+- Configuration: `quervant-perf06a6-cumulative-warm-2026-11-24.json` (`76f54a53-79c6-4b0b-b691-1e3987d54e95`)
+- Executed (UTC): 2026-11-24T16:53:55Z
+- Family: perf-06
+- Overall status: **COMPLETE**
+
+Results show within-run treatment/baseline ratios (B/A). Positive gain means improvement.
+Separate runs must be compared using the change in within-run gain in percentage points, not absolute timings.
+
+| Lane | Metric | Arm | Absolute median per block (ns) | B/A | Gain % | 95% ratio CI | Status |
+| --- | --- | --- | ---: | ---: | ---: | --- | --- |
+| 10000/absent/k10/warm | search_latency (ns; lower better) | A | 30576 | — | — | — | REFERENCE |
+| 10000/absent/k10/warm | search_latency (ns; lower better) | B | 30563 | 1.0016 | -0.16271 | [0.97883, 1.0327] | INCONCLUSIVE |
+| 10000/absent/k100/warm | search_latency (ns; lower better) | A | 30263 | — | — | — | REFERENCE |
+| 10000/absent/k100/warm | search_latency (ns; lower better) | B | 29963 | 0.99214 | 0.7859 | [0.98393, 0.99926] | IMPROVED |
+| 10000/common/k10/warm | search_latency (ns; lower better) | A | 2.5611e+06 | — | — | — | REFERENCE |
+| 10000/common/k10/warm | search_latency (ns; lower better) | B | 2.4141e+06 | 0.9428 | 5.7204 | [0.93142, 0.95722] | IMPROVED |
+| 10000/common/k100/warm | search_latency (ns; lower better) | A | 2.5955e+06 | — | — | — | REFERENCE |
+| 10000/common/k100/warm | search_latency (ns; lower better) | B | 2.4688e+06 | 0.95005 | 4.9948 | [0.94476, 0.95979] | IMPROVED |
+| 10000/medium/k10/warm | search_latency (ns; lower better) | A | 1.3297e+06 | — | — | — | REFERENCE |
+| 10000/medium/k10/warm | search_latency (ns; lower better) | B | 1.2809e+06 | 0.96833 | 3.1669 | [0.95514, 0.98188] | IMPROVED |
+| 10000/medium/k100/warm | search_latency (ns; lower better) | A | 1.411e+06 | — | — | — | REFERENCE |
+| 10000/medium/k100/warm | search_latency (ns; lower better) | B | 1.3734e+06 | 0.97101 | 2.8992 | [0.96286, 0.9759] | IMPROVED |
+| 10000/rare/k10/warm | search_latency (ns; lower better) | A | 38801 | — | — | — | REFERENCE |
+| 10000/rare/k10/warm | search_latency (ns; lower better) | B | 38788 | 0.99741 | 0.2587 | [0.98923, 1.0085] | INCONCLUSIVE |
+| 10000/rare/k100/warm | search_latency (ns; lower better) | A | 38225 | — | — | — | REFERENCE |
+| 10000/rare/k100/warm | search_latency (ns; lower better) | B | 37950 | 0.99606 | 0.39365 | [0.98988, 1.001] | INCONCLUSIVE |
+| 100000/absent/k10/warm | search_latency (ns; lower better) | A | 1.5635e+05 | — | — | — | REFERENCE |
+| 100000/absent/k10/warm | search_latency (ns; lower better) | B | 1.5805e+05 | 1.0044 | -0.44257 | [0.97408, 1.022] | INCONCLUSIVE |
+| 100000/absent/k100/warm | search_latency (ns; lower better) | A | 1.4996e+05 | — | — | — | REFERENCE |
+| 100000/absent/k100/warm | search_latency (ns; lower better) | B | 1.4981e+05 | 0.99667 | 0.33344 | [0.97832, 1.0025] | INCONCLUSIVE |
+| 100000/common/k10/warm | search_latency (ns; lower better) | A | 2.584e+07 | — | — | — | REFERENCE |
+| 100000/common/k10/warm | search_latency (ns; lower better) | B | 2.42e+07 | 0.93765 | 6.235 | [0.93292, 0.94573] | IMPROVED |
+| 100000/common/k100/warm | search_latency (ns; lower better) | A | 2.518e+07 | — | — | — | REFERENCE |
+| 100000/common/k100/warm | search_latency (ns; lower better) | B | 2.3863e+07 | 0.94572 | 5.4277 | [0.93857, 0.95016] | IMPROVED |
+| 100000/medium/k10/warm | search_latency (ns; lower better) | A | 1.3085e+07 | — | — | — | REFERENCE |
+| 100000/medium/k10/warm | search_latency (ns; lower better) | B | 1.2685e+07 | 0.96871 | 3.1286 | [0.96575, 0.97268] | IMPROVED |
+| 100000/medium/k100/warm | search_latency (ns; lower better) | A | 1.3041e+07 | — | — | — | REFERENCE |
+| 100000/medium/k100/warm | search_latency (ns; lower better) | B | 1.2628e+07 | 0.96635 | 3.365 | [0.96005, 0.97579] | IMPROVED |
+| 100000/rare/k10/warm | search_latency (ns; lower better) | A | 1.6442e+05 | — | — | — | REFERENCE |
+| 100000/rare/k10/warm | search_latency (ns; lower better) | B | 1.6696e+05 | 1.0098 | -0.98238 | [0.98596, 1.0417] | INCONCLUSIVE |
+| 100000/rare/k100/warm | search_latency (ns; lower better) | A | 1.5793e+05 | — | — | — | REFERENCE |
+| 100000/rare/k100/warm | search_latency (ns; lower better) | B | 1.5788e+05 | 0.99857 | 0.14267 | [0.99503, 1.0152] | INCONCLUSIVE |
+
+## Indexing, commit and size
+
+| Arm | Corpus | Insert ms | Commit ms | Open ms | Index bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A | 10000 | 19.563 | 127.68 | 21.723 | 1560111 |
+| A | 100000 | 205.87 | 1245.5 | 229.08 | 15747551 |
+| B | 10000 | 19.683 | 129.1 | 22.014 | 1456779 |
+| B | 100000 | 212.18 | 1236.3 | 217.21 | 14713132 |
+
+## Phase durations (wall-clock)
+
+Measured query values exclude indexing and compilation. These wall durations represent orchestration phases; preparation component rows are included within preparation total and must **not** be added again.
+
+| Phase | Elapsed seconds |
+| --- | ---: |
+| aa_acquisition_ns | 126.51 |
+| aa_analysis_ns | 0.759 |
+| host_preflight_ns | 0.049 |
+| preparation_build_ns | 45.113 |
+| preparation_corpus_ns | 0.088 |
+| preparation_index_ns | 4.026 |
+| preparation_lookup_ns | 0 |
+| preparation_ns | 51.413 |
+| preparation_oracle_ns | 1.041 |
+| run_before_save_ns | 305.27 |
+| treatment_acquisition_ns | 122.73 |
+| treatment_analysis_ns | 0.752 |
+
+- Prepared inputs: **BUILT**, created 2026-11-24T16:54:47Z UTC; previously staged indexing durations are historical descriptive metrics, not part of this run's query timings.
+
+
+## Method and limitations
+
+- Estimator: `median-paired-ratios-v1`
+- Uncertainty: `paired-whole-block-percentile-v1`
+- Source/build/host context: `{'adapter_cpu': 2, 'build': {'arm_source_revisions': {'A': '2a74017958c8ac61948f931e8745bf8134827025', 'B': '3bb232f868cb556ce9b4273d902164c65416af0f'}, 'compiler_options': 'cargo --release --locked', 'quervant_strategy_feature_enabled': False, 'source_revision': '3bb232f868cb556ce9b4273d902164c65416af0f'}, 'controller_cpu': 0, 'host': {'architecture': 'x86_64', 'cpu': 'x86_64', 'filesystem': 'ext4', 'kernel': '6.18.33.2-microsoft-standard-WSL2', 'physical_core_candidates': [[0, 0, 0], [2, 0, 1], [4, 0, 2], [6, 0, 3], [8, 0, 4], [10, 0, 5]], 'system': 'Linux', 'toolchains': {'cargo': 'cargo 1.98.1 (797e8a9bc 2026-08-05)', 'java': 'openjdk 21.0.13.1 2026-11-17', 'python': '3.12.3', 'rustc': 'rustc 1.98.1 (48a229cea 2026-09-01)'}, 'wsl': True}, 'preparation': {'cache_key': 'de9e841cd77e231b906806e00bad1a034b774ebf9d984010eda267a241ba9a94', 'cache_status': 'BUILT', 'index_metrics_provenance': 'preparation stage (not the current query window)', 'prepared_utc': '2026-11-24T16:54:47Z', 'verified_oracles': True}, 'source_revision': '3bb232f868cb556ce9b4273d902164c65416af0f'}`
+- Process-cold does not necessarily mean cold operating-system page cache.
+- NON_COMPARABLE lanes are excluded from combined claims and ranking.
+- A slowdown or INCONCLUSIVE result is evidence, not a pipeline error.
+
+## Run notes
+
+No historical performance comparison is implied.
+
+
+NATIVE_EXIT=0

@@ -1,0 +1,28 @@
+[01 E n=10000]
+user_seconds=0.16
+system_seconds=0.02
+max_rss_kib=43508
+elapsed_seconds=0.22
+exit_status=0
+
+[02 F n=10000]
+user_seconds=0.14
+system_seconds=0.01
+max_rss_kib=41712
+elapsed_seconds=0.18
+exit_status=0
+
+[03 F n=100000]
+user_seconds=1.53
+system_seconds=0.12
+max_rss_kib=376212
+elapsed_seconds=1.70
+exit_status=0
+
+[04 E n=100000]
+user_seconds=1.92
+system_seconds=0.11
+max_rss_kib=394740
+elapsed_seconds=2.08
+exit_status=0
+

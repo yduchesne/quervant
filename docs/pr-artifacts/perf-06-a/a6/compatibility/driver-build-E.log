@@ -1,0 +1,25 @@
+   Compiling quervant-core v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6/compat-worktrees/E/crates/quervant-core)
+error[E0277]: the trait bound `Array<u8, UInt<UInt<UInt<UInt<..., ...>, ...>, ...>, ...>>: LowerHex` is not satisfied
+   --> crates/quervant-core/examples/perf06_a6_compatibility.rs:220:53
+    |
+220 | fn digest(bytes: &[u8]) -> String { format!("{:x}", Sha256::digest(bytes)) }
+    |                                              ----   ^^^^^^^^^^^^^^^^^^^^^ the trait `LowerHex` is not implemented for `Array<u8, UInt<UInt<UInt<UInt<UInt<..., ...>, ...>, ...>, ...>, ...>>`
+    |                                              |
+    |                                              required by this formatting parameter
+    |
+    = help: the following other types implement trait `LowerHex`:
+              &T
+              &mut T
+              Saturating<T>
+              Wrapping<T>
+              bytes::bytes::Bytes
+              bytes::bytes_mut::BytesMut
+              compiler_builtins::math::libm_math::support::big::i256
+              compiler_builtins::math::libm_math::support::big::u256
+            and 36 others
+    = note: the full name for the type has been written to '/home/yduchesne/Dev/Github/yduchesne/quervant/target/perf06-a6/compat-target/E/release/examples/perf06_a6_compatibility-ddfe997c79547188.long-type-14739587159843570450.txt'
+    = note: consider using `--verbose` to print the full type name to the console
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `quervant-core` (example "perf06_a6_compatibility") due to 1 previous error
+EXIT=101

@@ -1,0 +1,75 @@
+A6 allowlist/scope verification 2026-11-24T17:03:19Z
+
+tracked modifications (must be exactly the four allowlisted docs):
+ M docs/BENCHMARKING.md
+ M docs/PERF_OPTIMIZATION_ROADMAP.md
+ M docs/pr-artifacts/perf-06-a/PERF06A_SERIES_REGISTER.md
+ M docs/pr-artifacts/perf-06/PERF06_SERIES_REGISTER.md
+
+untracked (must all be inside the allowlist):
+benchmarks/studies/perf-06/warm/configurations/quervant-perf06a6-adaptive-warm-2026-11-24.json
+benchmarks/studies/perf-06/warm/configurations/quervant-perf06a6-cumulative-warm-2026-11-24.json
+benchmarks/studies/perf-06/warm/results/quervant-perf06a6-adaptive-warm-2026-11-24-001.json
+benchmarks/studies/perf-06/warm/results/quervant-perf06a6-cumulative-warm-2026-11-24-001.json
+docs/pr-artifacts/perf-06-a/PERF06A6_DETAILED_PLAN.md
+docs/pr-artifacts/perf-06-a/PERF06A6_EXECUTION_REPORT.md
+docs/pr-artifacts/perf-06-a/a6/acquisition/quervant-perf06a6-adaptive-warm.result-reference.txt
+docs/pr-artifacts/perf-06-a/a6/acquisition/quervant-perf06a6-adaptive-warm.run.log
+docs/pr-artifacts/perf-06-a/a6/acquisition/quervant-perf06a6-adaptive-warm.started.txt
+docs/pr-artifacts/perf-06-a/a6/acquisition/quervant-perf06a6-cumulative-warm.result-reference.txt
+docs/pr-artifacts/perf-06-a/a6/acquisition/quervant-perf06a6-cumulative-warm.run.log
+docs/pr-artifacts/perf-06-a/a6/acquisition/quervant-perf06a6-cumulative-warm.started.txt
+docs/pr-artifacts/perf-06-a/a6/compatibility/driver-build-E.log
+docs/pr-artifacts/perf-06-a/a6/compatibility/driver-build-F.log
+docs/pr-artifacts/perf-06-a/a6/compatibility/driver-preparation-status.txt
+docs/pr-artifacts/perf-06-a/a6/invocation-uuid.txt
+docs/pr-artifacts/perf-06-a/a6/support/a6_compatibility.rs
+docs/pr-artifacts/perf-06-a/a6/support/measure_a6_writer.py
+docs/pr-artifacts/perf-06-a/a6/support/run_a6_once.py
+docs/pr-artifacts/perf-06-a/a6/support/verify_a6_results.py
+docs/pr-artifacts/perf-06-a/a6/verification/artifact-hashes-after.txt
+docs/pr-artifacts/perf-06-a/a6/verification/artifact-hashes-before.txt
+docs/pr-artifacts/perf-06-a/a6/verification/scope-and-protected-paths.txt
+docs/pr-artifacts/perf-06-a/a6/verification/verification.json
+docs/pr-artifacts/perf-06-a/a6/writer/01-E-n10000/resources.txt
+docs/pr-artifacts/perf-06-a/a6/writer/02-F-n10000/resources.txt
+docs/pr-artifacts/perf-06-a/a6/writer/03-F-n100000/resources.txt
+docs/pr-artifacts/perf-06-a/a6/writer/04-E-n100000/resources.txt
+docs/pr-artifacts/perf-06-a/a6/writer/driver.log
+docs/pr-artifacts/perf-06-a/a6/writer/raw-times.txt
+docs/pr-artifacts/perf-06-a/a6/writer/scope.txt
+docs/pr-artifacts/perf-06-a/a6/writer/writer.tsv
+
+source object re-verification at HEAD:
+3bb232f868cb556ce9b4273d902164c65416af0f
+4a3abeeb921cb5ca8ecbbd93a2b71c49c4f3f538 crates/quervant-core/src/segment/postings.rs
+55ca2885def34d6563ab91b9fd81c761f19a3203 crates/quervant-core/src/segment/format.rs
+7cf05a09e9453a254febcb7ea10bd957e175b587 crates/quervant-core/src/segment/build.rs
+951f08086a8a0225b7fb31195c4db359bd7fda82 crates/quervant-core/src/segment/reader.rs
+14754c16254064902fe17753f809565b0c01ec9b crates/quervant-core/src/index/merge.rs
+4ff26d85d5b7fe5651a5cca44d0606332466d6de crates/quervant-core/src/remote/mod.rs
+9e333e7d9be23d08802ae850b39bd3ffd2dfbf48 benchmarks/pr15d/adapters/quervant/src/main.rs
+0081b0d4600bc33f974960a0a9a700c7342dd50e benchmarks/quervant_bench/lean/runtime.py
+ef8e5c8b21db7a5c38c58f5105584a1dacdbe8bc benchmarks/quervant_bench/lean/preparation.py
+6103a0cb1ac7cd8d8029d3d92c63761dce429c61 benchmarks/quervant_bench/lean/configuration.py
+7854fb8035128e425d00e6f4ad192f20d7a6c718 benchmarks/quervant_bench/lean/statistics.py
+40bd37bd5314009eeb7b81f201f5ae0180be26f7 Cargo.toml
+a230eb28d692c543fd541e7a9eaa0980e678e40e Cargo.lock
+73cb934de4706a914c15e8db2a3c037ce75699d9 rust-toolchain.toml
+df63adc43f9f27e1e84e539d00bb2d78361c5c03 .github/workflows/ci.yml
+08fcd3dea6e4cd62bde52d597e0a6be7ddf4f39c AGENTS.md
+91c8643eaa041b0cb475949bcefa7c074ae27fe3 docs/TESTING.md
+
+A4 historical result objects:
+c7d49358fdaf0a6f4591f7a70d3ad2d5eba2cb40
+dbbd5116ccbfe06a0fc8099ab2fbeee4967ccc12
+
+largest new files:
+980634 benchmarks/studies/perf-06/warm/results/quervant-perf06a6-adaptive-warm-2026-11-24-001.json
+980631 benchmarks/studies/perf-06/warm/results/quervant-perf06a6-cumulative-warm-2026-11-24-001.json
+146229 docs/pr-artifacts/perf-06-a/PERF06A6_DETAILED_PLAN.md
+36164 docs/pr-artifacts/perf-06-a/PERF06A6_EXECUTION_REPORT.md
+22842 /home/yduchesne/Dev/Github/yduchesne/quervant/docs/pr-artifacts/perf-06-a/a6/support/a6_compatibility.rs
+15512 /home/yduchesne/Dev/Github/yduchesne/quervant/docs/pr-artifacts/perf-06-a/a6/support/__pycache__/verify_a6_results.cpython-312.pyc
+12025 /home/yduchesne/Dev/Github/yduchesne/quervant/docs/pr-artifacts/perf-06-a/a6/support/verify_a6_results.py
+9944 /home/yduchesne/Dev/Github/yduchesne/quervant/docs/pr-artifacts/perf-06-a/a6/support/measure_a6_writer.py

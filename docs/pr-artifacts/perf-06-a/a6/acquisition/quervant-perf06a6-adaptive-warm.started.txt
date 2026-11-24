@@ -1,0 +1,10 @@
+{
+  "campaign": "quervant-perf06a6-adaptive-warm",
+  "configuration_id": "74fe056d-efae-43f0-902d-b396e7f6fea2",
+  "configuration_path": "/home/yduchesne/Dev/Github/yduchesne/quervant/benchmarks/studies/perf-06/warm/configurations/quervant-perf06a6-adaptive-warm-2026-11-24.json",
+  "configuration_sha256": "2ca83709d071db944755b4732548c5c90c8e4361a5bbbd93559cb571ec0e138d",
+  "invocation_budget_consumed": true,
+  "pre_c_r_verification": null,
+  "runner_sha": "3bb232f868cb556ce9b4273d902164c65416af0f",
+  "started_utc": "2026-11-24T16:48:23.505471+00:00"
+}
