@@ -178,7 +178,7 @@ each is covered:
 | Uncommitted benchmark source | prepared cache refuses to build (`_clean_source`, unchanged) | existing `test_preparation.py` regression |
 | Stale/tampered staged binary or index | cache fails closed, artifact preserved | U06 |
 | New split segment with different index bytes | recorded per-arm; no cross-arm equality requirement | U05 (A/B distinct binaries and sizes), §14 |
-| A/A single lane unstable | control phase blocks treatment, one INCOMPLETE result | U07 (noise → all FAIL), U09 |
+| A/A single lane unstable | control phase blocks treatment and publishes one INCOMPLETE result | U07 (injected A/A divergence → all FAIL), U09 |
 | B missing one block | analyzer rejects the schedule | U08 |
 | B wrong ordered doc IDs | independent oracle disagreement before timing | U05 (corrupt-B oracle) |
 | Same lane omitted from only one arm | `missing per-lane slot samples` | U08 |
@@ -288,15 +288,16 @@ writer→commit→reopen, and `pr13_remote` fake-remote tests.
 
 | Item | Value |
 | --- | --- |
-| Diagnostics runs observed | `45310949217` (head `d7740fd`), `45311881991` (head `177880d`), `45312452830` (head `4f12dc8`, the evidence commit) — all still `in_progress` at the recorded check |
-| Recorded check | `gh pr checks 123` immediately after pushing the evidence commit; no further polling was performed |
 | PR | #123 (draft, unmerged) |
-| `rustfs` (real provider integration) | PASS (2m55s, job 138169342953) |
-| `benchmark-adapter-contract` | PASS (1m37s, job 138169342710) |
+| Recorded CI check | `gh pr checks 123` at **2026-11-24T02:33:43Z**, run `#548` (`45312567690`) on evidence head `42e562c`, i.e. *after* acquisition and the original evidence commit. No continuous polling was performed. |
+| `benchmark-adapter-contract` | PASS (1m07s, job 138171642457) |
+| `python-benchmark-framework` | PASS (3m19s, job 138171642745) |
+| `rustfs` (real provider integration) | PASS (2m24s, job 138171642826) |
 | `rust` | `PENDING` at the recorded check — not claimed as PASS |
 | `msrv` | `PENDING` at the recorded check — not claimed as PASS |
-| `python-benchmark-framework` | `PENDING` at the recorded check — not claimed as PASS |
-| Overall CI verdict | **`PENDING`** — partial passes were observed on head `177880d` (`rustfs`, `benchmark-adapter-contract`); `rust`, `msrv` and `python-benchmark-framework` were still running. Per the maintainer exception this did not block acquisition; it **does** block final acceptance. |
+| Overall CI verdict | **`PENDING`** on the evidence head at the recorded check. Per the maintainer exception this did not block acquisition; it **does** block final framework-source acceptance. |
+| Earlier heads | Runs `#545` (`d7740fd`), `#546` (`177880d`), `#547` (`4f12dc8`) were still `in_progress` at the recorded checks; they are not cited as passes. |
+| This fixup commit | Documentation-only and pushed after the check above. Its own CI outcome is by definition unverified at write time and must be read from `gh pr checks 123`; it is **not** claimed green here. |
 
 No new `rustfs` job evidence is claimed beyond the hosted job itself; A4 adds no
 ObjectStore/RustFS change. A3 CI run #543 remains the separately labeled prior
@@ -326,8 +327,13 @@ presented as A4 measurement evidence.
 
 ## 10. STAGE / CACHE FINGERPRINT / COMPILERS / TWO INDEX BUILD-COMMIT-REOPEN ORACLES
 
-Staged **once** with `quervant-bench stage --config <exact path>` on the code
-head whose hosted CI was green.
+Staged **once** with `quervant-bench stage --config <exact path>` on commit
+`177880d0e2a2e8ff9d69562b1602bc20888a0754`, whose framework implementation had
+been fully validated by the mandatory **local** gates (§7). Hosted CI for that
+head was **still pending** when staging and acquisition began; it did not report
+success. The maintainer explicitly authorized acquisition before hosted CI
+completion (§8), and final qualification still requires successful mandatory
+hosted CI. Nothing in this report asserts that CI passed at staging time.
 
 | Item | Value |
 | --- | --- |
@@ -455,8 +461,10 @@ zero-hit, smallest-absolute-cost lane (A/A median block value 36.8 µs vs
 0.648–1.237, giving a median gain of 3.372% and a bootstrap 95% gain CI of
 [0.365, 19.378]%, whose upper bound exceeds the frozen ±15% A/A stability bound.
 The other 15 lanes were tight (for example `100000/common/k100` gain -0.428%,
-CI [-0.851, 0.917]%), so this is a single-lane host-stability failure, not a
-systematic instability of the whole campaign.
+CI [-0.851, 0.917]%), so the failure is isolated to a single lane rather than a
+systematic instability across the campaign. Its **cause is undetermined** (§15):
+the description above is evidence of *what* was observed, not an attribution of
+why.
 
 `COMPLETE` would not have been an acceptance decision either; the 4 primary
 lanes were never asserted to improve by the pre-declaration, and the combined
@@ -485,18 +493,34 @@ to warm `engine_ns`.
   gain CI upper bound 19.378% > the frozen 15% A/A bound. This is a **failed
   control**, which by the frozen rules blocks treatment and qualification
   regardless of cause.
-- **Failure classification.** The evidence supports *neither*
-  `INTRODUCED_REGRESSION` *nor* `FEATURE_IMPLEMENTATION_DEFECT`: every untimed
-  stage oracle and every A/A response in that lane matched the independent
-  corpus oracle exactly (`oracle_ok=true`, zero hits/empty ordered IDs), the
-  prepared cache verified, and the other 15 A/A lanes were within ±1.3% with CIs
-  far inside the bound. It is provisionally recorded as an
-  `ENVIRONMENT_HARNESS_FAILURE` (host measurement stability of the smallest
-  absolute-cost lane). `NONDETERMINISTIC_FLAKY_FAILURE` is **not** claimed,
-  because proving nondeterminism would require the rerun the plan forbids, and
-  `DETERMINISTIC_PREEXISTING_FAILURE` is **not** claimed, because no baseline
-  reproduction was performed. The classification therefore remains **provisional
-  and unresolved**, and the gate stays closed.
+- **Observed failure vs. cause — deliberately separated.**
+  - *Established observation:* exactly one of 16 A/A control lanes failed. The
+    failed lane is `10000/absent/k10/warm`; its apparent A/A gain is **+3.3717%**
+    with a bootstrap 95% gain interval of **+0.3646% to +19.3781%**. The
+    **upper confidence bound**, not the point estimate, exceeds the approved
+    +15% A/A stability limit, so the frozen rule rejected the control. All
+    correctness oracles passed in both arms and during staging; host-readiness
+    checks were `clear`; **no treatment observations were acquired**.
+  - *Root cause: **UNDETERMINED**.* No evidence collected in this campaign
+    isolates a cause. Candidate explanations that remain **unproven** include
+    environment/harness instability (host scheduling, thermal or clock
+    variability), statistical variability intrinsic to this very short-duration,
+    zero-hit lane, or an A/A control-design sensitivity for that lane. None of
+    these is a verified diagnosis.
+  - *Explicit non-claims:* this event is **not** classified as confirmed
+    `NONDETERMINISTIC_FLAKY_FAILURE` (proving nondeterminism would require a
+    repeat the plan forbids), **not** as a proven
+    `ENVIRONMENT_HARNESS_FAILURE` or infrastructure failure, **not** as
+    `INTRODUCED_REGRESSION` or `FEATURE_IMPLEMENTATION_DEFECT` (no code-path or
+    correctness signal exists — every oracle matched, the prepared cache
+    verified, and the other 15 A/A lanes stayed within ±1.3% with CIs far inside
+    the bound), and **not** as `DETERMINISTIC_PREEXISTING_FAILURE` (no baseline
+    reproduction was attempted).
+  - *Consequence:* the classification remains **undetermined**, the gate stays
+    closed, and the disposition stays `PERF06_A4_INCOMPLETE_STOP`. Resolving the
+    cause requires a **separately planned and independently authorized**
+    follow-up investigation or qualification study; this PR neither diagnoses it
+    nor authorizes any rerun, alternate host, relaxed threshold or lane removal.
 - No correctness, oracle, cache-integrity, readiness or truncation failure
   occurred; the campaign nevertheless produced **no** treatment measurement and
   therefore **no** paired performance evidence for A1–A3.
@@ -507,14 +531,16 @@ to warm `engine_ns`.
   this campaign's baseline.
 - Pre-existing ignored real-RustFS suites were not re-executed locally (no
   pinned service topology); A3 CI #543 remains the prior real-provider proof.
-- Unresolved risk: the harness-reported treatment-time warmups/timed-request
-  counts in §12 are the A/A phase only; the plan's 7,680/30,720 totals would
-  have required a passing control and a completed treatment phase, which did not
-  occur.
+- Unresolved risk: the warmup/timed-request counts in §12 are the **A/A phase
+  only**; the plan's 7,680 warmup / 30,720 timed-request totals would have
+  required a passing control plus a completed treatment phase, neither of which
+  occurred. No treatment-time counts exist and none are inferred.
 
 ## 16. APPLIED DECISION MATRIX ROWS AND HARD STOPS
 
-Applied `AUTO-RESOLVE` rows: D02 (pinned A/B SHAs and branch creation), D05
+Classification follows the approved plan's own categories.
+
+**`AUTO-RESOLVE` rows applied:** D02 (pinned A/B SHAs and branch creation), D05
 (paired A/B instead of historical baseline), D06–D12 (family registration),
 D13 (per-arm index bytes), D17 (cache reuse on re-stage), D19 (expected RED),
 D20 (two mechanical, behavior-preserving framework widenings: the
@@ -522,19 +548,30 @@ D20 (two mechanical, behavior-preserving framework widenings: the
 `_commands_from_cache` build-root inclusion without which the existing cache
 path cannot address two independent builds), D22 (in-scope assertion fixes in
 the new test file only), D27 (UTC filename), D28 (validated immutable config),
-D32 (staged inputs verified), D37/D38–D41/D43/D46 (result publication and
-read-only review), D44 (draft PR while CI ran).
+D32 (staged inputs verified), **D37** (`run` returned exit 4 with a saved
+`INCOMPLETE` result → record the exact path/reason, stop acquisition, continue
+safe read-only reporting), and D38–D41/D43/D46 (result publication and
+read-only review).
 
-**`HARD STOP` rows triggered:**
+**`DEFER AND CONTINUE` row applied:** **D44** — hosted CI was pending when the
+code head was pushed. Its dependent gate (final framework-source acceptance) is
+preserved as blocked while all independent, safe work (documentation, the
+approved acquisition under the maintainer exception, and read-only result
+verification) continued. D44 is *not* a hard stop and was not treated as one.
 
-- **D33** — `A/A stage produces non-PASS on any of 16 controls` → the
+**`HARD STOP` row triggered:**
+
+- **D33** — `A/A stage produces non-PASS on any of 16 controls` → HARD STOP. The
   `INCOMPLETE` result with all 768 control slot/lane rows was preserved; no
-  treatment was timed; the ±15% bound was not loosened and no block was pruned.
-- **D37** — `run` returned exit 4 with a saved `INCOMPLETE` result → the exact
-  path/reason is recorded and acquisition stopped; safe reporting continued.
-- **D45 (blocking, pending)** — hosted CI is not fully green on head
-  `177880d`; the maintainer's explicit exception allowed acquisition to proceed,
-  and CI remains a blocking gate for final acceptance.
+  treatment was timed; the ±15% A/A bound was not loosened and no block was
+  pruned or retried.
+
+**Conditional `HARD STOP` row not triggered:** **D45** applies only when hosted
+CI actually **fails** on the exact code head. At the recorded checks CI was
+**pending**, not failed, so D45 was not triggered and no CI-failure claim is
+made. If CI subsequently fails, D45 becomes active for the affected framework
+source and final qualification stays blocked until a narrow fixup and a new
+mandatory-gate pass.
 
 No D47 scope expansion occurred: no RustFS startup, profiling, Criterion,
 cold-start, cross-engine, throughput, host swap or additional timed trial was
@@ -571,7 +608,8 @@ measurement, therefore **no** paired primary/guard evidence, therefore no
 qualified gain claim of any kind. Arm B was never timed against arm A.
 
 **Typed outcome:** `PERF06_A4_INCOMPLETE_STOP` (failed A/A control on 1 of 16
-lanes; frozen treatment gate fired exactly as designed).
+lanes; frozen treatment gate fired exactly as designed). **Root cause:
+UNDETERMINED** (§15) — the failure is established, its explanation is not.
 
 **Next human decision (maintainer-owned):** choose one of
 
