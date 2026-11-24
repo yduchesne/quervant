@@ -62,3 +62,29 @@ PERF-06 consists of **three engineering subseries**, ordered **A → B → C**. 
 This is a documentation-only agreement: update **this register** and `docs/PERF_OPTIMIZATION_ROADMAP.md`, correcting PERF-05's merged status and documenting the PERF-06 sequence and operating model. Do not change `docs/ROADMAP.md` yet; do not touch Rust/Python code, CI, benchmark configurations/results, or PERF-05 artifacts. Do not run any real benchmarks or profiling.
 
 **Next authorized work:** refine and approve the **PERF-06-A1** detailed design. No implementation has begun.
+
+## 6. Current-status amendment (PERF-06-A5)
+
+This amendment records later facts; it does not rewrite the original authorization
+above. Sections 1–5 remain the historical series-opening agreement.
+
+A1–A3 remain retained. A4 PR #123 is merged; its complete second paired campaign
+met two of four primary targets and all guards, with no lane classified as
+regressed. The measured targets-not-met disposition remains historical evidence.
+A5 addresses short-list postings metadata and correctness/structural footprint.
+A6 is a separately planned consolidated compatibility/storage/warm-performance
+qualification before B1. No A6 acquisition is authorized by A5.
+
+| Subseries | Status now | Notes |
+| --- | --- | --- |
+| **PERF-06-A** | A1–A3 merged; A4 merged with `PERF06_A4_PAIRED_COMPLETE_TARGETS_NOT_MET_REVIEW_REQUIRED`; A5 `IMPLEMENTED — INDEPENDENT REVIEW PENDING`; A6 `PLANNED — SEPARATE DESIGN/ACQUISITION REQUIRED` | A5 adds `FEATURE_ADAPTIVE_POSTINGS = 0x000F/1` compact framing for 1–128-document terms, retains split/A3 payloads for longer lists, and wires both the segment builder and compaction to the same encoder. A6 owns genuine complete E-index compatibility, real benchmark-corpus index sizes and warm qualification. |
+| **PERF-06-B** | Still blocked | B1 (persistent keyword ordinals) remains pending A6 evidence and maintainer disposition. A5 does not absorb B1. |
+
+**Dependency chain:** `PERF-05 (merged) → A1 → A2 → A3 → A4 (merged, targets not
+all met) → A5 → A6 → B1 → B2 → B3 → B4 → C1 → C2 → C3 → C4`.
+
+**Status vocabulary:** `IN_PROGRESS`, `IMPLEMENTED — VERIFICATION_BLOCKED`,
+`READY_FOR_INDEPENDENT_REVIEW`, `ACCEPTED — IMPLEMENTATION`,
+`PLANNED — SEPARATE DESIGN/ACQUISITION REQUIRED`. A5 does not merge, retune A4's
+thresholds, or authorize any performance acquisition. See
+[A5 execution report](../perf-06-a/PERF06A5_EXECUTION_REPORT.md).

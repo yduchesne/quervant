@@ -44,3 +44,28 @@ This draft **series PR is a documentation-only charter**. It is **not A1**, not 
 **Next decision:** approve the source-specific **PERF-06-A1 detailed implementation plan** before creating and executing its separate PR. This charter does not itself authorize A1 code changes or a benchmark acquisition.
 
 **Series disposition at opening:** `PERF06_A_SERIES_REGISTERED_NO_IMPLEMENTATION`.
+
+## 5. Current-status amendment (PERF-06-A4 and PERF-06-A5)
+
+Sections 1–4 above remain the historical series-opening charter; A1–A4 were
+authorized afterwards under separate detailed plans and this amendment records the
+resulting state. It does not rewrite the earlier authorization text.
+
+| Stage | Status | Boundary |
+| --- | --- | --- |
+| **PERF-06-A1** | Merged; implemented | Query-local BM25 preparation retained; score contract unchanged. |
+| **PERF-06-A2** | Merged; implemented | Consuming document/frequency-only cursor retained; shared validation, ownership, cancellation and limits unchanged. |
+| **PERF-06-A3** | Merged; implemented | Versioned split postings v1 retained as the long-list representation. |
+| **PERF-06-A4** | Merged (PR #123) with measured `PERF06_A4_PAIRED_COMPLETE_TARGETS_NOT_MET_REVIEW_REQUIRED` | Complete second paired campaign: 16/16 A/A controls and 12/12 guards passed; 2/4 primary lanes met the ≥5% target. Merge is not evidence that every original target passed; the disposition is unchanged. |
+| **PERF-06-A5** | `IMPLEMENTED — INDEPENDENT REVIEW PENDING` | `FEATURE_ADAPTIVE_POSTINGS = 0x000F/1`; compact framing for `df <= 128`, unchanged A3 payloads for `df >= 129`; one-buffer compact encoding with fused validation/size accounting; shared lazy full/lean decoder; both producers emit the adaptive family; legacy/A3 readers retained. Correctness and structural footprint only: no latency, writer-cost or real index-size claim. |
+| **PERF-06-A6** | `PLANNED — SEPARATE DESIGN/ACQUISITION REQUIRED` | Consolidated A-series compatibility, storage and warm-performance qualification. Must include a genuine complete A3-produced (E) index appended/compacted by A5, real frozen-corpus index sizes, and writer diagnostics. Not authorized by A5. |
+
+**Dependency:** `A1 → A2 → A3 → A4 (merged, targets not all met) → A5 → A6 → B1 → B2 → B3 → B4 → C1 → C2 → C3 → C4`.
+
+A5 authorizes no benchmark acquisition, no A4 rerun, no threshold retuning, and no
+merge. A6 must define its own source pins, corpus/schema, result identity,
+acceptance criteria and acquisition count. See
+[A5 detailed plan](PERF06A5_DETAILED_PLAN.md) and
+[A5 execution report](PERF06A5_EXECUTION_REPORT.md).
+
+**Series disposition now:** `PERF06_A5_IMPLEMENTED_INDEPENDENT_REVIEW_PENDING`.

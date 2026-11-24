@@ -33,9 +33,9 @@ use super::decode_budget::DecodeBudget;
 use super::dictionary::{DictionaryEntry, DictionaryReader};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
-    ByteReader, ContainerKind, ContainerView, FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS,
-    FEATURE_SPATIAL_POINTS, FEATURE_SPLIT_POSTINGS, FEATURE_STORED_BLOCKS, SectionEntry,
-    SectionKind, parse_container, reserve_exact_vec,
+    ByteReader, ContainerKind, ContainerView, FEATURE_ADAPTIVE_POSTINGS, FEATURE_FIELD_NORMS,
+    FEATURE_JSON_PATHS, FEATURE_SPATIAL_POINTS, FEATURE_SPLIT_POSTINGS, FEATURE_STORED_BLOCKS,
+    SectionEntry, SectionKind, parse_container, reserve_exact_vec,
 };
 use super::json_paths::{JsonDocOffset, JsonPathDirectory, JsonPathsReader};
 use super::limits::SegmentLimits;
@@ -1166,21 +1166,26 @@ impl SegmentReader {
                 kind: SectionKind::Postings as u16,
             })?;
         let start = entry.postings_offset as usize;
-        let end =
-            start
-                .checked_add(entry.postings_length as usize)
-                .ok_or(SegmentError::Corrupt {
-                    context: "postings",
-                    detail: "posting extent overflow".to_owned(),
-                })?;
-        let slice = body.get(start..end).ok_or(SegmentError::Corrupt {
+        let end = start
+            .checked_add(entry.postings_length as usize)
+            .ok_or_else(|| SegmentError::Corrupt {
+                context: "postings",
+                detail: "posting extent overflow".to_owned(),
+            })?;
+        let slice = body.get(start..end).ok_or_else(|| SegmentError::Corrupt {
             context: "postings",
             detail: "posting extent out of range".to_owned(),
         })?;
         // Payload version is selected by the verified required-feature set, never
         // by sniffing the first byte. Each constructor rejects the other
         // version's markers without any fallback.
-        let reader = if self.shared.required.contains(&(FEATURE_SPLIT_POSTINGS, 1)) {
+        let reader = if self
+            .shared
+            .required
+            .contains(&(FEATURE_ADAPTIVE_POSTINGS, 1))
+        {
+            PostingsReader::new_adaptive(slice, self.shared.doc_count, &self.shared.limits)?
+        } else if self.shared.required.contains(&(FEATURE_SPLIT_POSTINGS, 1)) {
             PostingsReader::new_split(slice, self.shared.doc_count, &self.shared.limits)?
         } else {
             PostingsReader::new(slice, self.shared.doc_count, &self.shared.limits)?
@@ -1463,14 +1468,34 @@ fn decode_metadata(
         }
         (None, None) => {}
     }
+    // A segment selects exactly one postings family. Both required in the same
+    // segment is ambiguous and rejected before verified state is published; the
+    // exclusion is per segment, never index-wide (different segments may use
+    // different families).
+    let has_split_postings = required.contains(&(FEATURE_SPLIT_POSTINGS, 1));
+    let has_adaptive_postings = required.contains(&(FEATURE_ADAPTIVE_POSTINGS, 1));
+    if has_split_postings && has_adaptive_postings {
+        return Err(SegmentError::Corrupt {
+            context: "adaptive postings",
+            detail: "conflicting postings features".to_owned(),
+        });
+    }
+    // The adaptive feature is segment-wide and requires the DICTIONARY /
+    // POSTINGS pair in the same segment. The pre-existing pair validation above
+    // stays intact (a single missing section keeps its `MissingSection`).
+    if has_adaptive_postings && (dictionary.is_none() || view.body(SectionKind::Postings).is_none())
+    {
+        return Err(SegmentError::Corrupt {
+            context: "adaptive postings",
+            detail: "adaptive postings feature requires dictionary and postings".to_owned(),
+        });
+    }
     // The split postings feature is segment-wide and requires the DICTIONARY /
     // POSTINGS pair in the same segment. The pre-existing pair validation above
     // stays intact (a single missing section keeps its `MissingSection`); this
     // new check rejects a declared feature whose whole pair is absent, before any
     // verified immutable state is published.
-    if required.contains(&(FEATURE_SPLIT_POSTINGS, 1))
-        && (dictionary.is_none() || view.body(SectionKind::Postings).is_none())
-    {
+    if has_split_postings && (dictionary.is_none() || view.body(SectionKind::Postings).is_none()) {
         return Err(SegmentError::Corrupt {
             context: "split postings",
             detail: "split postings feature requires dictionary and postings".to_owned(),

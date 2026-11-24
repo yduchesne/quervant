@@ -3553,7 +3553,7 @@ fn a3_schema() -> Schema {
     .expect("schema")
 }
 
-fn a3_build_segment(titles: &[(&str, &str)]) -> Vec<u8> {
+fn a5_build_current_segment(titles: &[(&str, &str)]) -> Vec<u8> {
     use super::build::{Layout, SegmentBuilder};
     use super::model::SegmentDocument;
     let mut builder =
@@ -3569,6 +3569,94 @@ fn a3_build_segment(titles: &[(&str, &str)]) -> Vec<u8> {
         builder.add_document(document).expect("add document");
     }
     builder.build().expect("build").bytes
+}
+
+/// Re-encode every term of an existing valid segment with the retained A3 split
+/// encoder, rebuilding Dictionary offsets/lengths and replacing the adaptive
+/// postings feature with the split feature.
+///
+/// This keeps A3-specific byte/error assertions running against explicitly
+/// constructed A3 payloads now that the ordinary builder emits the adaptive
+/// family. Every other section body, flag, aux value and optional feature is
+/// preserved. `ContainerBuilder::new` supplies one baseline tuple, so exactly
+/// one matching tuple from the source feature list is skipped to keep the
+/// feature multiplicity (and therefore byte accounting) honest.
+fn a3_reconstruct_current(original: &[u8]) -> Vec<u8> {
+    use super::dictionary::encode_dictionary;
+    use super::format::{
+        ByteWriter, FEATURE_ADAPTIVE_POSTINGS, FEATURE_BASELINE, FEATURE_SPLIT_POSTINGS,
+    };
+    use super::postings::encode_split_postings_block;
+
+    let limits = SegmentLimits::default();
+    let view = parse_container(original, &limits).expect("container");
+    let reader = super::reader::SegmentReader::open(original.to_vec(), limits).expect("open");
+    let doc_count = view.doc_count();
+
+    let mut postings_body = ByteWriter::new();
+    let mut fields: Vec<(u32, Vec<super::dictionary::DictionaryEntry>)> = Vec::new();
+    if let Some(dictionary) = reader.dictionary() {
+        for (field_id, entries) in dictionary.fields() {
+            let mut rebuilt: Vec<super::dictionary::DictionaryEntry> = Vec::new();
+            for entry in entries {
+                let mut cursor = reader.postings_for_entry(entry).expect("postings");
+                let mut postings = Vec::new();
+                while let Some(posting) = cursor.next().expect("posting") {
+                    postings.push(posting);
+                }
+                let offset = postings_body.len() as u64;
+                let block = encode_split_postings_block(doc_count, &postings, &limits)
+                    .expect("split encode");
+                let length = block.len() as u64;
+                postings_body.bytes(&block);
+                rebuilt.push(super::dictionary::DictionaryEntry {
+                    term: entry.term.clone(),
+                    doc_freq: postings.len() as u64,
+                    postings_offset: offset,
+                    postings_length: length,
+                });
+            }
+            fields.push((*field_id, rebuilt));
+        }
+    }
+    let postings_bytes = postings_body.into_vec();
+
+    let mut builder = ContainerBuilder::new(view.kind(), doc_count);
+    let mut baseline_skipped = false;
+    for (feature, version) in view.required_features() {
+        if (*feature, *version) == (FEATURE_BASELINE, 1) && !baseline_skipped {
+            baseline_skipped = true;
+            continue;
+        }
+        if (*feature, *version) == (FEATURE_ADAPTIVE_POSTINGS, 1) {
+            builder.require_feature(FEATURE_SPLIT_POSTINGS, 1);
+            continue;
+        }
+        builder.require_feature(*feature, *version);
+    }
+    for (feature, version) in view.optional_features() {
+        builder.optional_feature(*feature, *version);
+    }
+    for section in view.sections() {
+        let body = match section.kind {
+            SectionKind::Dictionary if !fields.is_empty() => {
+                encode_dictionary(&fields, &limits).expect("dictionary")
+            }
+            SectionKind::Postings if !fields.is_empty() => postings_bytes.clone(),
+            _ => {
+                let start = section.offset as usize;
+                original[start..start + section.length as usize].to_vec()
+            }
+        };
+        builder.section(section.kind, section.flags, section.aux, body);
+    }
+    builder.build().expect("rebuilt A3 container")
+}
+
+/// Build a small real text segment, then re-encode its postings as explicit A3
+/// split payloads for historical A3 assertions.
+fn a3_build_segment(titles: &[(&str, &str)]) -> Vec<u8> {
+    a3_reconstruct_current(&a5_build_current_segment(titles))
 }
 
 /// Rebuild a container with recomputed section digests, changing only the
@@ -4993,4 +5081,1956 @@ fn a3_u12_determinism_and_structural_size_report() {
         first.len()
     );
     assert!(!first.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// PERF-06-A5: adaptive postings (compact singleton/short lists, split longs).
+// ---------------------------------------------------------------------------
+
+const A5_COMPACT_SINGLETON_DOC_ONLY: u8 = 4;
+const A5_COMPACT_SINGLETON_POSITIONAL: u8 = 5;
+const A5_COMPACT_SHORT_DOC_ONLY: u8 = 6;
+const A5_COMPACT_SHORT_POSITIONAL: u8 = 7;
+const A5_ADAPTIVE_CONTEXT: &str = "adaptive postings";
+
+fn a5_encode_with(
+    segment_doc_count: u64,
+    postings: &[super::postings::Posting],
+    limits: &SegmentLimits,
+) -> Vec<u8> {
+    super::postings::encode_adaptive_postings_block(segment_doc_count, postings, limits)
+        .expect("adaptive encode")
+}
+
+fn a5_encode(docs: &[u64], freqs: &[u64], positional: bool) -> Vec<u8> {
+    let segment_doc_count = docs.iter().copied().max().expect("at least one document") + 1;
+    a5_encode_with(
+        segment_doc_count,
+        &a3_postings(docs, freqs, positional),
+        &SegmentLimits::default(),
+    )
+}
+
+fn a5_reader<'a>(
+    bytes: &'a [u8],
+    segment_doc_count: u64,
+    limits: &SegmentLimits,
+) -> super::postings::PostingsReader<'a> {
+    super::postings::PostingsReader::new_adaptive(bytes, segment_doc_count, limits)
+        .expect("adaptive reader")
+}
+
+fn a5_decode_full(bytes: &[u8], segment_doc_count: u64) -> Vec<super::postings::Posting> {
+    let mut reader = a5_reader(bytes, segment_doc_count, &SegmentLimits::default());
+    let mut records = Vec::new();
+    while let Some(posting) = reader.next().expect("full decode") {
+        records.push(posting);
+    }
+    records
+}
+
+fn a5_decode_lean(bytes: &[u8], segment_doc_count: u64) -> Vec<(u64, u64)> {
+    let mut reader = a5_reader(bytes, segment_doc_count, &SegmentLimits::default()).into_doc_freq();
+    let mut records = Vec::new();
+    while let Some(posting) = reader.next().expect("lean decode") {
+        records.push((posting.doc_id, posting.freq));
+    }
+    records
+}
+
+/// Drive a compact/split payload through the adaptive full reader.
+fn a5_drive_full(
+    bytes: &[u8],
+    segment_doc_count: u64,
+    limits: &SegmentLimits,
+) -> (Vec<(u64, u64)>, Option<SegmentError>) {
+    use super::postings::PostingsReader;
+    let mut reader = match PostingsReader::new_adaptive(bytes, segment_doc_count, limits) {
+        Ok(reader) => reader,
+        Err(error) => return (Vec::new(), Some(error)),
+    };
+    let mut records = Vec::new();
+    loop {
+        match reader.next() {
+            Ok(Some(posting)) => records.push((posting.doc_id, posting.freq)),
+            Ok(None) => return (records, None),
+            Err(error) => return (records, Some(error)),
+        }
+    }
+}
+
+/// Drive a compact/split payload through the adaptive doc/freq-only reader.
+fn a5_drive_lean(
+    bytes: &[u8],
+    segment_doc_count: u64,
+    limits: &SegmentLimits,
+) -> (Vec<(u64, u64)>, Option<SegmentError>) {
+    use super::postings::PostingsReader;
+    let mut reader = match PostingsReader::new_adaptive(bytes, segment_doc_count, limits) {
+        Ok(reader) => reader.into_doc_freq(),
+        Err(error) => return (Vec::new(), Some(error)),
+    };
+    let mut records = Vec::new();
+    loop {
+        match reader.next() {
+            Ok(Some(posting)) => records.push((posting.doc_id, posting.freq)),
+            Ok(None) => return (records, None),
+            Err(error) => return (records, Some(error)),
+        }
+    }
+}
+
+/// Assert both decode modes emit the same records and the same typed error.
+fn a5_assert_parity(
+    bytes: &[u8],
+    segment_doc_count: u64,
+    limits: &SegmentLimits,
+) -> (Vec<(u64, u64)>, SegmentError) {
+    let (full_records, full_error) = a5_drive_full(bytes, segment_doc_count, limits);
+    let (lean_records, lean_error) = a5_drive_lean(bytes, segment_doc_count, limits);
+    assert_eq!(full_records, lean_records, "record sequences must match");
+    let full_error = full_error.expect("expected the full reader to fail");
+    let lean_error = lean_error.expect("expected the doc/freq reader to fail");
+    assert_eq!(
+        format!("{full_error:?}"),
+        format!("{lean_error:?}"),
+        "both modes must report the identical typed error"
+    );
+    (lean_records, lean_error)
+}
+
+/// Parse a compact header directly from the wire (independent of the encoder).
+fn a5_header(bytes: &[u8]) -> (u8, u8, Option<u64>, u64, u64, u64, u64) {
+    let mut reader = ByteReader::new(bytes);
+    let marker = reader.u8("marker").expect("marker");
+    let version = reader.u8("version").expect("version");
+    let df = match marker {
+        A5_COMPACT_SINGLETON_DOC_ONLY | A5_COMPACT_SINGLETON_POSITIONAL => None,
+        _ => Some(reader.varint("df").expect("df")),
+    };
+    let freq_total = reader.varint("freq total").expect("freq total");
+    let docs = reader.varint("doc stream length").expect("D");
+    let freqs = reader.varint("frequency stream length").expect("F");
+    let positions = reader.varint("position stream length").expect("P");
+    (marker, version, df, freq_total, docs, freqs, positions)
+}
+
+/// Explicit compact wire fixture, authored independently of the encoder.
+struct A5RawCompact {
+    marker: u8,
+    version: u8,
+    df: Option<u64>,
+    freq_total: u64,
+    docs: Vec<u8>,
+    freqs: Vec<u8>,
+    positions: Vec<u8>,
+    doc_len: Option<u64>,
+    freq_len: Option<u64>,
+    pos_len: Option<u64>,
+    tail: Vec<u8>,
+}
+
+impl A5RawCompact {
+    fn new(marker: u8, freq_total: u64) -> Self {
+        Self {
+            marker,
+            version: 1,
+            df: None,
+            freq_total,
+            docs: Vec::new(),
+            freqs: Vec::new(),
+            positions: Vec::new(),
+            doc_len: None,
+            freq_len: None,
+            pos_len: None,
+            tail: Vec::new(),
+        }
+    }
+
+    fn df(mut self, df: u64) -> Self {
+        self.df = Some(df);
+        self
+    }
+
+    fn streams(mut self, docs: &[u8], freqs: &[u8], positions: &[u8]) -> Self {
+        self.docs = docs.to_vec();
+        self.freqs = freqs.to_vec();
+        self.positions = positions.to_vec();
+        self
+    }
+
+    fn declared(mut self, docs: u64, freqs: u64, positions: u64) -> Self {
+        self.doc_len = Some(docs);
+        self.freq_len = Some(freqs);
+        self.pos_len = Some(positions);
+        self
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut writer = ByteWriter::new();
+        writer.u8(self.marker);
+        writer.u8(self.version);
+        if let Some(df) = self.df {
+            writer.varint(df);
+        }
+        writer.varint(self.freq_total);
+        writer.varint(self.doc_len.unwrap_or(self.docs.len() as u64));
+        writer.varint(self.freq_len.unwrap_or(self.freqs.len() as u64));
+        writer.varint(self.pos_len.unwrap_or(self.positions.len() as u64));
+        writer.bytes(&self.docs);
+        writer.bytes(&self.freqs);
+        writer.bytes(&self.positions);
+        writer.bytes(&self.tail);
+        writer.into_vec()
+    }
+}
+
+/// Rebuild a container with recomputed digests and the requested feature/section
+/// changes. Exactly one constructor-supplied baseline tuple is skipped so the
+/// remaining feature multiplicity is preserved.
+#[derive(Default)]
+struct A5Rebuild {
+    add_required: Vec<(u16, u16)>,
+    drop_required: Vec<(u16, u16)>,
+    add_optional: Vec<(u16, u16)>,
+    drop_optional: Vec<(u16, u16)>,
+    drop_sections: Vec<SectionKind>,
+    replace_section: Option<(SectionKind, Vec<u8>)>,
+}
+
+fn a5_rebuild(original: &[u8], spec: &A5Rebuild) -> Vec<u8> {
+    use super::format::FEATURE_BASELINE;
+    let limits = SegmentLimits::default();
+    let view = parse_container(original, &limits).expect("container");
+    let mut builder = ContainerBuilder::new(view.kind(), view.doc_count());
+    let mut baseline_skipped = false;
+    for (feature, version) in view.required_features() {
+        if (*feature, *version) == (FEATURE_BASELINE, 1) && !baseline_skipped {
+            baseline_skipped = true;
+            continue;
+        }
+        if spec.drop_required.contains(&(*feature, *version)) {
+            continue;
+        }
+        builder.require_feature(*feature, *version);
+    }
+    for (feature, version) in &spec.add_required {
+        builder.require_feature(*feature, *version);
+    }
+    for (feature, version) in view.optional_features() {
+        if spec.drop_optional.contains(&(*feature, *version)) {
+            continue;
+        }
+        builder.optional_feature(*feature, *version);
+    }
+    for (feature, version) in &spec.add_optional {
+        builder.optional_feature(*feature, *version);
+    }
+    for section in view.sections() {
+        if spec.drop_sections.contains(&section.kind) {
+            continue;
+        }
+        let body = match &spec.replace_section {
+            Some((kind, body)) if *kind == section.kind => body.clone(),
+            _ => {
+                let start = section.offset as usize;
+                original[start..start + section.length as usize].to_vec()
+            }
+        };
+        builder.section(section.kind, section.flags, section.aux, body);
+    }
+    builder.build().expect("rebuilt container")
+}
+
+#[test]
+fn a5_u01_feature_and_empty_segment_contract() {
+    use super::build::{Layout, SegmentBuilder};
+    use super::format::{FEATURE_ADAPTIVE_POSTINGS, FEATURE_POSITIONAL, FEATURE_SPLIT_POSTINGS};
+    use super::model::SegmentDocument;
+
+    // Exactly the next free feature id, version 1, and supported.
+    assert_eq!(FEATURE_ADAPTIVE_POSTINGS, 0x000F);
+    assert!(
+        super::format::SUPPORTED_FEATURES.contains(&(FEATURE_ADAPTIVE_POSTINGS, 1)),
+        "adaptive postings feature must be supported"
+    );
+    assert!(
+        super::format::SUPPORTED_FEATURES.contains(&(FEATURE_SPLIT_POSTINGS, 1)),
+        "the retained split postings feature stays supported"
+    );
+    // The mutation-state section kind reuses numeric 0x000F in a *different*
+    // namespace and must not be renumbered.
+    assert_eq!(SectionKind::MutationState as u16, 0x000F);
+    assert_eq!(SectionKind::Postings as u16, 0x0003);
+    assert_eq!(SectionKind::Dictionary as u16, 0x0002);
+
+    // The ordinary builder emits the adaptive family and never split.
+    let bytes = a5_build_current_segment(&[("a", "alpha beta"), ("b", "alpha")]);
+    let reader =
+        super::reader::SegmentReader::open(bytes.clone(), SegmentLimits::default()).expect("open");
+    let required = reader.required_features();
+    assert!(required.contains(&(FEATURE_ADAPTIVE_POSTINGS, 1)));
+    assert!(!required.contains(&(FEATURE_SPLIT_POSTINGS, 1)));
+    assert!(required.contains(&(FEATURE_POSITIONAL, 1)));
+    let title = reader.schema().field_id("title").expect("title field");
+    let body = a3_postings_body(&bytes);
+    let mut terms = 0usize;
+    for entry in reader
+        .dictionary()
+        .expect("dictionary")
+        .field(title)
+        .expect("field terms")
+    {
+        terms += 1;
+        let marker = body[entry.postings_offset as usize];
+        let expected = if entry.doc_freq == 1 {
+            A5_COMPACT_SINGLETON_POSITIONAL
+        } else {
+            A5_COMPACT_SHORT_POSITIONAL
+        };
+        assert_eq!(
+            marker, expected,
+            "term {:?} (df {}) must select its marker from the live count and positional data",
+            entry.term, entry.doc_freq
+        );
+    }
+    assert!(terms > 0, "expected indexed terms");
+
+    // Completely empty segment: neither feature nor section pair.
+    let builder = SegmentBuilder::new(a3_schema(), crate::analysis::AnalyzerRegistry::builtin())
+        .expect("builder")
+        .with_layout(Layout::Insertion);
+    let empty = builder.build().expect("build").bytes;
+    let view = parse_container(&empty, &SegmentLimits::default()).expect("container");
+    assert!(
+        !view
+            .required_features()
+            .contains(&(FEATURE_ADAPTIVE_POSTINGS, 1))
+    );
+    assert!(
+        !view
+            .required_features()
+            .contains(&(FEATURE_SPLIT_POSTINGS, 1))
+    );
+    assert!(view.body(SectionKind::Dictionary).is_none());
+    assert!(view.body(SectionKind::Postings).is_none());
+
+    // Non-empty stored-only schema: stored values, no indexed terms, no pair.
+    let stored_schema = Schema::new(
+        vec![FieldDefinition::new(
+            "raw",
+            FieldType::Text,
+            Cardinality::Single,
+            FieldOptions::new(false, true, false),
+        )],
+        None,
+    )
+    .expect("schema");
+    let mut builder =
+        SegmentBuilder::new(stored_schema, crate::analysis::AnalyzerRegistry::builtin())
+            .expect("builder")
+            .with_layout(Layout::Insertion);
+    let mut document = SegmentDocument::new(DocumentKey::new("s").expect("key"));
+    document.fields.insert(
+        "raw".to_owned(),
+        FieldValues::Single(FieldValue::Text("alpha".to_owned())),
+    );
+    builder.add_document(document).expect("add document");
+    let stored_only = builder.build().expect("build").bytes;
+    let view = parse_container(&stored_only, &SegmentLimits::default()).expect("container");
+    assert!(
+        !view
+            .required_features()
+            .contains(&(FEATURE_ADAPTIVE_POSTINGS, 1))
+    );
+    assert!(
+        !view
+            .required_features()
+            .contains(&(FEATURE_SPLIT_POSTINGS, 1))
+    );
+    assert!(view.body(SectionKind::Dictionary).is_none());
+    assert!(view.body(SectionKind::Postings).is_none());
+
+    // An unknown adaptive feature version is rejected by feature negotiation.
+    let mut spec = A5Rebuild::default();
+    spec.drop_required.push((FEATURE_ADAPTIVE_POSTINGS, 1));
+    spec.add_required.push((FEATURE_ADAPTIVE_POSTINGS, 2));
+    let unknown = a5_rebuild(&bytes, &spec);
+    match super::reader::SegmentReader::open(unknown, SegmentLimits::default()) {
+        Err(SegmentError::UnsupportedFeature {
+            feature_id,
+            version,
+        }) => {
+            assert_eq!((feature_id, version), (FEATURE_ADAPTIVE_POSTINGS, 2));
+        }
+        Err(other) => panic!("unexpected error: {other:?}"),
+        Ok(_) => panic!("unknown adaptive feature version must be rejected"),
+    }
+}
+
+#[test]
+fn a5_u02_literal_wire_fixtures_and_absolute_ids() {
+    use super::postings::{Posting, encode_adaptive_postings_block};
+
+    let limits = SegmentLimits::default();
+
+    // Singleton doc-only: marker 4, version 1, freq total 1, D/F/P = 1/1/0.
+    let singleton_doc = vec![Posting {
+        doc_id: 0,
+        freq: 1,
+        occurrences: Vec::new(),
+    }];
+    let bytes = encode_adaptive_postings_block(1, &singleton_doc, &limits).expect("encode");
+    assert_eq!(
+        bytes,
+        vec![0x04, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x01],
+        "singleton doc-only literal bytes"
+    );
+    assert_eq!(a5_decode_full(&bytes, 1), singleton_doc);
+    assert_eq!(a5_decode_lean(&bytes, 1), vec![(0, 1)]);
+
+    // Singleton positional: one occurrence (0,1,0,0,1).
+    let singleton_pos = a3_postings(&[0], &[1], true);
+    let bytes = encode_adaptive_postings_block(1, &singleton_pos, &limits).expect("encode");
+    assert_eq!(
+        bytes,
+        vec![
+            0x05, 0x01, 0x01, 0x01, 0x01, 0x05, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01
+        ],
+        "singleton positional literal bytes"
+    );
+    assert_eq!(a5_decode_full(&bytes, 1), singleton_pos);
+    assert_eq!(a5_decode_lean(&bytes, 1), vec![(0, 1)]);
+
+    // Two-document doc-only.
+    let two_doc = a3_postings(&[0, 1], &[1, 1], false);
+    let bytes = encode_adaptive_postings_block(2, &two_doc, &limits).expect("encode");
+    assert_eq!(
+        bytes,
+        vec![
+            0x06, 0x01, 0x02, 0x02, 0x02, 0x02, 0x00, 0x00, 0x01, 0x01, 0x01
+        ],
+        "two-document doc-only literal bytes"
+    );
+    assert_eq!(a5_decode_full(&bytes, 2), two_doc);
+    assert_eq!(a5_decode_lean(&bytes, 2), vec![(0, 1), (1, 1)]);
+
+    // Two-document positional.
+    let two_pos = a3_postings(&[0, 1], &[1, 1], true);
+    let bytes = encode_adaptive_postings_block(2, &two_pos, &limits).expect("encode");
+    assert_eq!(
+        bytes,
+        vec![
+            0x07, 0x01, 0x02, 0x02, 0x02, 0x02, 0x0a, 0x00, 0x01, 0x01, 0x01, 0x00, 0x01, 0x00,
+            0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x01
+        ],
+        "two-document positional literal bytes"
+    );
+    assert_eq!(a5_decode_full(&bytes, 2), two_pos);
+    assert_eq!(a5_decode_lean(&bytes, 2), vec![(0, 1), (1, 1)]);
+
+    // Singleton frequency > 1: the header carries the real sum and the body the
+    // real per-posting frequency.
+    let frequent = vec![Posting {
+        doc_id: 5,
+        freq: 3,
+        occurrences: Vec::new(),
+    }];
+    let bytes = encode_adaptive_postings_block(6, &frequent, &limits).expect("encode");
+    let (marker, version, df, freq_total, _, _, _) = a5_header(&bytes);
+    assert_eq!(marker, A5_COMPACT_SINGLETON_DOC_ONLY);
+    assert_eq!(version, 1);
+    assert_eq!(df, None, "singleton count is implicit");
+    assert_eq!(freq_total, 3);
+    assert_eq!(a5_decode_full(&bytes, 6), frequent);
+
+    // Absolute first document ids at each varint width boundary.
+    for (doc_id, width) in [(0u64, 1u64), (127, 1), (128, 2), (16383, 2), (16384, 3)] {
+        let postings = vec![Posting {
+            doc_id,
+            freq: 1,
+            occurrences: Vec::new(),
+        }];
+        let bytes = encode_adaptive_postings_block(doc_id + 1, &postings, &limits).expect("encode");
+        let (marker, _, _, _, doc_len, _, _) = a5_header(&bytes);
+        assert_eq!(marker, A5_COMPACT_SINGLETON_DOC_ONLY);
+        assert_eq!(doc_len, width, "doc id {doc_id} width");
+        assert_eq!(a5_decode_full(&bytes, doc_id + 1), postings);
+        assert_eq!(a5_decode_lean(&bytes, doc_id + 1), vec![(doc_id, 1)]);
+    }
+}
+
+#[test]
+fn a5_u03_short_forms_and_stream_length_boundaries() {
+    use super::postings::{Occurrence, Posting};
+
+    let limits = SegmentLimits::default();
+
+    // df 2/127/128 with sparse ids, varied frequencies and reset value indices.
+    let cases: Vec<(Vec<u64>, Vec<u64>)> = vec![
+        (vec![3, 200], vec![2, 1]),
+        (
+            (0..127u64).map(|index| index * 2).collect(),
+            (0..127u64).map(|index| 1 + index % 3).collect(),
+        ),
+        (
+            (0..128u64).map(|index| index * 2).collect(),
+            (0..128u64).map(|index| 1 + index % 4).collect(),
+        ),
+    ];
+    for (docs, freqs) in &cases {
+        let segment_doc_count = docs.last().expect("docs") + 1;
+        for positional in [false, true] {
+            let mut postings = a3_postings(docs, freqs, positional);
+            if positional {
+                // Repeated field values: value index increases per occurrence but
+                // resets for every posting.
+                for posting in &mut postings {
+                    posting.occurrences = (0..posting.freq)
+                        .map(|index| Occurrence {
+                            position: index * 2,
+                            position_length: 1 + index % 2,
+                            value_index: index / 2,
+                            start_offset: index * 3,
+                            end_offset: index * 3 + 1,
+                        })
+                        .collect();
+                }
+            }
+            let bytes = a5_encode_with(segment_doc_count, &postings, &limits);
+            let (marker, version, df, freq_total, doc_len, freq_len, pos_len) = a5_header(&bytes);
+            assert_eq!(version, 1);
+            assert_eq!(df, Some(docs.len() as u64));
+            assert_eq!(freq_total, freqs.iter().sum::<u64>());
+            assert_eq!(
+                marker,
+                if positional {
+                    A5_COMPACT_SHORT_POSITIONAL
+                } else {
+                    A5_COMPACT_SHORT_DOC_ONLY
+                },
+                "marker is selected by count and positional data only"
+            );
+            assert!(doc_len >= docs.len() as u64);
+            assert!(freq_len >= docs.len() as u64);
+            if positional {
+                assert!(pos_len >= 5 * freq_total);
+            } else {
+                assert_eq!(pos_len, 0);
+            }
+            assert_eq!(a5_decode_full(&bytes, segment_doc_count), postings);
+            let lean: Vec<(u64, u64)> = postings
+                .iter()
+                .map(|posting| (posting.doc_id, posting.freq))
+                .collect();
+            assert_eq!(a5_decode_lean(&bytes, segment_doc_count), lean);
+        }
+    }
+
+    // df=127/128 exercise the 127/128 stream-length varint boundary.
+    let boundary = a5_header(&a5_encode(
+        &(0..128u64).collect::<Vec<_>>(),
+        &vec![1u64; 128],
+        false,
+    ));
+    assert_eq!(boundary.4, 128, "doc stream length 128 needs two bytes");
+    assert_eq!(boundary.5, 128, "frequency stream length 128");
+
+    // Wider document/frequency/header values separately.
+    let wide = vec![
+        Posting {
+            doc_id: 16_384,
+            freq: 16_384,
+            occurrences: Vec::new(),
+        },
+        Posting {
+            doc_id: 40_000,
+            freq: 1,
+            occurrences: Vec::new(),
+        },
+    ];
+    let bytes = a5_encode_with(40_001, &wide, &limits);
+    let (_, _, _, freq_total, _, _, _) = a5_header(&bytes);
+    assert_eq!(freq_total, 16_385);
+    assert_eq!(a5_decode_full(&bytes, 40_001), wide);
+
+    // Position-stream length exactly 16_383 and exactly 16_384 bytes.
+    let base_occurrences: Vec<Occurrence> = (0..1_638u64)
+        .map(|index| Occurrence {
+            position: index,
+            position_length: 1,
+            value_index: 0,
+            start_offset: 0,
+            end_offset: 1,
+        })
+        .collect();
+    let build = |changed: usize| {
+        let mut first = base_occurrences.clone();
+        for occurrence in first.iter_mut().take(changed) {
+            occurrence.position_length = 128;
+        }
+        vec![
+            Posting {
+                doc_id: 0,
+                freq: 1_638,
+                occurrences: first,
+            },
+            Posting {
+                doc_id: 1,
+                freq: 1_638,
+                occurrences: base_occurrences.clone(),
+            },
+        ]
+    };
+    for (changed, expected) in [(0usize, 16_380u64), (3, 16_383), (4, 16_384)] {
+        let postings = build(changed);
+        let bytes = a5_encode_with(2, &postings, &limits);
+        let (_, _, _, _, _, _, pos_len) = a5_header(&bytes);
+        assert_eq!(
+            pos_len, expected,
+            "position stream length with {changed} change(s)"
+        );
+        assert_eq!(a5_decode_full(&bytes, 2), postings);
+    }
+}
+
+#[test]
+fn a5_u04_long_delegation_and_old_parser_compatibility() {
+    use super::postings::{
+        PostingsReader, encode_adaptive_postings_block, encode_split_postings_block,
+    };
+
+    let limits = SegmentLimits::default();
+    for count in [129usize, 256, 257] {
+        let docs: Vec<u64> = (0..count as u64).collect();
+        let freqs = vec![1u64; count];
+        for positional in [false, true] {
+            let postings = a3_postings(&docs, &freqs, positional);
+            let adaptive =
+                encode_adaptive_postings_block(count as u64, &postings, &limits).expect("adaptive");
+            let split =
+                encode_split_postings_block(count as u64, &postings, &limits).expect("split");
+            assert_eq!(
+                adaptive, split,
+                "documents={count} positional={positional}: long lists stay byte-identical"
+            );
+            assert_eq!(a5_decode_full(&adaptive, count as u64), postings);
+        }
+    }
+
+    // The split parser accepts small A3 payloads; the adaptive parser rejects
+    // them only after the old parser has fully validated them.
+    for count in [1usize, 2, 128] {
+        let docs: Vec<u64> = (0..count as u64).collect();
+        let postings = a3_postings(&docs, &vec![1u64; count], true);
+        let split = encode_split_postings_block(count as u64, &postings, &limits).expect("split");
+        let mut legacy_split = PostingsReader::new_split(&split, count as u64, &limits)
+            .expect("split parser accepts A3");
+        assert_eq!(legacy_split.posting_doc_count(), count as u64);
+        while legacy_split.next().expect("decode").is_some() {}
+        match PostingsReader::new_adaptive(&split, count as u64, &limits) {
+            Err(error) => a3_assert_corrupt_with(
+                &error,
+                A5_ADAPTIVE_CONTEXT,
+                "noncanonical split posting count",
+            ),
+            Ok(_) => panic!("adaptive must reject canonical split at df<=128"),
+        }
+    }
+
+    // Malformed A3 keeps its original error precedence: the old parser error wins
+    // ahead of the canonical-count selector check.
+    let docs: Vec<u64> = (0..129).collect();
+    let split =
+        encode_split_postings_block(129, &a3_postings(&docs, &vec![1u64; 129], false), &limits)
+            .expect("split");
+    let truncated = &split[..split.len() - 1];
+    match PostingsReader::new_adaptive(truncated, 129, &limits) {
+        Err(error) => a3_assert_corrupt(&error, "extent length mismatch"),
+        Ok(_) => panic!("truncated A3 payload must be rejected"),
+    }
+}
+
+#[test]
+fn a5_u05_source_validation_order_is_preserved() {
+    use super::postings::{
+        Posting, encode_adaptive_postings_block, encode_postings_block, encode_split_postings_block,
+    };
+
+    let limits = SegmentLimits::default();
+    let occurrence = |index: u64| super::postings::Occurrence {
+        position: index,
+        position_length: 1,
+        value_index: 0,
+        start_offset: 0,
+        end_offset: 1,
+    };
+    let posting = |doc_id: u64, freq: u64, occurrences: Vec<super::postings::Occurrence>| Posting {
+        doc_id,
+        freq,
+        occurrences,
+    };
+
+    let cases: Vec<(Vec<Posting>, u64)> = vec![
+        (Vec::new(), 4),
+        // Count greater than segment document count.
+        (a3_postings(&[0, 1], &[1, 1], false), 1),
+        // Out-of-range id.
+        (vec![posting(9, 1, Vec::new())], 4),
+        // Duplicate id.
+        (
+            vec![posting(1, 1, Vec::new()), posting(1, 1, Vec::new())],
+            4,
+        ),
+        // Decreasing id.
+        (
+            vec![posting(2, 1, Vec::new()), posting(1, 1, Vec::new())],
+            4,
+        ),
+        // Zero frequency (doubly invalid with an out-of-range id: range wins).
+        (vec![posting(9, 0, Vec::new())], 4),
+        // Frequency/occurrence mismatch.
+        (vec![posting(0, 2, vec![occurrence(0)])], 4),
+        // Frequency total overflow.
+        (
+            vec![posting(0, u64::MAX, Vec::new()), posting(1, 1, Vec::new())],
+            4,
+        ),
+        // Zero position length.
+        (
+            vec![posting(
+                0,
+                1,
+                vec![super::postings::Occurrence {
+                    position: 0,
+                    position_length: 0,
+                    value_index: 0,
+                    start_offset: 0,
+                    end_offset: 1,
+                }],
+            )],
+            4,
+        ),
+        // Decreasing position.
+        (vec![posting(0, 2, vec![occurrence(1), occurrence(1)])], 4),
+        // Decreasing value index.
+        (
+            vec![posting(
+                0,
+                2,
+                vec![
+                    super::postings::Occurrence {
+                        position: 0,
+                        position_length: 1,
+                        value_index: 3,
+                        start_offset: 0,
+                        end_offset: 1,
+                    },
+                    super::postings::Occurrence {
+                        position: 1,
+                        position_length: 1,
+                        value_index: 2,
+                        start_offset: 2,
+                        end_offset: 3,
+                    },
+                ],
+            )],
+            4,
+        ),
+        // Reversed offsets.
+        (
+            vec![posting(
+                0,
+                1,
+                vec![super::postings::Occurrence {
+                    position: 0,
+                    position_length: 1,
+                    value_index: 0,
+                    start_offset: 5,
+                    end_offset: 4,
+                }],
+            )],
+            4,
+        ),
+    ];
+
+    for (index, (postings, segment_doc_count)) in cases.iter().enumerate() {
+        let adaptive = encode_adaptive_postings_block(*segment_doc_count, postings, &limits).err();
+        let legacy = encode_postings_block(*segment_doc_count, postings, &limits).err();
+        let split = encode_split_postings_block(*segment_doc_count, postings, &limits).err();
+        let adaptive = adaptive.unwrap_or_else(|| panic!("case {index}: adaptive must fail"));
+        let legacy = legacy.unwrap_or_else(|| panic!("case {index}: legacy must fail"));
+        let split = split.unwrap_or_else(|| panic!("case {index}: split must fail"));
+        assert_eq!(
+            format!("{adaptive:?}"),
+            format!("{legacy:?}"),
+            "case {index}: adaptive matches the legacy source error"
+        );
+        assert_eq!(
+            format!("{adaptive:?}"),
+            format!("{split:?}"),
+            "case {index}: adaptive matches the split source error"
+        );
+    }
+
+    // The first failing rule wins, not a later more specific one.
+    let order = vec![posting(9, 0, Vec::new())];
+    let error = encode_adaptive_postings_block(4, &order, &limits).expect_err("must fail");
+    a3_assert_corrupt_with(&error, "postings", "doc id out of range");
+}
+
+#[test]
+fn a5_u06_compact_framing_is_canonical_and_bounded() {
+    use super::postings::PostingsReader;
+
+    let limits = SegmentLimits::default();
+    let reject = |bytes: &[u8], segment_doc_count: u64, context: &str, detail: &str| {
+        match PostingsReader::new_adaptive(bytes, segment_doc_count, &limits) {
+            Err(error) => a3_assert_corrupt_with(&error, context, detail),
+            Ok(_) => panic!("expected {context} rejection of {detail}"),
+        }
+    };
+
+    // Marker/version.
+    match PostingsReader::new_adaptive(&[], 1, &limits) {
+        Err(SegmentError::Truncated { context, .. }) => {
+            assert_eq!(context, "adaptive occurrence marker");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+    reject(&[0x00], 1, A5_ADAPTIVE_CONTEXT, "invalid occurrence marker");
+    reject(
+        &A5RawCompact::new(A5_COMPACT_SINGLETON_DOC_ONLY, 1)
+            .streams(&[0], &[1], &[])
+            .encode()
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| if index == 1 { 2 } else { *byte })
+            .collect::<Vec<_>>(),
+        1,
+        A5_ADAPTIVE_CONTEXT,
+        "unsupported payload version",
+    );
+
+    // Every header field truncated keeps the adaptive varint context.
+    let valid = A5RawCompact::new(A5_COMPACT_SHORT_POSITIONAL, 2)
+        .df(2)
+        .streams(&[0, 1], &[1, 1], &[0, 1, 0, 0, 1, 0, 1, 0, 0, 1])
+        .encode();
+    for cut in 1..7usize {
+        match PostingsReader::new_adaptive(&valid[..cut], 2, &limits) {
+            Err(SegmentError::Truncated { context, .. }) => {
+                assert!(
+                    context.starts_with("adaptive "),
+                    "truncated header context: {context}"
+                );
+            }
+            other => panic!("cut {cut}: unexpected {other:?}"),
+        }
+    }
+
+    // Overlong/non-canonical and >u64 varints.
+    let mut overlong = vec![A5_COMPACT_SHORT_DOC_ONLY, 1];
+    overlong.extend_from_slice(&[0x82, 0x00]);
+    match PostingsReader::new_adaptive(&overlong, 4, &limits) {
+        Err(SegmentError::InvalidVarint { context }) => {
+            assert_eq!(context, "adaptive posting doc count");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+    let mut too_long = vec![A5_COMPACT_SHORT_DOC_ONLY, 1];
+    too_long.extend_from_slice(&[0xff; 11]);
+    match PostingsReader::new_adaptive(&too_long, 4, &limits) {
+        Err(SegmentError::InvalidVarint { context }) => {
+            assert_eq!(context, "adaptive posting doc count");
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+
+    // Canonical counts only.
+    for df in [0u64, 1, 129] {
+        let bytes = A5RawCompact::new(A5_COMPACT_SHORT_DOC_ONLY, 2)
+            .df(df)
+            .streams(&[0, 1], &[1, 1], &[])
+            .encode();
+        reject(
+            &bytes,
+            4,
+            A5_ADAPTIVE_CONTEXT,
+            "noncanonical compact posting count",
+        );
+    }
+    let bytes = A5RawCompact::new(A5_COMPACT_SHORT_DOC_ONLY, 2)
+        .df(2)
+        .streams(&[0, 1], &[1, 1], &[])
+        .encode();
+    reject(
+        &bytes,
+        1,
+        A5_ADAPTIVE_CONTEXT,
+        "posting count exceeds segment doc count",
+    );
+
+    // Frequency total below the posting count.
+    for freq_total in [0u64, 1] {
+        let bytes = A5RawCompact::new(A5_COMPACT_SHORT_DOC_ONLY, freq_total)
+            .df(2)
+            .streams(&[0, 1], &[1, 1], &[])
+            .encode();
+        reject(
+            &bytes,
+            4,
+            A5_ADAPTIVE_CONTEXT,
+            "frequency total below posting count",
+        );
+    }
+
+    // Declared stream lengths below the document/posting count.
+    let bytes = A5RawCompact::new(A5_COMPACT_SHORT_DOC_ONLY, 2)
+        .df(2)
+        .streams(&[0, 1], &[1, 1], &[])
+        .declared(1, 2, 0)
+        .encode();
+    reject(&bytes, 4, A5_ADAPTIVE_CONTEXT, "doc stream too short");
+    let bytes = A5RawCompact::new(A5_COMPACT_SHORT_DOC_ONLY, 2)
+        .df(2)
+        .streams(&[0, 1], &[1, 1], &[])
+        .declared(2, 1, 0)
+        .encode();
+    reject(&bytes, 4, A5_ADAPTIVE_CONTEXT, "frequency stream too short");
+
+    // Doc-only payloads carry no positional bytes.
+    let bytes = A5RawCompact::new(A5_COMPACT_SINGLETON_DOC_ONLY, 1)
+        .streams(&[0], &[1], &[0])
+        .encode();
+    reject(&bytes, 1, A5_ADAPTIVE_CONTEXT, "doc-only positional bytes");
+
+    // Positional payloads need five bytes per occurrence, multiplicatively.
+    let bytes = A5RawCompact::new(A5_COMPACT_SHORT_POSITIONAL, 2)
+        .df(2)
+        .streams(&[0, 1], &[1, 1], &[0, 1, 0, 0, 1, 0, 1, 0, 0])
+        .encode();
+    reject(&bytes, 4, A5_ADAPTIVE_CONTEXT, "position stream too short");
+    let bytes = A5RawCompact::new(A5_COMPACT_SHORT_POSITIONAL, u64::MAX)
+        .df(2)
+        .streams(&[0, 1], &[1, 1], &[])
+        .encode();
+    reject(&bytes, 4, A5_ADAPTIVE_CONTEXT, "length overflow");
+
+    // Checked total/extent arithmetic and exact extents.
+    let bytes = A5RawCompact::new(A5_COMPACT_SINGLETON_DOC_ONLY, 1)
+        .streams(&[0], &[1], &[])
+        .declared(u64::MAX, 1, 0)
+        .encode();
+    reject(&bytes, 1, A5_ADAPTIVE_CONTEXT, "length overflow");
+    let bytes = A5RawCompact::new(A5_COMPACT_SINGLETON_DOC_ONLY, 1)
+        .streams(&[0], &[1], &[])
+        .declared(2, 1, 0)
+        .encode();
+    reject(&bytes, 1, A5_ADAPTIVE_CONTEXT, "extent length mismatch");
+    let valid = A5RawCompact::new(A5_COMPACT_SINGLETON_DOC_ONLY, 1)
+        .streams(&[0], &[1], &[])
+        .encode();
+    reject(
+        &valid[..valid.len() - 1],
+        1,
+        A5_ADAPTIVE_CONTEXT,
+        "extent length mismatch",
+    );
+    let bytes = A5RawCompact::new(A5_COMPACT_SINGLETON_POSITIONAL, 1)
+        .streams(&[0], &[1], &[0, 1, 0, 0, 1])
+        .declared(2, 1, 5)
+        .encode();
+    reject(&bytes, 1, A5_ADAPTIVE_CONTEXT, "extent length mismatch");
+}
+
+#[test]
+fn a5_u07_lazy_full_and_lean_parity() {
+    let limits = SegmentLimits::default();
+    let occurrence = |position: u64, length: u64, value_index: u64, start: u64, end: u64| {
+        let mut writer = ByteWriter::new();
+        writer.varint(position);
+        writer.varint(length);
+        writer.varint(value_index);
+        writer.varint(start);
+        writer.varint(end);
+        writer.into_vec()
+    };
+
+    // Zero doc delta between postings.
+    let mut docs = ByteWriter::new();
+    docs.varint(0);
+    docs.varint(0);
+    let bytes = A5RawCompact::new(A5_COMPACT_SHORT_DOC_ONLY, 2)
+        .df(2)
+        .streams(docs.as_slice(), &[1, 1], &[])
+        .encode();
+    let (_, error) = a5_assert_parity(&bytes, 4, &limits);
+    assert!(matches!(error, SegmentError::NonMonotoneDocId { .. }));
+
+    // Document-id addition overflow.
+    let mut docs = ByteWriter::new();
+    docs.varint(1);
+    docs.varint(u64::MAX);
+    let bytes = A5RawCompact::new(A5_COMPACT_SHORT_DOC_ONLY, u64::MAX)
+        .df(2)
+        .streams(docs.as_slice(), &[1, 1], &[])
+        .encode();
+    let (records, error) = a5_assert_parity(&bytes, 4, &limits);
+    assert_eq!(records, vec![(1, 1)]);
+    a3_assert_corrupt_with(&error, "postings", "doc id overflow");
+
+    // Document id out of range.
+    let bytes = A5RawCompact::new(A5_COMPACT_SINGLETON_DOC_ONLY, 1)
+        .streams(&[7], &[1], &[])
+        .encode();
+    let (_, error) = a5_assert_parity(&bytes, 4, &limits);
+    a3_assert_corrupt_with(&error, "postings", "doc id out of range");
+
+    // Zero frequency.
+    let bytes = A5RawCompact::new(A5_COMPACT_SINGLETON_DOC_ONLY, 1)
+        .streams(&[0], &[0], &[])
+        .encode();
+    let (_, error) = a5_assert_parity(&bytes, 1, &limits);
+    assert!(matches!(error, SegmentError::ZeroFrequency { doc_id: 0 }));
+
+    // Invalid frequency varint.
+    let bytes = A5RawCompact::new(A5_COMPACT_SINGLETON_DOC_ONLY, 1)
+        .streams(&[0], &[0x80, 0x00], &[])
+        .encode();
+    let (_, error) = a5_assert_parity(&bytes, 1, &limits);
+    assert!(matches!(error, SegmentError::InvalidVarint { .. }));
+
+    // Position corruption reaches the same semantic error in both modes.
+    // Each fixture is an explicit one-posting compact payload.
+    let build_positional =
+        |freq_total: u64, docs: &[u8], freqs: &[u8], positions: &[u8], df: Option<u64>| {
+            let marker = if df.is_none() {
+                A5_COMPACT_SINGLETON_POSITIONAL
+            } else {
+                A5_COMPACT_SHORT_POSITIONAL
+            };
+            let mut raw = A5RawCompact::new(marker, freq_total).streams(docs, freqs, positions);
+            if let Some(df) = df {
+                raw = raw.df(df);
+            }
+            raw.encode()
+        };
+    let cases: Vec<(Vec<u8>, u64, &str)> = vec![
+        // Repeated position (df 1, freq 2).
+        (
+            build_positional(
+                2,
+                &[0],
+                &[2],
+                &[occurrence(0, 1, 0, 0, 1), occurrence(0, 1, 0, 0, 1)].concat(),
+                None,
+            ),
+            4,
+            "NonMonotonePosition",
+        ),
+        // Position addition overflow.
+        (
+            build_positional(
+                2,
+                &[0],
+                &[2],
+                &[occurrence(1, 1, 0, 0, 1), occurrence(u64::MAX, 1, 0, 0, 1)].concat(),
+                None,
+            ),
+            4,
+            "position overflow",
+        ),
+        // Zero position length.
+        (
+            build_positional(1, &[0], &[1], &occurrence(0, 0, 0, 0, 1), None),
+            1,
+            "zero position length",
+        ),
+        // Decreasing value index.
+        (
+            build_positional(
+                2,
+                &[0],
+                &[2],
+                &[occurrence(0, 1, 2, 0, 1), occurrence(1, 1, 1, 2, 3)].concat(),
+                None,
+            ),
+            4,
+            "value index decreased",
+        ),
+        // Reversed offsets.
+        (
+            build_positional(1, &[0], &[1], &occurrence(0, 1, 0, 9, 3), None),
+            1,
+            "start offset exceeds end offset",
+        ),
+    ];
+    for (index, (bytes, segment_doc_count, expected)) in cases.iter().enumerate() {
+        let (_, error) = a5_assert_parity(bytes, *segment_doc_count, &limits);
+        let rendered = format!("{error:?}");
+        assert!(
+            rendered.contains(expected),
+            "case {index}: expected {expected:?}, saw {rendered}"
+        );
+    }
+
+    // Truncated/non-canonical occurrence fields.
+    let truncated = A5RawCompact::new(A5_COMPACT_SINGLETON_POSITIONAL, 1)
+        .streams(&[0], &[1], &[0, 1, 0, 0, 0x80])
+        .encode();
+    let (_, error) = a5_assert_parity(&truncated, 1, &limits);
+    assert!(matches!(error, SegmentError::Truncated { .. }));
+    let noncanonical = A5RawCompact::new(A5_COMPACT_SINGLETON_POSITIONAL, 1)
+        .streams(&[0], &[1], &[0, 1, 0, 0, 0x80, 0x00])
+        .encode();
+    let (_, error) = a5_assert_parity(&noncanonical, 1, &limits);
+    assert!(matches!(error, SegmentError::InvalidVarint { .. }));
+
+    // A clean first posting followed by a corrupt second one: construction and
+    // the first read succeed in both APIs, then both fail identically.
+    let mut docs = ByteWriter::new();
+    docs.varint(0);
+    docs.varint(1);
+    let bytes = A5RawCompact::new(A5_COMPACT_SHORT_DOC_ONLY, 2)
+        .df(2)
+        .streams(docs.as_slice(), &[1, 0], &[])
+        .encode();
+    let mut full = super::postings::PostingsReader::new_adaptive(&bytes, 2, &limits)
+        .expect("construction is lazy");
+    let mut lean = super::postings::PostingsReader::new_adaptive(&bytes, 2, &limits)
+        .expect("construction is lazy")
+        .into_doc_freq();
+    assert_eq!(
+        full.next().expect("first").map(|posting| posting.doc_id),
+        Some(0)
+    );
+    assert_eq!(
+        lean.next().expect("first").map(|posting| posting.doc_id),
+        Some(0)
+    );
+    let full_error = full.next().expect_err("second posting is corrupt");
+    let lean_error = lean.next().expect_err("second posting is corrupt");
+    assert!(matches!(
+        full_error,
+        SegmentError::ZeroFrequency { doc_id: 1 }
+    ));
+    assert_eq!(format!("{full_error:?}"), format!("{lean_error:?}"));
+}
+
+#[test]
+fn a5_u08_cancellation_advance_and_conversion() {
+    use crate::analysis::CancellationFlag;
+
+    let limits = SegmentLimits::default();
+    let docs: Vec<u64> = (0..3).collect();
+    let postings = a3_postings(&docs, &[1, 1, 1], true);
+    let bytes = a5_encode_with(3, &postings, &limits);
+
+    // Cancellation before the first, subsequent, final and post-EOF attempts.
+    let flag = CancellationFlag::new();
+    flag.cancel();
+    let mut reader = super::postings::PostingsReader::new_adaptive(&bytes, 3, &limits)
+        .expect("reader")
+        .into_doc_freq();
+    assert!(matches!(
+        reader.next_with(&flag),
+        Err(SegmentError::Cancelled)
+    ));
+
+    let counting = A2CountingCancel {
+        polls: std::cell::Cell::new(0),
+        cancel_after: 1,
+    };
+    let mut reader = super::postings::PostingsReader::new_adaptive(&bytes, 3, &limits)
+        .expect("reader")
+        .into_doc_freq();
+    assert_eq!(
+        reader.next_with(&counting).expect("first"),
+        Some(super::postings::DocFreqPosting { doc_id: 0, freq: 1 })
+    );
+    assert!(matches!(
+        reader.next_with(&counting),
+        Err(SegmentError::Cancelled)
+    ));
+
+    // Cancellation before the final exhaustion check.
+    let final_flag = A2CountingCancel {
+        polls: std::cell::Cell::new(0),
+        cancel_after: 3,
+    };
+    let mut reader = super::postings::PostingsReader::new_adaptive(&bytes, 3, &limits)
+        .expect("reader")
+        .into_doc_freq();
+    for _ in 0..3 {
+        assert!(reader.next_with(&final_flag).expect("posting").is_some());
+    }
+    assert!(matches!(
+        reader.next_with(&final_flag),
+        Err(SegmentError::Cancelled)
+    ));
+
+    // Repeated uncancelled EOF is a stable `None`.
+    let mut reader = super::postings::PostingsReader::new_adaptive(&bytes, 3, &limits)
+        .expect("reader")
+        .into_doc_freq();
+    while reader.next().expect("decode").is_some() {}
+    assert!(reader.next().expect("repeat EOF").is_none());
+    assert!(reader.next().expect("repeat EOF").is_none());
+
+    // Cancelled next after EOF still reports cancellation.
+    let flag = CancellationFlag::new();
+    let mut reader = super::postings::PostingsReader::new_adaptive(&bytes, 3, &limits)
+        .expect("reader")
+        .into_doc_freq();
+    while reader.next().expect("decode").is_some() {}
+    flag.cancel();
+    assert!(matches!(
+        reader.next_with(&flag),
+        Err(SegmentError::Cancelled)
+    ));
+
+    // Full advance across clean intervening postings and the cached-target case.
+    let mut reader =
+        super::postings::PostingsReader::new_adaptive(&bytes, 3, &limits).expect("reader");
+    let advanced = reader.advance(2).expect("advance").expect("posting");
+    assert_eq!(advanced.doc_id, 2);
+    // Cached target: no cancellation poll on this no-read path.
+    let flag = CancellationFlag::new();
+    flag.cancel();
+    assert_eq!(
+        reader
+            .advance_with(2, &flag)
+            .expect("cached advance")
+            .expect("posting")
+            .doc_id,
+        2
+    );
+    assert!(matches!(
+        reader.advance_with(3, &flag),
+        Err(SegmentError::Cancelled)
+    ));
+
+    // Conversion then lean next continues at the next unread posting.
+    let mut full =
+        super::postings::PostingsReader::new_adaptive(&bytes, 3, &limits).expect("reader");
+    assert_eq!(full.next().expect("first").expect("posting").doc_id, 0);
+    let mut lean = full.into_doc_freq();
+    assert_eq!(lean.next().expect("second").expect("posting").doc_id, 1);
+}
+
+#[test]
+fn a5_u09_resource_limits_and_incremental_charging() {
+    use super::postings::{DocFreqPosting, PostingsReader};
+
+    let postings = a3_postings(&[0, 1], &[1, 1], true);
+    let bytes = a5_encode_with(2, &postings, &SegmentLimits::default());
+    let total = bytes.len() as u64;
+
+    // Encoded output admitted at exactly the limit and rejected one byte under.
+    let exact = SegmentLimits::default().with_max_single_allocation(total);
+    assert_eq!(a5_encode_with(2, &postings, &exact).len(), bytes.len());
+    let short = SegmentLimits::default().with_max_single_allocation(total - 1);
+    match super::postings::encode_adaptive_postings_block(2, &postings, &short) {
+        Err(SegmentError::LimitExceeded { limit, requested }) => {
+            assert_eq!((limit, requested), (total - 1, total));
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+
+    // Construction does not charge decoded entries; the budget is incremental.
+    let one_entry = SegmentLimits::default().with_max_decoded_entries(1);
+    let mut reader = PostingsReader::new_adaptive(&bytes, 2, &one_entry).expect("constructs");
+    assert!(reader.next().expect("first posting").is_some());
+    match reader.next() {
+        Err(SegmentError::LimitExceeded { limit, requested }) => {
+            assert_eq!((limit, requested), (1, 2));
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+
+    // Posting frequency equal to and one over the decoded-entry limit.
+    let doc_only = a5_encode(&[0], &[5], false);
+    let mut at_limit = PostingsReader::new_adaptive(
+        &doc_only,
+        1,
+        &SegmentLimits::default().with_max_decoded_entries(5),
+    )
+    .expect("constructs");
+    assert_eq!(
+        at_limit.next().expect("posting"),
+        Some(super::postings::Posting {
+            doc_id: 0,
+            freq: 5,
+            occurrences: Vec::new()
+        })
+    );
+    let mut over = PostingsReader::new_adaptive(
+        &doc_only,
+        1,
+        &SegmentLimits::default().with_max_decoded_entries(4),
+    )
+    .expect("constructs");
+    match over.next() {
+        Err(SegmentError::LimitExceeded { limit, requested }) => {
+            assert_eq!((limit, requested), (4, 5))
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+
+    // The hypothetical positional occurrence allocation is charged identically in
+    // both modes, at the exact bound and one byte below.
+    let occurrence_bytes = std::mem::size_of::<super::postings::Occurrence>() as u64;
+    let positional = a5_encode(&[0], &[1], true);
+    for (limit, allowed) in [(occurrence_bytes, true), (occurrence_bytes - 1, false)] {
+        let limits = SegmentLimits::default().with_max_single_allocation(limit);
+        for lean in [false, true] {
+            let mut reader = PostingsReader::new_adaptive(&positional, 1, &limits)
+                .expect("borrowed construction");
+            if lean {
+                let mut lean = reader.into_doc_freq();
+                let result = lean.next();
+                if allowed {
+                    assert_eq!(
+                        result.expect("within bound"),
+                        Some(DocFreqPosting { doc_id: 0, freq: 1 })
+                    );
+                } else {
+                    assert!(matches!(result, Err(SegmentError::LimitExceeded { .. })));
+                }
+            } else if allowed {
+                assert!(reader.next().expect("within bound").is_some());
+            } else {
+                assert!(matches!(
+                    reader.next(),
+                    Err(SegmentError::LimitExceeded { .. })
+                ));
+            }
+        }
+    }
+
+    // A forged A3 header at the existing parser seam still enforces
+    // max_postings_per_term (compact's canonical df<=128 cannot reach it).
+    let mut forged = A3RawSplit::valid(&[0, 1], &[1, 1], false);
+    forged.posting_doc_count = u64::MAX;
+    let forged = forged.encode();
+    match PostingsReader::new_adaptive(&forged, 2, &SegmentLimits::default()) {
+        Err(SegmentError::LimitExceeded { limit, requested }) => {
+            assert_eq!(limit, SegmentLimits::default().max_postings_per_term());
+            assert_eq!(requested, u64::MAX);
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[test]
+fn a5_u10_decode_and_conversion_witnesses() {
+    use super::postings::{PostingsReader, decode_observation};
+
+    let limits = SegmentLimits::default();
+    let postings = a3_postings(&[0, 2], &[2, 1], true);
+    let bytes = a5_encode_with(3, &postings, &limits);
+
+    decode_observation::reset();
+    let mut full = PostingsReader::new_adaptive(&bytes, 3, &limits).expect("reader");
+    while full.next().expect("decode").is_some() {}
+    let (reserves, clones) = decode_observation::counts();
+    assert_eq!(reserves, 2, "one positional vector per posting");
+    assert_eq!(clones, 2, "one cached full posting clone per posting");
+
+    decode_observation::reset();
+    let mut lean = PostingsReader::new_adaptive(&bytes, 3, &limits)
+        .expect("reader")
+        .into_doc_freq();
+    while lean.next().expect("decode").is_some() {}
+    assert_eq!(
+        decode_observation::counts(),
+        (0, 0),
+        "the lean view neither reserves occurrence vectors nor clones postings"
+    );
+
+    // Full read, then consuming conversion: the next record continues after the
+    // cached posting and the final verification still runs.
+    let mut reader = PostingsReader::new_adaptive(&bytes, 3, &limits).expect("reader");
+    assert_eq!(reader.next().expect("first").expect("posting").doc_id, 0);
+    let mut lean = reader.into_doc_freq();
+    assert_eq!(
+        lean.next().expect("second"),
+        Some(super::postings::DocFreqPosting { doc_id: 2, freq: 1 })
+    );
+    assert!(lean.next().expect("EOF").is_none());
+}
+
+#[test]
+fn a5_u11_frequency_totals_and_stream_tails() {
+    let limits = SegmentLimits::default();
+
+    // Header frequency total vs body frequency: the returned record keeps the
+    // real body frequency and the mismatch fails at EOF.
+    let bytes = A5RawCompact::new(A5_COMPACT_SINGLETON_DOC_ONLY, 5)
+        .streams(&[0], &[1], &[])
+        .encode();
+    let mut reader =
+        super::postings::PostingsReader::new_adaptive(&bytes, 1, &limits).expect("constructs");
+    let posting = reader.next().expect("first").expect("posting");
+    assert_eq!(posting.freq, 1, "the body frequency is never substituted");
+    let error = reader.next().expect_err("mismatch at EOF");
+    a3_assert_corrupt_with(&error, A5_ADAPTIVE_CONTEXT, "frequency total mismatch");
+
+    // Each stream's trailing bytes reach its own ordered finish error.
+    let trailing = [
+        (
+            A5RawCompact::new(A5_COMPACT_SINGLETON_DOC_ONLY, 1)
+                .streams(&[0, 0], &[1], &[])
+                .encode(),
+            "doc stream trailing bytes",
+        ),
+        (
+            A5RawCompact::new(A5_COMPACT_SINGLETON_DOC_ONLY, 1)
+                .streams(&[0], &[1, 1], &[])
+                .encode(),
+            "frequency stream trailing bytes",
+        ),
+        (
+            A5RawCompact::new(A5_COMPACT_SINGLETON_POSITIONAL, 1)
+                .streams(&[0], &[1], &[0, 1, 0, 0, 1, 0])
+                .encode(),
+            "position stream trailing bytes",
+        ),
+    ];
+    for (bytes, detail) in trailing {
+        let mut reader =
+            super::postings::PostingsReader::new_adaptive(&bytes, 1, &limits).expect("constructs");
+        assert!(reader.next().expect("first").is_some());
+        let error = reader.next().expect_err("finish error");
+        a3_assert_corrupt_with(&error, A5_ADAPTIVE_CONTEXT, detail);
+    }
+
+    // Checked observed-sum overflow uses bounded doc-only raw bytes.
+    let mut freqs = ByteWriter::new();
+    freqs.varint(u64::MAX - 1);
+    freqs.varint(2);
+    let bytes = A5RawCompact::new(A5_COMPACT_SHORT_DOC_ONLY, u64::MAX)
+        .df(2)
+        .streams(&[0, 1], freqs.as_slice(), &[])
+        .encode();
+    let limits = SegmentLimits::default().with_max_decoded_entries(u64::MAX);
+    let mut reader =
+        super::postings::PostingsReader::new_adaptive(&bytes, 2, &limits).expect("constructs");
+    assert!(reader.next().expect("first").is_some());
+    let error = reader.next().expect_err("sum overflow");
+    a3_assert_corrupt_with(&error, A5_ADAPTIVE_CONTEXT, "frequency total overflow");
+
+    // Legacy EOF behavior is unchanged: no trailing/sum verification is added.
+    let legacy = super::postings::encode_postings_block(
+        1,
+        &[super::postings::Posting {
+            doc_id: 0,
+            freq: 1,
+            occurrences: Vec::new(),
+        }],
+        &SegmentLimits::default(),
+    )
+    .expect("legacy encode");
+    let mut reader = super::postings::PostingsReader::new(&legacy, 1, &SegmentLimits::default())
+        .expect("legacy reader");
+    assert!(reader.next().expect("posting").is_some());
+    assert!(reader.next().expect("EOF").is_none());
+}
+
+#[test]
+fn a5_u12_required_feature_matrix_and_extent_errors() {
+    use super::format::{FEATURE_ADAPTIVE_POSTINGS, FEATURE_SPLIT_POSTINGS};
+    use super::reader::SegmentReader;
+
+    let limits = SegmentLimits::default();
+    let adaptive = a5_build_current_segment(&[("a", "alpha beta"), ("b", "alpha")]);
+    let title = SegmentReader::open(adaptive.clone(), limits)
+        .expect("open")
+        .schema()
+        .field_id("title")
+        .expect("title");
+
+    // Required F opens; the postings body is compact.
+    let reader = SegmentReader::open(adaptive.clone(), limits).expect("adaptive opens");
+    assert!(
+        reader
+            .required_features()
+            .contains(&(FEATURE_ADAPTIVE_POSTINGS, 1))
+    );
+    assert!(reader.postings(title, "alpha").expect("lookup").is_some());
+
+    // Required F removed: compact bytes read by the legacy dispatch fail closed.
+    let mut spec = A5Rebuild::default();
+    spec.drop_required.push((FEATURE_ADAPTIVE_POSTINGS, 1));
+    let rebuilt = a5_rebuild(&adaptive, &spec);
+    let reader = SegmentReader::open(rebuilt, limits).expect("legacy dispatch opens");
+    assert!(matches!(
+        reader.postings(title, "alpha"),
+        Err(SegmentError::Corrupt {
+            context: "occurrence kind",
+            ..
+        })
+    ));
+
+    // Both families required in one segment is a conflict (never index-wide).
+    let mut spec = A5Rebuild::default();
+    spec.add_required.push((FEATURE_SPLIT_POSTINGS, 1));
+    let rebuilt = a5_rebuild(&adaptive, &spec);
+    match SegmentReader::open(rebuilt, limits) {
+        Err(error) => {
+            a3_assert_corrupt_with(&error, A5_ADAPTIVE_CONTEXT, "conflicting postings features")
+        }
+        Ok(_) => panic!("conflicting postings families must be rejected"),
+    }
+
+    // An optional F feature does not activate adaptive parsing.
+    let mut spec = A5Rebuild::default();
+    spec.drop_required.push((FEATURE_ADAPTIVE_POSTINGS, 1));
+    spec.add_optional.push((FEATURE_ADAPTIVE_POSTINGS, 1));
+    let rebuilt = a5_rebuild(&adaptive, &spec);
+    let reader = SegmentReader::open(rebuilt, limits).expect("optional feature opens");
+    assert!(
+        !reader
+            .required_features()
+            .contains(&(FEATURE_ADAPTIVE_POSTINGS, 1))
+    );
+    assert!(
+        reader
+            .optional_features()
+            .contains(&(FEATURE_ADAPTIVE_POSTINGS, 1))
+    );
+    assert!(matches!(
+        reader.postings(title, "alpha"),
+        Err(SegmentError::Corrupt {
+            context: "occurrence kind",
+            ..
+        })
+    ));
+
+    // Per-segment families: an explicit A3 segment stays readable next to F.
+    let a3_bytes = a3_build_segment(&[("a", "alpha beta")]);
+    let a3_reader = SegmentReader::open(a3_bytes, limits).expect("A3 segment opens");
+    assert!(
+        a3_reader
+            .required_features()
+            .contains(&(FEATURE_SPLIT_POSTINGS, 1))
+    );
+    let a3_title = a3_reader.schema().field_id("title").expect("title");
+    assert!(
+        a3_reader
+            .postings(a3_title, "alpha")
+            .expect("lookup")
+            .is_some()
+    );
+
+    // Pair absence: single missing section keeps `MissingSection`; the whole pair
+    // missing uses the adaptive-specific corruption.
+    for (drop, expected) in [
+        (vec![SectionKind::Dictionary], Some(SectionKind::Dictionary)),
+        (vec![SectionKind::Postings], Some(SectionKind::Postings)),
+        (vec![SectionKind::Dictionary, SectionKind::Postings], None),
+    ] {
+        let spec = A5Rebuild {
+            drop_sections: drop,
+            ..Default::default()
+        };
+        let rebuilt = a5_rebuild(&adaptive, &spec);
+        match SegmentReader::open(rebuilt, limits) {
+            Err(SegmentError::MissingSection { kind }) => {
+                assert_eq!(kind, expected.expect("single-section case") as u16);
+            }
+            Err(error) if expected.is_none() => a3_assert_corrupt_with(
+                &error,
+                A5_ADAPTIVE_CONTEXT,
+                "adaptive postings feature requires dictionary and postings",
+            ),
+            Err(other) => panic!("unexpected error: {other:?}"),
+            Ok(_) => panic!("missing pair must be rejected"),
+        }
+    }
+
+    // Conflicting features with the whole pair absent reports the conflict first.
+    let mut spec = A5Rebuild::default();
+    spec.add_required.push((FEATURE_SPLIT_POSTINGS, 1));
+    spec.drop_sections = vec![SectionKind::Dictionary, SectionKind::Postings];
+    let rebuilt = a5_rebuild(&adaptive, &spec);
+    match SegmentReader::open(rebuilt, limits) {
+        Err(error) => {
+            a3_assert_corrupt_with(&error, A5_ADAPTIVE_CONTEXT, "conflicting postings features")
+        }
+        Ok(_) => panic!("conflicting features must win over pair absence"),
+    }
+
+    // Dictionary doc_freq mismatch is unchanged.
+    let dictionary_body = {
+        let view = parse_container(&adaptive, &limits).expect("container");
+        view.body(SectionKind::Dictionary)
+            .expect("dictionary")
+            .to_vec()
+    };
+    let mut patched = dictionary_body.clone();
+    assert!(a3_patch_dictionary(
+        &mut patched,
+        "alpha",
+        Some(9),
+        None,
+        None
+    ));
+    let spec = A5Rebuild {
+        replace_section: Some((SectionKind::Dictionary, patched)),
+        ..Default::default()
+    };
+    let rebuilt = a5_rebuild(&adaptive, &spec);
+    let reader = SegmentReader::open(rebuilt, limits).expect("patched dictionary opens");
+    match reader.postings(title, "alpha") {
+        Err(error) => a3_assert_corrupt_with(
+            &error,
+            "postings",
+            "dictionary doc_freq does not match posting count",
+        ),
+        Ok(_) => panic!("doc_freq mismatch must be rejected"),
+    }
+
+    // Checked extent addition and slice lookup keep their typed errors.
+    for offset in [Some(u64::MAX), Some(1u64 << 40)] {
+        let mut patched = dictionary_body.clone();
+        assert!(a3_patch_dictionary(
+            &mut patched,
+            "alpha",
+            None,
+            offset,
+            None
+        ));
+        let spec = A5Rebuild {
+            replace_section: Some((SectionKind::Dictionary, patched)),
+            ..Default::default()
+        };
+        let rebuilt = a5_rebuild(&adaptive, &spec);
+        match SegmentReader::open(rebuilt, limits) {
+            Err(SegmentError::Corrupt { context, .. }) => assert_eq!(context, "dictionary"),
+            Err(other) => panic!("unexpected error: {other:?}"),
+            Ok(_) => panic!("invalid extent must be rejected"),
+        }
+    }
+    let mut patched = dictionary_body.clone();
+    assert!(a3_patch_dictionary(
+        &mut patched,
+        "alpha",
+        None,
+        Some(u64::MAX),
+        Some(2)
+    ));
+    let spec = A5Rebuild {
+        replace_section: Some((SectionKind::Dictionary, patched)),
+        ..Default::default()
+    };
+    let rebuilt = a5_rebuild(&adaptive, &spec);
+    match SegmentReader::open(rebuilt, limits) {
+        Err(SegmentError::Corrupt { context, .. }) => assert_eq!(context, "dictionary"),
+        Err(other) => panic!("unexpected error: {other:?}"),
+        Ok(_) => panic!("overflowing extent must be rejected"),
+    }
+}
+
+#[test]
+fn a5_u13_structural_size_table_and_determinism() {
+    use super::postings::{encode_postings_block, encode_split_postings_block};
+
+    let limits = SegmentLimits::default();
+    let table = [
+        (1usize, 19usize, 98usize, 8usize, 24usize, 103usize, 13usize),
+        (2, 21, 100, 11, 31, 110, 21),
+        (127, 271, 350, 261, 906, 985, 897),
+        (128, 273, 352, 267, 913, 992, 908),
+        (129, 275, 395, 395, 920, 1040, 1040),
+        (257, 531, 692, 692, 1816, 1977, 1977),
+    ];
+    for (count, legacy_doc, a3_doc, a5_doc, legacy_pos, a3_pos, a5_pos) in table {
+        let docs: Vec<u64> = (0..count as u64).collect();
+        let freqs = vec![1u64; count];
+        for positional in [false, true] {
+            let postings = a3_postings(&docs, &freqs, positional);
+            let legacy = encode_postings_block(count as u64, &postings, &limits).expect("legacy");
+            let split =
+                encode_split_postings_block(count as u64, &postings, &limits).expect("split");
+            let adaptive = a5_encode_with(count as u64, &postings, &limits);
+            let again = a5_encode_with(count as u64, &postings, &limits);
+            assert_eq!(adaptive, again, "encoding is deterministic for exact input");
+            let (expected_legacy, expected_a3, expected_a5) = if positional {
+                (legacy_pos, a3_pos, a5_pos)
+            } else {
+                (legacy_doc, a3_doc, a5_doc)
+            };
+            assert_eq!(
+                legacy.len(),
+                expected_legacy,
+                "count={count} positional={positional}"
+            );
+            assert_eq!(
+                split.len(),
+                expected_a3,
+                "count={count} positional={positional}"
+            );
+            assert_eq!(
+                adaptive.len(),
+                expected_a5,
+                "count={count} positional={positional}"
+            );
+            assert_eq!(a5_decode_full(&adaptive, count as u64), postings);
+            if count <= 128 {
+                assert!(
+                    adaptive.len() < split.len(),
+                    "compact must be strictly smaller at df<=128 (count={count})"
+                );
+            } else {
+                assert_eq!(adaptive, split, "long lists are byte-identical to A3");
+            }
+        }
+    }
+}
+
+/// Which postings family a differential case decodes through.
+#[derive(Clone, Copy)]
+enum A5Family {
+    Legacy,
+    Split,
+    Adaptive,
+}
+
+fn a5_open<'a>(
+    family: A5Family,
+    bytes: &'a [u8],
+    segment_doc_count: u64,
+    limits: &SegmentLimits,
+) -> Result<super::postings::PostingsReader<'a>, SegmentError> {
+    match family {
+        A5Family::Legacy => super::postings::PostingsReader::new(bytes, segment_doc_count, limits),
+        A5Family::Split => {
+            super::postings::PostingsReader::new_split(bytes, segment_doc_count, limits)
+        }
+        A5Family::Adaptive => {
+            super::postings::PostingsReader::new_adaptive(bytes, segment_doc_count, limits)
+        }
+    }
+}
+
+/// Deterministic fixture generator for the differential test.
+///
+/// A test-local linear-congruential sequence: not a cryptographic primitive, not
+/// production randomness and not a dependency.
+struct A5Lcg(u64);
+
+impl A5Lcg {
+    const fn new() -> Self {
+        Self(0x5045_5246_0006_A505)
+    }
+
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        self.0
+    }
+}
+
+#[test]
+fn a5_u14_generated_differential_across_all_families() {
+    use super::postings::{
+        Occurrence, Posting, encode_postings_block, encode_split_postings_block,
+    };
+
+    let limits = SegmentLimits::default();
+    let mut rng = A5Lcg::new();
+    let counts = [1usize, 2, 3, 127, 128, 129, 256, 257];
+    let bases = [0u64, 127, 128, 16_384];
+    let mut ordinal = 0usize;
+    for count in counts {
+        for positional in [false, true] {
+            for base in bases {
+                ordinal += 1;
+                let context = format!(
+                    "seed=0x{:016X} ordinal={ordinal} count={count} positional={positional} base={base}",
+                    A5Lcg::new().0
+                );
+                let mut postings = Vec::new();
+                let mut doc_id = base;
+                for _ in 0..count {
+                    let freq = 1 + rng.next() % 4;
+                    let occurrences = if positional {
+                        let mut occurrences = Vec::new();
+                        let mut position = 0u64;
+                        for index in 0..freq {
+                            if index > 0 {
+                                position += 1 + rng.next() % 3;
+                            }
+                            occurrences.push(Occurrence {
+                                position,
+                                position_length: 1 + rng.next() % 2,
+                                value_index: index / 2,
+                                start_offset: 3 * index,
+                                end_offset: 3 * index + 1,
+                            });
+                        }
+                        occurrences
+                    } else {
+                        Vec::new()
+                    };
+                    postings.push(Posting {
+                        doc_id,
+                        freq,
+                        occurrences,
+                    });
+                    doc_id += 1 + rng.next() % 17;
+                }
+                let segment_doc_count = postings.last().expect("postings").doc_id + 1;
+                let lean: Vec<(u64, u64)> = postings
+                    .iter()
+                    .map(|posting| (posting.doc_id, posting.freq))
+                    .collect();
+
+                let legacy = encode_postings_block(segment_doc_count, &postings, &limits)
+                    .unwrap_or_else(|error| panic!("{context}: legacy encode {error:?}"));
+                let split = encode_split_postings_block(segment_doc_count, &postings, &limits)
+                    .unwrap_or_else(|error| panic!("{context}: split encode {error:?}"));
+                let adaptive = a5_encode_with(segment_doc_count, &postings, &limits);
+
+                for (family, name, bytes) in [
+                    (A5Family::Legacy, "legacy", &legacy),
+                    (A5Family::Split, "split", &split),
+                    (A5Family::Adaptive, "adaptive", &adaptive),
+                ] {
+                    let mut reader = a5_open(family, bytes, segment_doc_count, &limits)
+                        .unwrap_or_else(|error| panic!("{context}: {name} open {error:?}"));
+                    let mut records = Vec::new();
+                    while let Some(posting) = reader
+                        .next()
+                        .unwrap_or_else(|error| panic!("{context}: {name} decode {error:?}"))
+                    {
+                        records.push(posting);
+                    }
+                    assert_eq!(records, postings, "{context}: {name} full records");
+                    let mut lean_reader = a5_open(family, bytes, segment_doc_count, &limits)
+                        .unwrap_or_else(|error| panic!("{context}: {name} open {error:?}"))
+                        .into_doc_freq();
+                    let mut lean_records = Vec::new();
+                    while let Some(posting) = lean_reader
+                        .next()
+                        .unwrap_or_else(|error| panic!("{context}: {name} lean decode {error:?}"))
+                    {
+                        lean_records.push((posting.doc_id, posting.freq));
+                    }
+                    assert_eq!(lean_records, lean, "{context}: {name} lean projection");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a5_u15_encoder_cost_witnesses() {
+    use super::postings::{encode_adaptive_postings_block, encode_observation};
+
+    let limits = SegmentLimits::default();
+
+    // Singleton doc-only: 2*n doc/frequency widths + 4 header widths.
+    encode_observation::reset();
+    let postings = a3_postings(&[3], &[2], false);
+    let bytes = encode_adaptive_postings_block(4, &postings, &limits).expect("encode");
+    let counts = encode_observation::counts();
+    assert_eq!(counts.validation_calls, 1);
+    assert_eq!(counts.compact_validation_calls, 1);
+    // 2 document/frequency widths + 4 header widths.
+    assert_eq!(counts.width_calls, 2 + 4);
+    assert_eq!(counts.compact_output_buffers, 1);
+    assert!(counts.initial_capacity >= bytes.len());
+    assert_eq!(
+        counts.initial_capacity, counts.final_capacity,
+        "the admitted output buffer never grows"
+    );
+
+    // Short positional: 2*n + 5*m widths + 5 header widths (the df field).
+    encode_observation::reset();
+    let postings = a3_postings(&[1, 4, 9], &[2, 1, 3], true);
+    let occurrences: u64 = postings.iter().map(|posting| posting.freq).sum();
+    let bytes = encode_adaptive_postings_block(10, &postings, &limits).expect("encode");
+    let counts = encode_observation::counts();
+    assert_eq!(counts.validation_calls, 1);
+    assert_eq!(counts.compact_validation_calls, 1);
+    assert_eq!(counts.width_calls, 2 * 3 + 5 * occurrences + 5);
+    assert_eq!(counts.compact_output_buffers, 1);
+    assert!(counts.initial_capacity >= bytes.len());
+    assert_eq!(counts.initial_capacity, counts.final_capacity);
+
+    // Long lists do zero compact work: one validation, no measurement, no buffer.
+    encode_observation::reset();
+    let docs: Vec<u64> = (0..129).collect();
+    let postings = a3_postings(&docs, &vec![1u64; 129], true);
+    let _ = encode_adaptive_postings_block(129, &postings, &limits).expect("encode");
+    let counts = encode_observation::counts();
+    assert_eq!(counts.validation_calls, 1);
+    assert_eq!(counts.compact_validation_calls, 0);
+    assert_eq!(counts.width_calls, 0);
+    assert_eq!(counts.compact_output_buffers, 0);
+
+    // A rejected admission allocates nothing.
+    encode_observation::reset();
+    let postings = a3_postings(&[0], &[1], false);
+    let tiny = SegmentLimits::default().with_max_single_allocation(1);
+    assert!(encode_adaptive_postings_block(1, &postings, &tiny).is_err());
+    let counts = encode_observation::counts();
+    assert_eq!(counts.compact_output_buffers, 0);
+    assert_eq!(counts.initial_capacity, 0);
+    assert_eq!(counts.final_capacity, 0);
+}
+
+#[test]
+fn a5_u16_varint_width_and_checked_arithmetic() {
+    use super::postings::encode_observation::{test_total_len, test_varint_len};
+
+    for (value, expected) in [
+        (0u64, 1u64),
+        (1, 1),
+        (127, 1),
+        (128, 2),
+        (16_383, 2),
+        (16_384, 3),
+        (u64::MAX, 10),
+    ] {
+        assert_eq!(test_varint_len(value), expected, "width of {value}");
+    }
+
+    assert_eq!(
+        test_total_len(1, u64::MAX - 1, 0, 0).expect("fits"),
+        u64::MAX
+    );
+    assert_eq!(test_total_len(0, u64::MAX, 0, 0).expect("fits"), u64::MAX);
+    assert!(
+        test_total_len(1, u64::MAX, 0, 0).is_err(),
+        "checked sum overflow"
+    );
+    assert!(test_total_len(0, u64::MAX, 1, 0).is_err());
+    assert!(test_total_len(0, 0, u64::MAX, 1).is_err());
+
+    // Header width accounting on a real payload.
+    let limits = SegmentLimits::default();
+    let postings = a3_postings(&[0, 200], &[1, 2], true);
+    let bytes =
+        super::postings::encode_adaptive_postings_block(201, &postings, &limits).expect("encode");
+    let (marker, version, df, freq_total, doc_len, freq_len, pos_len) = a5_header(&bytes);
+    assert_eq!(
+        (marker, version, df, freq_total),
+        (A5_COMPACT_SHORT_POSITIONAL, 1, Some(2), 3)
+    );
+    let expected_header = 2
+        + test_varint_len(2)
+        + test_varint_len(freq_total)
+        + test_varint_len(doc_len)
+        + test_varint_len(freq_len)
+        + test_varint_len(pos_len);
+    assert_eq!(
+        bytes.len() as u64,
+        expected_header + doc_len + freq_len + pos_len
+    );
 }

@@ -641,4 +641,193 @@ mod real {
             let _ = &store;
         });
     }
+
+    /// Adaptive postings feature id (PERF-06-A5).
+    const A5_FEATURE_ADAPTIVE: u16 = 0x000F;
+    /// Retained A3 split postings feature id.
+    const A5_FEATURE_SPLIT: u16 = 0x000E;
+
+    /// `(marker, doc_freq)` of the first posting payload for `(field, term)`.
+    fn a5_marker(
+        reader: &quervant_core::segment::SegmentReader,
+        field: &str,
+        term: &str,
+    ) -> (u8, u64) {
+        use quervant_core::segment::{SectionKind, SegmentLimits, parse_container};
+        let field_id = reader.schema().field_id(field).expect("field");
+        let entry = reader
+            .dictionary()
+            .expect("dictionary")
+            .lookup(field_id, term)
+            .expect("term");
+        let view = parse_container(reader.bytes(), &SegmentLimits::default()).expect("container");
+        let body = view.body(SectionKind::Postings).expect("postings body");
+        (body[entry.postings_offset as usize], entry.doc_freq)
+    }
+
+    /// Full (untruncated) total and sorted keys for one query.
+    fn a5_search(snapshot: &ReaderSnapshot, query: Query) -> (u64, Vec<String>) {
+        let schema = schema();
+        let registry = registry();
+        let cancel = CancellationFlag::new();
+        let response = LexicalSearcher::new(snapshot, &schema, &registry, SearchLimits::default())
+            .search(&query, TopK::new(300).unwrap(), &Budgets::new(), &cancel)
+            .expect("search");
+        let mut keys: Vec<String> = response
+            .hits
+            .iter()
+            .map(|hit| hit.key.as_str().to_owned())
+            .collect();
+        keys.sort();
+        (response.total_hits, keys)
+    }
+
+    fn a5_term(value: &str) -> Query {
+        Query::Term {
+            field: "title".to_owned(),
+            value: FieldValue::Text(value.to_owned()),
+        }
+    }
+
+    fn a5_group_of(ordinal: usize) -> &'static str {
+        match ordinal {
+            0 => "singleton",
+            1..=128 => "short",
+            _ => "long",
+        }
+    }
+
+    fn a5_title(ordinal: usize) -> String {
+        let group = a5_group_of(ordinal);
+        if ordinal % 4 != 0 {
+            format!("{group} alpha beta")
+        } else {
+            format!("{group} alpha gamma")
+        }
+    }
+
+    fn a5_expected_keys(
+        range: std::ops::RangeInclusive<usize>,
+        keep: impl Fn(usize) -> bool,
+    ) -> Vec<String> {
+        let mut keys: Vec<String> = range
+            .filter(|ordinal| keep(*ordinal))
+            .map(|ordinal| format!("a5-{ordinal:03}"))
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    /// Inspect the single committed adaptive segment outside the async body so no
+    /// non-`Send` guarded reader is held across an await.
+    fn a5_assert_single_adaptive_segment(snapshot: &ReaderSnapshot) {
+        assert_eq!(snapshot.segment_count(), 1);
+        let guard = snapshot.open_segment_reader(0).expect("segment reader");
+        let required: Vec<u16> = guard
+            .reader()
+            .required_features()
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert!(required.contains(&A5_FEATURE_ADAPTIVE));
+        assert!(!required.contains(&A5_FEATURE_SPLIT));
+        assert_eq!(a5_marker(guard.reader(), "title", "singleton"), (5, 1));
+        assert_eq!(a5_marker(guard.reader(), "title", "short"), (7, 128));
+        assert_eq!(a5_marker(guard.reader(), "title", "long"), (3, 130));
+    }
+
+    /// PERF-06-A5 real remote acceptance: adaptive postings survive commit, a
+    /// fresh remote open and a fully cold reader with no writer-local state.
+    #[test]
+    #[ignore = "requires a running pinned RustFS instance"]
+    fn a5_r01_adaptive_postings_rustfs_cold_reopen() {
+        run(async {
+            let (store, config, index) = real_index("perf06-a5-adaptive").await;
+            {
+                let mut writer = index.writer().await.unwrap();
+                for ordinal in 0..259usize {
+                    writer
+                        .insert(document(&format!("a5-{ordinal:03}"), &a5_title(ordinal)))
+                        .unwrap();
+                }
+                let outcome = writer.commit().await.unwrap();
+                assert_eq!(outcome.generation, 1);
+            }
+            // The pre-commit handle observed the generation at creation; drop it
+            // without inspecting it as if the commit had refreshed it.
+            drop(index);
+
+            let reopened = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                config.clone(),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(reopened.generation(), Some(1));
+            {
+                let warm = reopened.snapshot();
+                a5_assert_single_adaptive_segment(&warm);
+            }
+            drop(reopened);
+
+            // Remove only this disposable configuration's local workspace, then
+            // rebuild every reader from the authoritative remote store.
+            std::fs::remove_dir_all(config.workspace_root()).unwrap();
+            let cold_index = RemoteIndex::open_existing(
+                Arc::clone(&store),
+                config.clone(),
+                schema(),
+                registry(),
+                IndexLimits::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(cold_index.generation(), Some(1));
+            let snapshot = cold_index.snapshot();
+            a5_assert_single_adaptive_segment(&snapshot);
+
+            assert_eq!(
+                a5_search(&snapshot, a5_term("singleton")),
+                (1, vec!["a5-000".to_owned()])
+            );
+            assert_eq!(
+                a5_search(&snapshot, a5_term("short")),
+                (128, a5_expected_keys(1..=128, |_| true))
+            );
+            assert_eq!(
+                a5_search(&snapshot, a5_term("long")),
+                (130, a5_expected_keys(129..=258, |_| true))
+            );
+            assert_eq!(
+                a5_search(&snapshot, a5_term("alpha")),
+                (259, a5_expected_keys(0..=258, |_| true))
+            );
+            assert_eq!(
+                a5_search(&snapshot, a5_term("beta")),
+                (194, a5_expected_keys(0..=258, |ordinal| ordinal % 4 != 0))
+            );
+            assert_eq!(
+                a5_search(&snapshot, a5_term("gamma")),
+                (65, a5_expected_keys(0..=258, |ordinal| ordinal % 4 == 0))
+            );
+            assert_eq!(a5_search(&snapshot, a5_term("absent_a5")), (0, Vec::new()));
+            assert_eq!(
+                a5_search(
+                    &snapshot,
+                    Query::Phrase {
+                        field: "title".to_owned(),
+                        terms: vec!["alpha".to_owned(), "beta".to_owned()],
+                    }
+                ),
+                (194, a5_expected_keys(0..=258, |ordinal| ordinal % 4 != 0))
+            );
+
+            drop(snapshot);
+            drop(cold_index);
+            let _ = std::fs::remove_dir_all(config.workspace_root());
+        });
+    }
 }

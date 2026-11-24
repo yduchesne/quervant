@@ -72,6 +72,12 @@ pub const FEATURE_STORED_BLOCKS: u16 = 0x000D;
 /// 128-document block directory. A reader that does not know this feature must
 /// reject the segment before decoding postings.
 pub const FEATURE_SPLIT_POSTINGS: u16 = 0x000E;
+/// Every dictionary-referenced term in this segment uses the adaptive postings
+/// family (PERF-06-A5, payload version 1). Lists of 1-128 documents use the
+/// compact framed representation (markers 4-7); longer lists reuse the split
+/// v1 payload byte-for-byte (markers 2/3). A reader that does not know this
+/// feature must reject the segment before decoding postings.
+pub const FEATURE_ADAPTIVE_POSTINGS: u16 = 0x000F;
 
 /// Features this reader supports (id, version). Unknown *required* features fail.
 pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
@@ -89,6 +95,7 @@ pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
     (FEATURE_MUTATION_STATE_V3, 1),
     (FEATURE_STORED_BLOCKS, 1),
     (FEATURE_SPLIT_POSTINGS, 1),
+    (FEATURE_ADAPTIVE_POSTINGS, 1),
 ];
 
 /// Section kind identifiers.
@@ -202,6 +209,25 @@ impl ByteWriter {
         Self {
             buf: Vec::with_capacity(capacity),
         }
+    }
+
+    /// Create a writer that reserves `capacity` bytes fallibly.
+    ///
+    /// Callers admit the capacity against their own resource limits first; this
+    /// converts an allocator refusal into the typed error the caller maps to
+    /// [`SegmentError::LimitExceeded`] instead of aborting the process.
+    pub(crate) fn try_with_capacity(
+        capacity: usize,
+    ) -> Result<Self, std::collections::TryReserveError> {
+        let mut buf = Vec::new();
+        buf.try_reserve_exact(capacity)?;
+        Ok(Self { buf })
+    }
+
+    /// Test-only: current backing capacity in bytes.
+    #[cfg(test)]
+    pub(crate) fn capacity_for_test(&self) -> usize {
+        self.buf.capacity()
     }
 
     /// Number of bytes written.

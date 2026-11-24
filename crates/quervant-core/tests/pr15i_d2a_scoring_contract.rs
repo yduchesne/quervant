@@ -943,3 +943,1051 @@ fn a3_i02_split_postings_real_search_parity() {
     drop(snapshot);
     drop(temp);
 }
+
+// ---------------------------------------------------------------------------
+// PERF-06-A5: adaptive postings through real FsDirectory index lifecycle.
+// ---------------------------------------------------------------------------
+
+/// Adaptive postings feature id (PERF-06-A5).
+const A5_FEATURE_ADAPTIVE: u16 = 0x000F;
+/// Retained A3 split postings feature id.
+const A5_FEATURE_SPLIT: u16 = 0x000E;
+
+/// Marker of the first posting payload for `(field, term)` in one segment.
+fn posting_marker(
+    reader: &quervant_core::segment::SegmentReader,
+    field: &str,
+    term: &str,
+) -> (u8, u64) {
+    use quervant_core::segment::{SectionKind, SegmentLimits, parse_container};
+    let field_id = reader.schema().field_id(field).expect("field");
+    let entry = reader
+        .dictionary()
+        .expect("dictionary")
+        .lookup(field_id, term)
+        .expect("term");
+    let view = parse_container(reader.bytes(), &SegmentLimits::default()).expect("container");
+    let body = view.body(SectionKind::Postings).expect("postings body");
+    (body[entry.postings_offset as usize], entry.doc_freq)
+}
+
+/// I02 fixture: one singleton, one 128-document and one 130-document group.
+fn a5_group_specs() -> Vec<DocSpec> {
+    (0..259)
+        .map(|ordinal| {
+            let grp = match ordinal {
+                0 => "singleton",
+                1..=128 => "short",
+                _ => "long",
+            };
+            spec(ordinal, ordinal % 4 + 1, ordinal % 5, grp)
+        })
+        .collect()
+}
+
+/// Independent prefix of the documented relevance order (score descending, then
+/// `DocumentKey` bytewise ascending).
+fn a5_relevance_prefix(expected: &BTreeMap<String, u64>, limit: usize) -> Vec<String> {
+    let mut entries: Vec<(&String, &u64)> = expected.iter().collect();
+    entries.sort_by(|left, right| {
+        f64::from_bits(*right.1)
+            .total_cmp(&f64::from_bits(*left.1))
+            .then_with(|| left.0.cmp(right.0))
+    });
+    entries
+        .into_iter()
+        .take(limit)
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
+/// Independent alpha score map for the I02 corpus.
+fn a5_group_alpha_scores(specs: &[DocSpec]) -> BTreeMap<String, u64> {
+    let n = specs.len() as u64;
+    let total_tokens: u64 = specs
+        .iter()
+        .map(|spec| (spec.alpha + spec.filler) as u64)
+        .sum();
+    let avgdl = total_tokens as f64 / n as f64;
+    specs
+        .iter()
+        .map(|spec| {
+            (
+                format!("k{:05}", spec.ordinal),
+                frozen_scalar_bm25(
+                    spec.alpha as u64,
+                    n,
+                    n,
+                    (spec.alpha + spec.filler) as u64,
+                    avgdl,
+                )
+                .to_bits(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a5_i02_adaptive_fs_search_contract() {
+    use quervant_core::contract::result::Sort;
+    use quervant_core::segment::SegmentLimits;
+
+    let specs = a5_group_specs();
+    let (temp, directory, index) = build("a5i02", &specs);
+    assert_eq!(index.generation(), Some(1));
+    drop(index);
+    drop(directory);
+
+    // Fresh native directory + index over the committed adaptive segment.
+    let directory: Arc<dyn Directory> =
+        Arc::new(FsDirectory::open(&temp.path).expect("fresh fs directory"));
+    let index = Index::open_existing(directory, schema(), registry()).expect("reopen");
+    let snapshot = index.snapshot();
+    assert_eq!(snapshot.segment_count(), 1, "one committed segment");
+    let guard = snapshot.open_segment_reader(0).expect("segment reader");
+    let required: Vec<u16> = guard
+        .reader()
+        .required_features()
+        .iter()
+        .map(|(id, _)| *id)
+        .collect();
+    assert!(
+        required.contains(&A5_FEATURE_ADAPTIVE),
+        "the segment requires the adaptive family: {required:?}"
+    );
+    assert!(
+        !required.contains(&A5_FEATURE_SPLIT),
+        "the segment no longer declares the split family: {required:?}"
+    );
+
+    // Marker classes: singleton/short/long under the adaptive family.
+    for (grp, expected_marker, expected_df) in [
+        ("singleton", 5u8, 1u64),
+        ("short", 7, 128),
+        ("long", 3, 130),
+    ] {
+        let (marker, df) = posting_marker(guard.reader(), "grp", grp);
+        assert_eq!((marker, df), (expected_marker, expected_df), "grp {grp}");
+    }
+    for ordinal in [0usize, 1, 128, 258] {
+        let (marker, df) = posting_marker(guard.reader(), "doc_id", &format!("d{ordinal:05}"));
+        assert_eq!((marker, df), (5, 1), "unique doc_id {ordinal}");
+    }
+    assert_eq!(
+        posting_marker(guard.reader(), "body", "alpha"),
+        (3, 259),
+        "body alpha is a long positional list"
+    );
+    drop(guard);
+
+    // Group membership is exactly the input ordinal partition.
+    for (grp, range, expected_total) in [
+        ("singleton", 0usize..=0usize, 1u64),
+        ("short", 1..=128, 128),
+        ("long", 129..=258, 130),
+    ] {
+        let response = search_ok(
+            &snapshot,
+            &request(
+                Query::Term {
+                    field: "grp".to_owned(),
+                    value: FieldValue::Keyword(grp.to_owned()),
+                },
+                300,
+                ascend(),
+            ),
+        );
+        assert_eq!(response.total_hits, expected_total, "grp {grp} total");
+        let observed: Vec<String> = response
+            .hits
+            .iter()
+            .map(|hit| hit.key.as_str().to_owned())
+            .collect();
+        let expected: Vec<String> = range.map(|ordinal| format!("k{ordinal:05}")).collect();
+        assert_eq!(observed, expected, "grp {grp} membership");
+    }
+
+    // Independent alpha statistics and score map.
+    let n = specs.len() as u64;
+    let alpha_frequency: u64 = specs.iter().map(|spec| spec.alpha as u64).sum();
+    let filler_frequency: u64 = specs.iter().map(|spec| spec.filler as u64).sum();
+    let total_length = alpha_frequency + filler_frequency;
+    assert_eq!(
+        (n, alpha_frequency, filler_frequency, total_length),
+        (259, 646, 516, 1162)
+    );
+    let expected = a5_group_alpha_scores(&specs);
+
+    let alpha = search_ok(&snapshot, &request(term(), 300, ascend()));
+    assert_eq!(alpha.total_hits, 259);
+    assert_eq!(bits_by_key(&alpha), expected, "full alpha score map");
+
+    // Prefix and generic conjunction agree with the single term.
+    let prefix = search_ok(
+        &snapshot,
+        &request(
+            Query::Prefix {
+                field: "body".to_owned(),
+                prefix: "alph".to_owned(),
+            },
+            300,
+            ascend(),
+        ),
+    );
+    assert_eq!(prefix.total_hits, 259);
+    assert_eq!(bits_by_key(&prefix), expected, "prefix score map");
+    let conjunction = search_ok(&snapshot, &request(Query::And(vec![term()]), 300, ascend()));
+    assert_eq!(conjunction.total_hits, 259);
+    assert_eq!(
+        bits_by_key(&conjunction),
+        expected,
+        "generic fallback score map"
+    );
+
+    // Phrase and zeta membership derive from the input specification.
+    let phrase = search_ok(
+        &snapshot,
+        &request(
+            Query::Phrase {
+                field: "body".to_owned(),
+                terms: vec!["alpha".to_owned(), "alpha".to_owned()],
+            },
+            300,
+            ascend(),
+        ),
+    );
+    assert_eq!(phrase.total_hits, 194);
+    let expected_phrase: Vec<String> = specs
+        .iter()
+        .filter(|spec| spec.ordinal % 4 != 0)
+        .map(|spec| format!("k{:05}", spec.ordinal))
+        .collect();
+    assert_eq!(keys(&phrase), expected_phrase, "phrase membership");
+
+    let zeta = search_ok(
+        &snapshot,
+        &request(
+            Query::Term {
+                field: "body".to_owned(),
+                value: FieldValue::Text("zeta".to_owned()),
+            },
+            300,
+            ascend(),
+        ),
+    );
+    assert_eq!(zeta.total_hits, 207);
+    let expected_zeta: Vec<String> = specs
+        .iter()
+        .filter(|spec| spec.ordinal % 5 != 0)
+        .map(|spec| format!("k{:05}", spec.ordinal))
+        .collect();
+    assert_eq!(keys(&zeta), expected_zeta, "zeta membership");
+
+    let absent = search_ok(
+        &snapshot,
+        &request(
+            Query::Term {
+                field: "body".to_owned(),
+                value: FieldValue::Text("absent_a5".to_owned()),
+            },
+            10,
+            ascend(),
+        ),
+    );
+    assert_eq!(absent.total_hits, 0);
+    assert!(absent.hits.is_empty());
+    assert!(absent.hits.iter().all(|hit| hit.score.is_none()));
+
+    // Limited explicit/relevance ordering with exact per-key bits.
+    let ascending_keys: Vec<String> = specs
+        .iter()
+        .map(|spec| format!("k{:05}", spec.ordinal))
+        .collect();
+    for top_k in [10usize, 100] {
+        let explicit = search_ok(&snapshot, &request(term(), top_k, ascend()));
+        assert_eq!(explicit.total_hits, 259);
+        assert_eq!(keys(&explicit), ascending_keys[..top_k].to_vec());
+        let observed = bits_by_key(&explicit);
+        for key in keys(&explicit) {
+            assert_eq!(
+                observed[&key], expected[&key],
+                "k{top_k} explicit bits {key}"
+            );
+        }
+
+        let relevance = search_ok(&snapshot, &request(term(), top_k, Sort::default()));
+        assert_eq!(relevance.total_hits, 259);
+        assert_eq!(
+            keys(&relevance),
+            a5_relevance_prefix(&expected, top_k),
+            "k{top_k} relevance ordering"
+        );
+        let observed = bits_by_key(&relevance);
+        for key in keys(&relevance) {
+            assert_eq!(
+                observed[&key], expected[&key],
+                "k{top_k} relevance bits {key}"
+            );
+        }
+    }
+
+    // Cursor pages concatenate to the exact complete ascending result.
+    let mut page = request(term(), 100, ascend());
+    let mut observed_keys: Vec<String> = Vec::new();
+    let mut observed_bits: BTreeMap<String, u64> = BTreeMap::new();
+    loop {
+        let response = search_ok(&snapshot, &page);
+        assert_eq!(response.total_hits, 259, "total is stable per page");
+        observed_keys.extend(keys(&response));
+        observed_bits.extend(bits_by_key(&response));
+        match response.next_cursor {
+            Some(cursor) => page.after = Some(cursor),
+            None => break,
+        }
+    }
+    assert_eq!(
+        observed_keys, ascending_keys,
+        "paged keys cover the result once"
+    );
+    assert_eq!(observed_bits, expected, "paged score bits match the oracle");
+
+    // The segment limits used by the reader are the defaults; the deferred
+    // encoded-output admission never fired for these long lists.
+    let _ = SegmentLimits::default();
+}
+
+/// Environment variable carrying the I03 fixture root to the child process.
+const A5_REOPEN_ENV: &str = "QUERVANT_PERF06_A5_REOPEN_ROOT";
+
+/// Build the I03/I05 fixture: 129 documents committed as 64 + 65.
+fn a5_two_commit_index(tag: &str) -> (TempDir, Arc<dyn Directory>, Index) {
+    let specs = batch(129, |ordinal| ordinal % 4 + 1);
+    let temp = TempDir::new(tag);
+    let directory: Arc<dyn Directory> =
+        Arc::new(FsDirectory::open(&temp.path).expect("fs directory"));
+    let writer_index = create(Arc::clone(&directory));
+    {
+        let mut writer = writer_index.writer().expect("writer");
+        for spec in &specs[..64] {
+            writer.insert(document(spec)).expect("insert");
+        }
+        writer.commit().expect("first commit");
+    }
+    {
+        let mut writer = writer_index.writer().expect("writer");
+        for spec in &specs[64..] {
+            writer.insert(document(spec)).expect("insert");
+        }
+        writer.commit().expect("second commit");
+    }
+    drop(writer_index);
+    let index = Index::open_existing(Arc::clone(&directory), schema(), registry()).expect("reopen");
+    (temp, directory, index)
+}
+
+/// Independent post-compaction alpha score map for batch(129, i % 4 + 1).
+fn a5_compacted_alpha_scores(specs: &[DocSpec]) -> BTreeMap<String, u64> {
+    let n = specs.len() as u64;
+    let total: u64 = specs
+        .iter()
+        .map(|spec| (spec.alpha + spec.filler) as u64)
+        .sum();
+    let avgdl = total as f64 / n as f64;
+    specs
+        .iter()
+        .map(|spec| {
+            (
+                format!("k{:05}", spec.ordinal),
+                frozen_scalar_bm25(
+                    spec.alpha as u64,
+                    n,
+                    n,
+                    (spec.alpha + spec.filler) as u64,
+                    avgdl,
+                )
+                .to_bits(),
+            )
+        })
+        .collect()
+}
+
+fn a5_phrase_request() -> UnifiedRequest {
+    request(
+        Query::Phrase {
+            field: "body".to_owned(),
+            terms: vec!["alpha".to_owned(), "alpha".to_owned()],
+        },
+        300,
+        ascend(),
+    )
+}
+
+fn a5_zeta_request() -> UnifiedRequest {
+    request(
+        Query::Term {
+            field: "body".to_owned(),
+            value: FieldValue::Text("zeta".to_owned()),
+        },
+        300,
+        ascend(),
+    )
+}
+
+/// Verify the compacted generation-3 state of the I03/I05 fixture.
+fn a5_assert_compacted_generation(root: &std::path::Path) {
+    let directory: Arc<dyn Directory> =
+        Arc::new(FsDirectory::open(root).expect("fresh fs directory"));
+    let index = Index::open_existing(directory, schema(), registry()).expect("reopen");
+    assert_eq!(
+        index.generation(),
+        Some(3),
+        "compaction published generation 3"
+    );
+    let snapshot = index.snapshot();
+    assert_eq!(snapshot.segment_count(), 1, "one compacted segment");
+    let guard = snapshot.open_segment_reader(0).expect("segment reader");
+    let required: Vec<u16> = guard
+        .reader()
+        .required_features()
+        .iter()
+        .map(|(id, _)| *id)
+        .collect();
+    assert!(required.contains(&A5_FEATURE_ADAPTIVE));
+    assert!(!required.contains(&A5_FEATURE_SPLIT));
+    assert_eq!(
+        posting_marker(guard.reader(), "body", "alpha"),
+        (3, 129),
+        "alpha is a long positional list after compaction"
+    );
+    assert_eq!(
+        posting_marker(guard.reader(), "grp", "common"),
+        (3, 129),
+        "the group term is long after compaction"
+    );
+    assert_eq!(posting_marker(guard.reader(), "doc_id", "d00000"), (5, 1));
+    assert_eq!(
+        posting_marker(guard.reader(), "body", "zeta"),
+        (7, 103),
+        "zeta stays short after compaction"
+    );
+    drop(guard);
+
+    let specs = batch(129, |ordinal| ordinal % 4 + 1);
+    let alpha = search_ok(&snapshot, &request(term(), 300, ascend()));
+    assert_eq!(alpha.total_hits, 129);
+    assert_eq!(
+        keys(&alpha),
+        specs
+            .iter()
+            .map(|spec| format!("k{:05}", spec.ordinal))
+            .collect::<Vec<_>>(),
+        "the full alpha key set survives the reopen"
+    );
+    assert_eq!(bits_by_key(&alpha), a5_compacted_alpha_scores(&specs));
+    let phrase = search_ok(&snapshot, &a5_phrase_request());
+    assert_eq!(phrase.total_hits, 96);
+    let zeta = search_ok(&snapshot, &a5_zeta_request());
+    assert_eq!(zeta.total_hits, 103);
+
+    // Explicit/relevance ordering and generic fallback keep exact bits.
+    for sort in [ascend(), Sort::default()] {
+        for top_k in [10usize, 100] {
+            let response = search_ok(&snapshot, &request(term(), top_k, sort.clone()));
+            assert_eq!(response.total_hits, 129);
+            let expected = a5_compacted_alpha_scores(&specs);
+            if matches!(sort, Sort { .. }) {
+                let observed = bits_by_key(&response);
+                for key in keys(&response) {
+                    assert_eq!(observed[&key], expected[&key], "k{top_k} bits {key}");
+                }
+            }
+        }
+    }
+    let conjunction = search_ok(&snapshot, &request(Query::And(vec![term()]), 300, ascend()));
+    assert_eq!(conjunction.total_hits, 129);
+    assert_eq!(bits_by_key(&conjunction), a5_compacted_alpha_scores(&specs));
+}
+
+#[test]
+fn a5_i03_fresh_process_reopens_adaptive() {
+    use std::process::Command;
+
+    let (temp, directory, index) = a5_two_commit_index("a5i03");
+    assert_eq!(index.generation(), Some(2));
+    {
+        let mut writer = index.writer().expect("writer");
+        let outcome = writer.compact().expect("compact");
+        assert_eq!(outcome.generation, 3);
+        assert!(!outcome.no_op);
+    }
+    drop(index);
+    drop(directory);
+
+    let executable = std::env::current_exe().expect("current test executable");
+    let status = Command::new(executable)
+        .args([
+            "--ignored",
+            "--exact",
+            "a5_i03_child_reopen_adaptive",
+            "--nocapture",
+        ])
+        .env(A5_REOPEN_ENV, &temp.path)
+        .status()
+        .expect("spawn child test process");
+    assert!(
+        status.success(),
+        "the child process must reopen the adaptive generation and verify it"
+    );
+    // Evidence that this exact child is the one that ran.
+    eprintln!(
+        "PERF-06-A5 I03 child exit: {:?} for {}",
+        status.code(),
+        temp.path.display()
+    );
+}
+
+#[test]
+#[ignore = "spawned by a5_i03_fresh_process_reopens_adaptive with QUERVANT_PERF06_A5_REOPEN_ROOT"]
+fn a5_i03_child_reopen_adaptive() {
+    let root = std::env::var_os(A5_REOPEN_ENV).expect(
+        "QUERVANT_PERF06_A5_REOPEN_ROOT must be set by a5_i03_fresh_process_reopens_adaptive",
+    );
+    a5_assert_compacted_generation(std::path::Path::new(&root));
+}
+
+#[test]
+fn a5_i05_compaction_reclassifies_adaptive_terms() {
+    let (temp, directory, index) = a5_two_commit_index("a5i05");
+    assert_eq!(index.generation(), Some(2));
+    let snapshot2 = index.snapshot();
+    assert_eq!(snapshot2.segment_count(), 2, "two committed segments");
+
+    // Generation 2: compact short lists in both inputs. Segment order follows
+    // content-addressed ids, never commit order, so classify by feature set.
+    let mut alpha_dfs = Vec::new();
+    let mut zeta_dfs = Vec::new();
+    for segment in 0..2usize {
+        let guard = snapshot2
+            .open_segment_reader(segment)
+            .expect("segment reader");
+        let (alpha_marker, alpha_df) = posting_marker(guard.reader(), "body", "alpha");
+        assert_eq!(alpha_marker, 7, "segment {segment} alpha is short");
+        alpha_dfs.push(alpha_df);
+        assert_eq!(
+            posting_marker(guard.reader(), "grp", "common"),
+            (7, alpha_df),
+            "segment {segment} group term"
+        );
+        let (zeta_marker, zeta_df) = posting_marker(guard.reader(), "body", "zeta");
+        assert_eq!(zeta_marker, 7, "segment {segment} zeta is short");
+        zeta_dfs.push(zeta_df);
+        let doc_field = guard.reader().schema().field_id("doc_id").expect("doc_id");
+        for (key, expected_df) in [("d00000", 64u64), ("d00064", 65)] {
+            if guard
+                .reader()
+                .dictionary()
+                .expect("dictionary")
+                .lookup(doc_field, key)
+                .is_some()
+            {
+                assert_eq!(
+                    posting_marker(guard.reader(), "doc_id", key),
+                    (5, 1),
+                    "segment {segment} unique doc id {key}"
+                );
+                assert_eq!(
+                    alpha_df, expected_df,
+                    "the segment containing {key} holds {expected_df} documents"
+                );
+            }
+        }
+    }
+    alpha_dfs.sort_unstable();
+    zeta_dfs.sort_unstable();
+    assert_eq!(alpha_dfs, vec![64, 65], "two short input segments");
+    assert_eq!(zeta_dfs, vec![51, 52], "zeta counts per input segment");
+
+    let specs = batch(129, |ordinal| ordinal % 4 + 1);
+    let gen2_alpha = search_ok(&snapshot2, &request(term(), 300, ascend()));
+    assert_eq!(gen2_alpha.total_hits, 129);
+    let gen2_alpha_bits = bits_by_key(&gen2_alpha);
+    assert_eq!(gen2_alpha_bits, a5_compacted_alpha_scores(&specs));
+    let gen2_phrase = search_ok(&snapshot2, &a5_phrase_request());
+    assert_eq!(gen2_phrase.total_hits, 96);
+    let gen2_phrase_bits = bits_by_key(&gen2_phrase);
+    let gen2_zeta = search_ok(&snapshot2, &a5_zeta_request());
+    assert_eq!(gen2_zeta.total_hits, 103);
+    let gen2_zeta_bits = bits_by_key(&gen2_zeta);
+
+    // A single public compaction publishes generation 3 itself.
+    {
+        let mut writer = index.writer().expect("writer");
+        let outcome = writer.compact().expect("compact");
+        assert_eq!(outcome.generation, 3);
+        assert_eq!(outcome.documents, 129);
+        assert_eq!(outcome.segments_merged, 2);
+        assert!(!outcome.no_op);
+        let live = writer.reader();
+        assert_eq!(
+            live.generation(),
+            Some(3),
+            "the writer published generation 3"
+        );
+        assert_eq!(live.segment_count(), 1);
+    }
+    drop(index);
+    drop(directory);
+
+    // The held generation-2 PIT keeps its exact results bit-for-bit.
+    assert_eq!(
+        bits_by_key(&search_ok(&snapshot2, &request(term(), 300, ascend()))),
+        gen2_alpha_bits
+    );
+    assert_eq!(
+        bits_by_key(&search_ok(&snapshot2, &a5_phrase_request())),
+        gen2_phrase_bits
+    );
+    assert_eq!(
+        bits_by_key(&search_ok(&snapshot2, &a5_zeta_request())),
+        gen2_zeta_bits
+    );
+
+    a5_assert_compacted_generation(&temp.path);
+}
+
+#[test]
+fn a5_i05_compaction_boundary_128_stays_short() {
+    let specs = batch(128, |ordinal| ordinal % 4 + 1);
+    let temp = TempDir::new("a5i05b");
+    let directory: Arc<dyn Directory> =
+        Arc::new(FsDirectory::open(&temp.path).expect("fs directory"));
+    let writer_index = create(Arc::clone(&directory));
+    {
+        let mut writer = writer_index.writer().expect("writer");
+        for spec in &specs[..64] {
+            writer.insert(document(spec)).expect("insert");
+        }
+        writer.commit().expect("first commit");
+    }
+    {
+        let mut writer = writer_index.writer().expect("writer");
+        for spec in &specs[64..] {
+            writer.insert(document(spec)).expect("insert");
+        }
+        writer.commit().expect("second commit");
+    }
+    drop(writer_index);
+    let index = Index::open_existing(Arc::clone(&directory), schema(), registry()).expect("reopen");
+    let snapshot = index.snapshot();
+    assert_eq!(snapshot.segment_count(), 2);
+    {
+        let mut writer = index.writer().expect("writer");
+        let outcome = writer.compact().expect("compact");
+        assert_eq!(outcome.documents, 128);
+        assert_eq!(outcome.segments_merged, 2);
+        assert!(!outcome.no_op);
+    }
+    drop(index);
+    drop(directory);
+
+    let directory: Arc<dyn Directory> =
+        Arc::new(FsDirectory::open(&temp.path).expect("fresh fs directory"));
+    let index = Index::open_existing(directory, schema(), registry()).expect("reopen");
+    let snapshot = index.snapshot();
+    assert_eq!(snapshot.segment_count(), 1);
+    let guard = snapshot.open_segment_reader(0).expect("segment reader");
+    assert_eq!(
+        posting_marker(guard.reader(), "body", "alpha"),
+        (7, 128),
+        "128 live postings stay short"
+    );
+    assert_eq!(posting_marker(guard.reader(), "grp", "common"), (7, 128));
+    drop(guard);
+    let alpha = search_ok(&snapshot, &request(term(), 300, ascend()));
+    assert_eq!(alpha.total_hits, 128);
+    assert_eq!(bits_by_key(&alpha), a5_compacted_alpha_scores(&specs));
+}
+
+#[test]
+fn a5_i05_compaction_after_delete_crosses_down() {
+    let specs = batch(129, |ordinal| ordinal % 4 + 1);
+    let (temp, directory, index) = build("a5i05c", &specs);
+    assert_eq!(index.generation(), Some(1));
+
+    // Pre-delete PIT: 129 matches that must remain readable unchanged.
+    let pre_delete = index.snapshot();
+    let old = search_ok(&pre_delete, &request(term(), 300, ascend()));
+    assert_eq!(old.total_hits, 129);
+    let old_bits = bits_by_key(&old);
+
+    {
+        let mut writer = index.writer().expect("writer");
+        writer
+            .apply(MutationRequest::delete(
+                DocumentKey::new("k00128").expect("key"),
+            ))
+            .expect("delete");
+        writer.commit().expect("commit delete");
+    }
+    {
+        let mut writer = index.writer().expect("writer");
+        let outcome = writer.compact().expect("compact");
+        assert!(!outcome.no_op);
+        assert_eq!(outcome.documents, 128);
+    }
+    drop(index);
+    drop(directory);
+
+    // The old PIT is immutable.
+    assert_eq!(
+        bits_by_key(&search_ok(&pre_delete, &request(term(), 300, ascend()))),
+        old_bits
+    );
+
+    let directory: Arc<dyn Directory> =
+        Arc::new(FsDirectory::open(&temp.path).expect("fresh fs directory"));
+    let index = Index::open_existing(directory, schema(), registry()).expect("reopen");
+    let snapshot = index.snapshot();
+    assert_eq!(snapshot.segment_count(), 1);
+    let guard = snapshot.open_segment_reader(0).expect("segment reader");
+    assert_eq!(
+        posting_marker(guard.reader(), "body", "alpha"),
+        (7, 128),
+        "filtering one dead document crosses 129 -> 128 and back to short"
+    );
+    drop(guard);
+    let alpha = search_ok(&snapshot, &request(term(), 300, ascend()));
+    assert_eq!(alpha.total_hits, 128);
+    let expected_keys: Vec<String> = specs
+        .iter()
+        .filter(|spec| spec.ordinal != 128)
+        .map(|spec| format!("k{:05}", spec.ordinal))
+        .collect();
+    assert_eq!(keys(&alpha), expected_keys);
+    let zeta = search_ok(&snapshot, &a5_zeta_request());
+    assert_eq!(zeta.total_hits, 102, "deleted document contributed zeta");
+}
+
+/// Stored-only schema: neither indexed nor columnar.
+fn a5_stored_only_schema() -> Schema {
+    Schema::new(
+        vec![FieldDefinition::new(
+            "n",
+            FieldType::I64,
+            Cardinality::Single,
+            FieldOptions::new(false, true, false),
+        )],
+        None,
+    )
+    .expect("schema")
+}
+
+#[test]
+fn a5_i05_stored_only_compaction_has_no_postings() {
+    use quervant_core::segment::{SectionKind, SegmentLimits, parse_container};
+
+    let schema = a5_stored_only_schema();
+    let temp = TempDir::new("a5i05d");
+    let directory: Arc<dyn Directory> =
+        Arc::new(FsDirectory::open(&temp.path).expect("fs directory"));
+    let index = Index::create_with_limits(
+        Arc::clone(&directory),
+        schema.clone(),
+        registry(),
+        IndexLimits::default(),
+    )
+    .expect("create index");
+    for (key, value) in [("s0", 0i64), ("s1", 1i64)] {
+        let mut writer = index.writer().expect("writer");
+        let mut document = Document::new(DocumentKey::new(key).expect("key"));
+        document
+            .insert("n", FieldValues::Single(FieldValue::I64(value)))
+            .expect("insert");
+        writer.insert(document).expect("insert document");
+        writer.commit().expect("commit");
+    }
+    drop(index);
+    let index =
+        Index::open_existing(Arc::clone(&directory), schema.clone(), registry()).expect("reopen");
+    assert_eq!(index.generation(), Some(2));
+    {
+        let mut writer = index.writer().expect("writer");
+        let outcome = writer.compact().expect("compact");
+        assert_eq!(outcome.documents, 2);
+        assert!(!outcome.no_op);
+    }
+    drop(index);
+    drop(directory);
+
+    let directory: Arc<dyn Directory> =
+        Arc::new(FsDirectory::open(&temp.path).expect("fresh fs directory"));
+    let index = Index::open_existing(directory, schema, registry()).expect("reopen");
+    let snapshot = index.snapshot();
+    assert_eq!(snapshot.segment_count(), 1);
+    let guard = snapshot.open_segment_reader(0).expect("segment reader");
+    let required: Vec<u16> = guard
+        .reader()
+        .required_features()
+        .iter()
+        .map(|(id, _)| *id)
+        .collect();
+    assert!(!required.contains(&A5_FEATURE_ADAPTIVE));
+    assert!(!required.contains(&A5_FEATURE_SPLIT));
+    let view =
+        parse_container(guard.reader().bytes(), &SegmentLimits::default()).expect("container");
+    assert!(view.body(SectionKind::Dictionary).is_none());
+    assert!(view.body(SectionKind::Postings).is_none());
+    let stored = guard.reader().stored().expect("stored");
+    assert_eq!(stored.len(), 2);
+}
+
+#[test]
+fn a5_i05_repeated_compaction_is_a_no_op() {
+    let (temp, directory, index) = a5_two_commit_index("a5i05e");
+    {
+        let mut writer = index.writer().expect("writer");
+        let outcome = writer.compact().expect("compact");
+        assert!(!outcome.no_op);
+        assert_eq!(outcome.generation, 3);
+    }
+    drop(index);
+    drop(directory);
+
+    let directory: Arc<dyn Directory> =
+        Arc::new(FsDirectory::open(&temp.path).expect("fresh fs directory"));
+    let index = Index::open_existing(directory, schema(), registry()).expect("reopen");
+    let generation = index.generation();
+    {
+        let mut writer = index.writer().expect("writer");
+        let outcome = writer.compact().expect("compact");
+        assert!(outcome.no_op, "a clean single compacted segment is a no-op");
+    }
+    assert_eq!(
+        index.generation(),
+        generation,
+        "a no-op compaction must not publish a new generation"
+    );
+    a5_assert_compacted_generation(&temp.path);
+}
+
+/// A5 limit fixture schema: one indexed-but-not-stored text field.
+fn a5_limit_schema() -> Schema {
+    Schema::new(
+        vec![
+            FieldDefinition::new(
+                "body",
+                FieldType::Text,
+                Cardinality::Single,
+                FieldOptions::new(true, false, false),
+            )
+            .with_analyzer("standard_folded"),
+        ],
+        None,
+    )
+    .expect("schema")
+}
+
+/// Read a whole file from a `Directory` through its immutable read handle.
+fn a5_read_all(directory: &Arc<dyn Directory>, key: &str) -> Vec<u8> {
+    use quervant_core::storage::StorageKey;
+    let handle = directory
+        .open_read(&StorageKey::parse(key).expect("key"))
+        .expect("open read");
+    let mut buffer = vec![0u8; handle.len() as usize];
+    let mut offset = 0usize;
+    while offset < buffer.len() {
+        let read = handle
+            .read_at(offset as u64, &mut buffer[offset..])
+            .expect("read");
+        assert!(read > 0, "unexpected short read");
+        offset += read;
+    }
+    buffer
+}
+
+/// Score map for the A5 one-field fixture, derived from the input only.
+fn a5_limit_scores() -> BTreeMap<String, u64> {
+    (0..16)
+        .map(|ordinal| {
+            (
+                format!("p{ordinal:05}"),
+                frozen_scalar_bm25(1024, 16, 16, 1024, 1024.0).to_bits(),
+            )
+        })
+        .collect()
+}
+
+/// Search the A5 one-field fixture through the public lexical searcher.
+fn a5_limit_search(snapshot: &ReaderSnapshot) -> BTreeMap<String, u64> {
+    let schema = a5_limit_schema();
+    let registry = registry();
+    let cancel = CancellationFlag::new();
+    let response = quervant_core::search::LexicalSearcher::new(
+        snapshot,
+        &schema,
+        &registry,
+        SearchLimits::default(),
+    )
+    .search(
+        &Query::Term {
+            field: "body".to_owned(),
+            value: FieldValue::Text("alpha".to_owned()),
+        },
+        TopK::new(16).expect("top k"),
+        &Budgets::new(),
+        &cancel,
+    )
+    .expect("search");
+    assert_eq!(response.total_hits, 16, "every fixture document matches");
+    response
+        .hits
+        .into_iter()
+        .map(|hit| (hit.key.as_str().to_owned(), hit.score.to_bits()))
+        .collect()
+}
+
+#[test]
+fn a5_i05_compaction_limit_failure_preserves_generation() {
+    use quervant_core::index::{CURRENT_KEY, IndexError};
+    use quervant_core::segment::{SegmentError, SegmentLimits};
+
+    let schema = a5_limit_schema();
+    let body = std::iter::repeat_n("alpha", 1024)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let insert = |index: &Index, range: std::ops::Range<usize>| {
+        let mut writer = index.writer().expect("writer");
+        for ordinal in range {
+            let mut document =
+                Document::new(DocumentKey::new(format!("p{ordinal:05}")).expect("key"));
+            document
+                .insert("body", FieldValues::Single(FieldValue::Text(body.clone())))
+                .expect("insert body");
+            writer.insert(document).expect("insert document");
+        }
+        writer.commit().expect("commit");
+    };
+
+    let temp = TempDir::new("a5i05f");
+    let directory: Arc<dyn Directory> =
+        Arc::new(FsDirectory::open(&temp.path).expect("fs directory"));
+    let index = Index::create_with_limits(
+        Arc::clone(&directory),
+        schema.clone(),
+        registry(),
+        IndexLimits::default(),
+    )
+    .expect("create index");
+    insert(&index, 0..8);
+    insert(&index, 8..16);
+    drop(index);
+    drop(directory);
+
+    // Generation 2 under default limits: two adaptive segments.
+    let directory: Arc<dyn Directory> =
+        Arc::new(FsDirectory::open(&temp.path).expect("fresh fs directory"));
+    let index =
+        Index::open_existing(Arc::clone(&directory), schema.clone(), registry()).expect("reopen");
+    assert_eq!(index.generation(), Some(2));
+    let snapshot = index.snapshot();
+    assert_eq!(snapshot.segment_count(), 2);
+    for segment in 0..2usize {
+        let guard = snapshot
+            .open_segment_reader(segment)
+            .expect("segment reader");
+        let required: Vec<u16> = guard
+            .reader()
+            .required_features()
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert!(required.contains(&A5_FEATURE_ADAPTIVE));
+        assert!(!required.contains(&A5_FEATURE_SPLIT));
+        let (marker, df) = posting_marker(guard.reader(), "body", "alpha");
+        assert_eq!((marker, df), (7, 8), "segment {segment} alpha");
+        let body_id = guard.reader().schema().field_id("body").expect("body");
+        let entry = guard
+            .reader()
+            .dictionary()
+            .expect("dictionary")
+            .lookup(body_id, "alpha")
+            .expect("alpha term");
+        // 8 documents with frequency 8192 each: D 8, F 16, P 57_000, header 10.
+        assert_eq!(
+            entry.postings_length, 57_034,
+            "segment {segment} compact length"
+        );
+    }
+    assert_eq!(
+        std::mem::size_of::<quervant_core::segment::Occurrence>(),
+        40,
+        "the verified occurrence layout drives the decoded-allocation bound"
+    );
+    let occurrence_allocation = 1024 * 40;
+    assert!(
+        occurrence_allocation < 65_536,
+        "one posting's occurrence allocation stays below the tightened bound"
+    );
+    let expected = a5_limit_scores();
+    assert_eq!(a5_limit_search(&snapshot), expected);
+    drop(snapshot);
+    drop(index);
+    drop(directory);
+
+    // Reopen with a tightened single-allocation bound: read paths still succeed.
+    let tightened = SegmentLimits::default().with_max_single_allocation(65_536);
+    let limits = IndexLimits::default().with_segment_limits(tightened);
+    let directory: Arc<dyn Directory> =
+        Arc::new(FsDirectory::open(&temp.path).expect("fresh fs directory"));
+    let index = Index::open_with_limits(
+        Arc::clone(&directory),
+        schema.clone(),
+        registry(),
+        limits.clone(),
+    )
+    .expect("tightened open");
+    assert_eq!(index.generation(), Some(2));
+    let pinned = index.snapshot();
+    assert_eq!(pinned.segment_count(), 2);
+    assert_eq!(a5_limit_search(&pinned), expected);
+    let current_before = a5_read_all(&directory, CURRENT_KEY);
+
+    let mut writer = index.writer().expect("writer under tightened limits");
+    assert_eq!(writer.reader().generation(), Some(2));
+    assert_eq!(a5_limit_search(&writer.reader()), expected);
+
+    // Compaction must reject the exact 114_059-byte merged encoded block.
+    let error = writer.compact().expect_err("limit rejection is prescribed");
+    match error {
+        IndexError::Segment(SegmentError::LimitExceeded { limit, requested }) => {
+            assert_eq!(limit, 65_536);
+            assert_eq!(requested, 114_059);
+        }
+        other => panic!("unexpected compaction error: {other:?}"),
+    }
+
+    // Nothing was published: CURRENT, the live view and the held PIT are intact.
+    assert_eq!(
+        a5_read_all(&directory, CURRENT_KEY),
+        current_before,
+        "a rejected compaction must not publish a generation"
+    );
+    assert_eq!(writer.reader().generation(), Some(2));
+    assert_eq!(writer.reader().segment_count(), 2);
+    assert_eq!(a5_limit_search(&writer.reader()), expected);
+    assert_eq!(pinned.generation(), Some(2));
+    assert_eq!(pinned.segment_count(), 2);
+    assert_eq!(a5_limit_search(&pinned), expected);
+    drop(writer);
+    drop(index);
+    drop(directory);
+
+    // Reopening with default limits sees the same committed generation 2.
+    let directory: Arc<dyn Directory> =
+        Arc::new(FsDirectory::open(&temp.path).expect("fresh fs directory"));
+    let index = Index::open_existing(directory, schema, registry()).expect("default reopen");
+    assert_eq!(index.generation(), Some(2));
+    let snapshot = index.snapshot();
+    assert_eq!(snapshot.segment_count(), 2);
+    assert_eq!(a5_limit_search(&snapshot), expected);
+}

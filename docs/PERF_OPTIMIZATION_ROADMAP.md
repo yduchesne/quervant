@@ -22,7 +22,7 @@ This milestone targets the **v0.1 single-shard lexical engine**. It does not inc
 | **PERF-02-A** | Pinned Quervant-only warm A/B benchmark study | **DONE — implementation, PR #115** | Pinned A/B build/stage study; no full timed readiness campaign |
 | **PERF-02-B** | Bounded warm sort-path profiling | **MERGED — `BLOCKED`, PR #116** | Preserve the report and captured evidence. One lane has valid 11.6% sampled sort-path CPU; three fail the 85% attribution gate. No further PERF-02-B profiling or optimization claim |
 | **PERF-05** | High-hit physical execution and representation reuse | **MERGED — PR #117** | B1–B5 implemented and independently reviewed; [C qualification results](../benchmarks/studies/perf-05/warm/results/quervant-perf05-b-only-warm-2026-11-23-002.json) COMPLETE with 16/16 B/B PASS and all historical-relative targets met. Earlier INCOMPLETE attempt preserved. No profiling was part of final C.
-| **PERF-06-A** | Scoring and postings efficiency | **PLANNED — A1–A4** | Precomputed BM25 term weights; document/frequency-only postings API; separated postings representation; consolidated correctness and warm qualification.
+| **PERF-06-A** | Scoring and postings efficiency | **A1–A3 MERGED; A4 MERGED (targets not all met); A5 IMPLEMENTED — INDEPENDENT REVIEW PENDING; A6 PLANNED** | A1–A3 retained; A4 PR #123 merged with its measured `PERF06_A4_PAIRED_COMPLETE_TARGETS_NOT_MET_REVIEW_REQUIRED` disposition unchanged; A5 adds compact postings for 1–128-document terms and wires compaction to the same encoder; A6 is a separately planned qualification.
 | **PERF-06-B** | Fast-field and document-identity architecture | **PLANNED — B1–B4; AFTER A** | Persistent keyword ordinals; correct segment/cross-segment comparisons; compact document-key and duplicate identity; consolidated correctness and warm qualification.
 | **PERF-06-C** | Integrated physical query executor | **PLANNED — C1–C4; AFTER A+B** | Approved execution contracts; exact-term count/Top-K collector; qualified deferred scoring; consolidated correctness and warm qualification.
 | **PERF-04 (second investigation)** | Residual reader-state / validated access reuse | **PLANNED — SHORT AUDIT** | Compare accepted code against PR 15G-A/B already delivered; identify one still-repeated material operation or close without broad profiling |
@@ -50,6 +50,24 @@ This milestone targets the **v0.1 single-shard lexical engine**. It does not inc
 | **PERF-06-A3** | Versioned postings layout with separately accessible doc-ID, frequency and positional streams and block/skip metadata; integrate writer, decoder and index construction. | After A2; deep codec/storage refactor and reindexing allowed. Specify validation trust boundary, phrase compatibility, decoded-resource admission and index-size tradeoffs before coding. No unapproved change to query semantics. |
 | **PERF-06-A4** | Integrate and independently review A1–A3, finish full deterministic/adversarial correctness QA, then run **one approved warm qualification** for the cumulative A-series candidate, including negative-case guards and preserved results. | Final A gate; no new optimization algorithm selected during qualification. Accepted A forms the B starting baseline. |
 
+#### PERF-06-A current-status amendment (PERF-06-A5)
+
+A1–A3 remain retained. A4 PR #123 is merged; its complete second paired campaign
+met two of four primary targets and all guards, with no lane classified as
+regressed. The measured targets-not-met disposition remains historical evidence.
+A5 addresses short-list postings metadata and correctness/structural footprint.
+A6 is a separately planned consolidated compatibility/storage/warm-performance
+qualification before B1. No A6 acquisition is authorized by A5.
+
+| Stage | Status | Deliverable / boundary |
+| --- | --- | --- |
+| **PERF-06-A5** | `IMPLEMENTED — INDEPENDENT REVIEW PENDING` | `FEATURE_ADAPTIVE_POSTINGS = 0x000F/1`; compact framed streams for `df <= 128`, unchanged A3 payloads for `df >= 129`; one-buffer compact encoding with fused size accounting; shared lazy full/lean decoder; both `SegmentBuilder` and `IndexWriter::compact` emit the adaptive family; legacy and split readers retained. Correctness/structural change only — no latency, writer-cost, RSS or real index-size claim. |
+| **PERF-06-A6** | `PLANNED — SEPARATE DESIGN/ACQUISITION REQUIRED` | Consolidated A-series compatibility, storage and warm-performance qualification, including a genuine complete A3-produced (E) index appended/compacted by A5 and real benchmark-corpus index sizes. Must be separately designed and authorized; A5 authorizes no acquisition. |
+
+**Updated dependency:** `A1 → A2 → A3 → A4 (merged, targets not all met) → A5 →
+A6 → B1 → ...`. A6 remains a precondition for B1 and does not retune A4's
+declared targets.
+
 ### PERF-06-B — Fast-field and document-identity architecture
 
 **Goal:** reduce string and identity work on candidates that cannot enter Top-K, using validated immutable representations.
@@ -72,7 +90,7 @@ This milestone targets the **v0.1 single-shard lexical engine**. It does not inc
 | **PERF-06-C3** | Defer BM25 computation and owned result materialization until final winners **only where formally proven safe**, preserving required returned scores and every error/validation obligation. | After C2; use winner-only work when explicit sort is independent of score; relevance sorting and other ineligible shapes keep required scoring. Define score-error precedence before editing code. |
 | **PERF-06-C4** | Integrate and independently review C1–C3, run final deterministic/end-to-end correctness and resource gates, then **one approved warm qualification** for the integrated C series. | Final C gate; report the **incremental C gain over accepted A+B** separately from any cumulative PERF-06 change since PERF-05. |
 
-**Dependency graph:** `PERF-05 (merged) → A1 → A2 → A3 → A4 (qualification/acceptance) → B1 → B2 → B3 → B4 (qualification/acceptance) → C1 → C2 → C3 → C4 (qualification/acceptance)`. A and B are architecturally separable concepts, but the default release order is sequential to keep one reviewed baseline and prevent overlapping format/executor migrations. Altering dependencies or PR topology requires a documented maintainer decision.
+**Dependency graph:** `PERF-05 (merged) → A1 → A2 → A3 → A4 (merged; targets not all met) → A5 → A6 (qualification/acceptance) → B1 → B2 → B3 → B4 (qualification/acceptance) → C1 → C2 → C3 → C4 (qualification/acceptance)`. A and B are architecturally separable concepts, but the default release order is sequential to keep one reviewed baseline and prevent overlapping format/executor migrations. Altering dependencies or PR topology requires a documented maintainer decision.
 
 ### Overarching execution and benchmark approach — retained from PERF-05
 

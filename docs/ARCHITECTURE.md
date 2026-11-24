@@ -784,9 +784,16 @@ frozen storage and latency gates (10K rare 1.0592) and is pending hosted CI and
 independent review; Zstd remained ineligible. See
 `docs/pr-artifacts/pr-15i-b/residual-*.md`.
 
-## PERF-06-A3 split postings v1 (implemented)
+## PERF-06-A3 split postings v1 (implemented; retained for long lists)
 
-New segments declare required feature `FEATURE_SPLIT_POSTINGS = 0x000E/1`
+> **Current status (PERF-06-A5):** the split layout below is no longer the writer
+> default. New segments and ordinary compaction declare
+> `FEATURE_ADAPTIVE_POSTINGS = 0x000F/1` and use compact framing for terms with
+> 1-128 documents; terms with 129 or more documents reuse this split payload
+> byte-for-byte. See [PERF-06-A5 adaptive postings](#perf-06-a5-adaptive-postings-implemented)
+> and [the A5 execution report](pr-artifacts/perf-06-a/PERF06A5_EXECUTION_REPORT.md).
+
+Historically (A3) new segments declared required feature `FEATURE_SPLIT_POSTINGS = 0x000E/1`
 alongside `FEATURE_POSITIONAL` whenever the segment has a
 DICTIONARY/POSTINGS pair, and every dictionary-referenced term in that segment
 uses payload version 1. The container version (`1.0`), section kind
@@ -858,3 +865,94 @@ Structural size (deterministic byte counts, not latency): for a positional term
 with one occurrence per document, the split payload is `56 + 5*n + n + n +
 40*ceil(n/128)` bytes versus the legacy `17 + 7*n`; a 3-document corpus built by
 the real builder grew from 3450 to 3924 bytes in the A3-I03 fixture.
+
+## PERF-06-A5 adaptive postings (implemented)
+
+**Problem.** The A3 split payload pays a 56-byte per-term header plus one 40-byte
+directory entry per 128-posting block, so even a singleton carries 96 bytes of
+structural metadata. On corpora whose terms are mostly unique identifiers that
+fixed cost dominates the postings footprint.
+
+**Family selector.** `FEATURE_ADAPTIVE_POSTINGS = 0x000F/1` is the complete
+adaptive-family selector for one segment, added to `SUPPORTED_FEATURES`.
+`FEATURE_SPLIT_POSTINGS = 0x000E/1` remains supported so old segments stay
+readable. The container version, the `Postings = 0x0003` section kind, the
+DICTIONARY payload/entry layout and all envelope/section digests are unchanged.
+`SectionKind::MutationState` also uses numeric `0x000F` in a different namespace;
+ids are not renumbered. A segment must not require both families
+(`"conflicting postings features"`); the exclusion is **per segment**, never
+index-wide, and no global manifest feature is added.
+
+**Wire grammar** (all `v` fields are canonical unsigned LEB128):
+
+| Order | Field | Singleton (markers 4/5) | Short (markers 6/7) |
+| --- | --- | --- | --- |
+| 1 | `marker:u8` | 4 doc-only, 5 positional | 6 doc-only, 7 positional |
+| 2 | `payload_version:u8` | exactly 1 | exactly 1 |
+| 3 | `posting_doc_count:v` | omitted (implicit 1) | 2..=128 |
+| 4 | `freq_total:v` | exact frequency sum | exact frequency sum |
+| 5 | `doc_stream_len:v` | `D` | `D` |
+| 6 | `freq_stream_len:v` | `F` | `F` |
+| 7 | `pos_stream_len:v` | `P` (0 for doc-only) | `P` (0 for doc-only) |
+| 8 | document stream | first id absolute | first absolute, then positive deltas |
+| 9 | frequency stream | one varint | one varint per posting |
+| 10 | position stream | existing five occurrence varints | same, per-posting history reset |
+| 11 | end | exact term extent end | exact term extent end |
+
+Terms with 129 or more documents are the unchanged A3 payload (markers 2/3),
+written by the same A3 encoder; the adaptive encoder never re-implements or
+re-validates them. There are no flags, reserved fields, padding, directories,
+field-specific variants or representation heuristics: the selector is the live
+posting count and whether any source posting carries occurrences. Compact is
+strictly smaller than A3 for every valid `df <= 128` input.
+
+**Encoding cost contract.** Source validation is the single historical
+validator, now const-specialized: the legacy and split encoders instantiate it
+with measurement disabled, the adaptive compact path with measurement enabled,
+and enabled measurement fuses document/frequency/occurrence width accounting into
+the existing validation walk (no extra occurrence traversal, no allocation). The
+original validation order and every typed error/detail are preserved, and a
+length-arithmetic overflow is reported only after all original semantic rules
+pass. After admission against `max_single_allocation`, the compact encoder
+reserves exactly one output buffer and writes the header and the three streams
+into it; there are no scratch stream buffers, no concatenation copies, no
+backpatching and no capacity growth. `ByteWriter::try_with_capacity` converts an
+allocator refusal into the existing `LimitExceeded` convention. The long path
+delegates to `encode_split_postings_block` before any compact validation, sizing
+or allocation.
+
+**Reader contract.** `PostingsReader::new_adaptive` (crate-internal) parses only
+the bounded header and three checked extents; posting bodies stay lazy. For
+markers 2/3 it delegates once to the retained `new_split` over the complete slice
+and then rejects a posting count `<= 128` as
+`"noncanonical split posting count"`. The shared decoder gained a `Compact`
+stream variant only: document deltas reuse the legacy absolute-first/positive-
+delta logic and errors, frequency/position reads use the borrowed compact
+readers, and the existing full/lean API, cancellation-before-EOF ordering,
+incremental decoded-entry limits, hypothetical occurrence-allocation charging and
+consuming `into_doc_freq` conversion are unchanged. Compact EOF verification
+checks the document, frequency and position streams in that order and then the
+observed frequency sum. Construction is borrowed and bounded: no payload
+pre-decode, no decoded-entry charge and no retained heap cache.
+
+**Producers.** Both ordinary segment building and normal compaction call the
+adaptive encoder and emit `FEATURE_ADAPTIVE_POSTINGS` beside `FEATURE_POSITIONAL`
+only when a real DICTIONARY/POSTINGS pair is produced; a no-term segment emits
+neither feature nor section. Compaction selects the representation from the live
+output posting count after filtering, so it can cross the 128/129 boundary in
+either direction. Indexed Keyword fields keep their positional occurrences
+exactly as before; the compact framing is not a doc-only optimization.
+
+**Not included.** No BM25 or scoring change, no skip/seek acceleration (the
+long-list block directory stays skip-*ready* metadata only and `advance` remains
+a sequential validating walk), no compression, bit packing, runtime feature
+flag, new section kind, global container/manifest change, in-place migration or
+forced reindex. Because the adaptive/A3 encoded-block admission now also applies
+during compaction, a pathologically large merged block can legitimately return
+`LimitExceeded` where the previous legacy encoder did not; that tightening is
+intentional and there is no fallback to the legacy encoder.
+
+This is a storage-format and cost-structure capability, not a measured latency or
+writer-throughput result. Full-corpus index-size figures in the A5 report are
+source-model projections; PERF-06-A6 owns actual benchmark-corpus sizes and warm
+qualification.

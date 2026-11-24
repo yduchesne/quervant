@@ -20,16 +20,15 @@ use super::column::encode_columns;
 use super::dictionary::{DictionaryEntry, encode_dictionary};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
-    ContainerBuilder, ContainerKind, FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS,
-    FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_POSITIONAL, FEATURE_REMAP,
-    FEATURE_SPATIAL_POINTS, FEATURE_SPLIT_POSTINGS, FEATURE_STORED, FEATURE_STORED_BLOCKS,
-    SectionKind,
+    ContainerBuilder, ContainerKind, FEATURE_ADAPTIVE_POSTINGS, FEATURE_BASELINE, FEATURE_BOUNDS,
+    FEATURE_COLUMNS, FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_POSITIONAL, FEATURE_REMAP,
+    FEATURE_SPATIAL_POINTS, FEATURE_STORED, FEATURE_STORED_BLOCKS, SectionKind,
 };
 use super::json_paths::{JsonFieldOccurrences, encode_json_paths, extract_field_paths};
 use super::limits::SegmentLimits;
 use super::model::SegmentDocument;
 use super::norms::{encode_field_norms, scoring_field_ids};
-use super::postings::{Occurrence, Posting, encode_split_postings_block};
+use super::postings::{Occurrence, Posting, encode_adaptive_postings_block};
 use super::remap::DocRemap;
 use super::schema::CodecSchema;
 use super::stored_blocks::encode_stored_blocks;
@@ -238,7 +237,7 @@ impl SegmentBuilder {
                 for (term, postings) in terms {
                     let offset = postings_body.len() as u64;
                     let block =
-                        encode_split_postings_block(doc_count as u64, &postings, &self.limits)?;
+                        encode_adaptive_postings_block(doc_count as u64, &postings, &self.limits)?;
                     let length = block.len() as u64;
                     postings_body.bytes(&block);
                     entries.push(DictionaryEntry {
@@ -358,9 +357,11 @@ impl SegmentBuilder {
         builder.require_feature(FEATURE_FIELD_NORMS, 1);
         if has_positional_postings {
             builder.require_feature(FEATURE_POSITIONAL, 1);
-            // Every dictionary-referenced term in this segment uses the split
-            // postings v1 payload; readers dispatch on this required feature.
-            builder.require_feature(FEATURE_SPLIT_POSTINGS, 1);
+            // Every dictionary-referenced term in this segment uses the adaptive
+            // postings v1 family: compact framing for 1-128 documents and the
+            // unchanged split payload beyond that. Readers dispatch on this
+            // required feature.
+            builder.require_feature(FEATURE_ADAPTIVE_POSTINGS, 1);
         }
         builder.require_feature(FEATURE_STORED, 1);
         builder.require_feature(FEATURE_STORED_BLOCKS, 1);

@@ -32,6 +32,31 @@ const SPLIT_DIRECTORY_ENTRY_BYTES: usize = 40;
 /// Bounded error context for every split-postings structural failure.
 const SPLIT_CONTEXT: &str = "split postings";
 
+/// Adaptive compact payload version (PERF-06-A5). Exactly one version exists.
+const ADAPTIVE_PAYLOAD_VERSION: u8 = 1;
+/// Compact singleton doc-only marker.
+const COMPACT_SINGLETON_DOC_ONLY: u8 = 4;
+/// Compact singleton positional marker.
+const COMPACT_SINGLETON_POSITIONAL: u8 = 5;
+/// Compact short (2..=128 documents) doc-only marker.
+const COMPACT_SHORT_DOC_ONLY: u8 = 6;
+/// Compact short (2..=128 documents) positional marker.
+const COMPACT_SHORT_POSITIONAL: u8 = 7;
+/// Largest posting count encoded by the compact representation.
+const ADAPTIVE_COMPACT_MAX_DOCS: u64 = 128;
+/// Fixed payload version selector width plus the version byte itself.
+const ADAPTIVE_MARKER_VERSION_BYTES: u64 = 2;
+/// Bounded error context for every adaptive-postings structural failure.
+const ADAPTIVE_CONTEXT: &str = "adaptive postings";
+
+/// A typed adaptive-postings corruption with a fixed, bounded detail string.
+fn adaptive_corrupt(detail: &'static str) -> SegmentError {
+    SegmentError::Corrupt {
+        context: ADAPTIVE_CONTEXT,
+        detail: detail.to_owned(),
+    }
+}
+
 /// A typed split-postings corruption with a fixed, bounded detail string.
 fn split_corrupt(detail: &'static str) -> SegmentError {
     SegmentError::Corrupt {
@@ -92,17 +117,68 @@ struct PostingsSource {
     positional: bool,
     posting_doc_count: u64,
     freq_total: u64,
+    /// Compact stream lengths measured during the same validation walk.
+    ///
+    /// `None` when the caller's const parameter disabled measurement (the legacy
+    /// and split encoders never pay for compact arithmetic).
+    compact_lengths: Option<CompactLengths>,
 }
 
-/// The single source-data validator used by the legacy and split encoders.
+/// Compact document/frequency/positional stream lengths in bytes.
+#[derive(Clone, Copy, Default)]
+struct CompactLengths {
+    docs: u64,
+    freqs: u64,
+    positions: u64,
+}
+
+/// Canonical LEB128 width of `value` in bytes.
+///
+/// The `| 1` makes zero one byte wide. This helper only *sizes* a value;
+/// `ByteWriter::varint` remains the sole production emitter.
+fn compact_varint_len(value: u64) -> u64 {
+    #[cfg(test)]
+    encode_observation::record_width_call();
+    u64::from((u64::BITS - (value | 1).leading_zeros()).div_ceil(7))
+}
+
+/// Sum the compact header and measured stream lengths with checked arithmetic.
+fn compact_total_len(header_len: u64, lengths: CompactLengths) -> SegmentResult<u64> {
+    let mut total = header_len;
+    for part in [lengths.docs, lengths.freqs, lengths.positions] {
+        total = total
+            .checked_add(part)
+            .ok_or_else(|| adaptive_corrupt("length overflow"))?;
+    }
+    Ok(total)
+}
+
+/// Add a measured width, remembering (not yet reporting) arithmetic overflow.
+fn accumulate_width(accumulator: &mut u64, width: u64, overflow: &mut bool) {
+    match accumulator.checked_add(width) {
+        Some(next) => *accumulator = next,
+        None => *overflow = true,
+    }
+}
+
+/// The single source-data validator used by the legacy, split and adaptive
+/// encoders.
 ///
 /// Validation order is the historical per-posting order, so legacy error values
 /// are preserved exactly. Invalid source data is never sorted or repaired.
-fn validate_source_postings(
+/// `MEASURE_COMPACT` fuses compact stream-length accounting into the same walk:
+/// it adds no traversal, no allocation and no work to the `false` specialization.
+fn validate_source_postings<const MEASURE_COMPACT: bool>(
     segment_doc_count: u64,
     postings: &[Posting],
     limits: &SegmentLimits,
 ) -> SegmentResult<PostingsSource> {
+    #[cfg(test)]
+    encode_observation::record_validation_call();
+    if MEASURE_COMPACT {
+        #[cfg(test)]
+        encode_observation::record_compact_validation_call();
+    }
     let positional = postings
         .iter()
         .any(|posting| !posting.occurrences.is_empty());
@@ -128,11 +204,13 @@ fn validate_source_postings(
     let freq_total: u64 = postings
         .iter()
         .try_fold(0u64, |acc, posting| acc.checked_add(posting.freq))
-        .ok_or(SegmentError::Corrupt {
+        .ok_or_else(|| SegmentError::Corrupt {
             context: "postings",
             detail: "frequency total overflow".to_owned(),
         })?;
 
+    let mut measurement = CompactLengths::default();
+    let mut measurement_overflow = false;
     let mut previous_doc: Option<u64> = None;
     for posting in postings {
         if posting.doc_id >= segment_doc_count {
@@ -154,13 +232,29 @@ fn validate_source_postings(
                 });
             }
         }
+        if positional && posting.freq != posting.occurrences.len() as u64 {
+            return Err(SegmentError::Corrupt {
+                context: "postings",
+                detail: "frequency does not match occurrence count".to_owned(),
+            });
+        }
+        if MEASURE_COMPACT {
+            let doc_width = match previous_doc {
+                None => posting.doc_id,
+                Some(previous) => posting.doc_id - previous,
+            };
+            accumulate_width(
+                &mut measurement.docs,
+                compact_varint_len(doc_width),
+                &mut measurement_overflow,
+            );
+            accumulate_width(
+                &mut measurement.freqs,
+                compact_varint_len(posting.freq),
+                &mut measurement_overflow,
+            );
+        }
         if positional {
-            if posting.freq != posting.occurrences.len() as u64 {
-                return Err(SegmentError::Corrupt {
-                    context: "postings",
-                    detail: "frequency does not match occurrence count".to_owned(),
-                });
-            }
             let mut previous_position: Option<u64> = None;
             let mut previous_value_index = 0u64;
             for occurrence in &posting.occurrences {
@@ -190,16 +284,43 @@ fn validate_source_postings(
                         });
                     }
                 }
+                if MEASURE_COMPACT {
+                    let position_delta = match previous_position {
+                        None => occurrence.position,
+                        Some(previous) => occurrence.position - previous,
+                    };
+                    for width in [
+                        compact_varint_len(position_delta),
+                        compact_varint_len(occurrence.position_length),
+                        compact_varint_len(occurrence.value_index),
+                        compact_varint_len(occurrence.start_offset),
+                        compact_varint_len(occurrence.end_offset),
+                    ] {
+                        accumulate_width(
+                            &mut measurement.positions,
+                            width,
+                            &mut measurement_overflow,
+                        );
+                    }
+                }
                 previous_position = Some(occurrence.position);
             }
         }
         previous_doc = Some(posting.doc_id);
     }
 
+    if measurement_overflow {
+        return Err(adaptive_corrupt("length overflow"));
+    }
     Ok(PostingsSource {
         positional,
         posting_doc_count,
         freq_total,
+        compact_lengths: if MEASURE_COMPACT {
+            Some(measurement)
+        } else {
+            None
+        },
     })
 }
 
@@ -213,7 +334,7 @@ pub fn encode_postings_block(
     postings: &[Posting],
     limits: &SegmentLimits,
 ) -> SegmentResult<Vec<u8>> {
-    let source = validate_source_postings(segment_doc_count, postings, limits)?;
+    let source = validate_source_postings::<false>(segment_doc_count, postings, limits)?;
     let positional = source.positional;
     let posting_doc_count = source.posting_doc_count;
     let freq_total = source.freq_total;
@@ -267,7 +388,7 @@ pub fn encode_split_postings_block(
     postings: &[Posting],
     limits: &SegmentLimits,
 ) -> SegmentResult<Vec<u8>> {
-    let source = validate_source_postings(segment_doc_count, postings, limits)?;
+    let source = validate_source_postings::<false>(segment_doc_count, postings, limits)?;
     let block_count_value = source.posting_doc_count.div_ceil(SPLIT_BLOCK_DOCS_U64);
     let block_count =
         u32::try_from(block_count_value).map_err(|_| SegmentError::LimitExceeded {
@@ -367,6 +488,117 @@ pub fn encode_split_postings_block(
     Ok(out)
 }
 
+/// Encode one term's posting block with the adaptive postings family
+/// (PERF-06-A5 v1).
+///
+/// Lists of 1-128 documents use the compact framed representation; longer
+/// lists delegate to [`encode_split_postings_block`] before any compact
+/// validation, sizing or allocation, so their bytes stay identical to A3.
+///
+/// The compact path validates the source once while fusing stream-length
+/// measurement into the same walk, then admits and reserves exactly one output
+/// buffer and emits the three streams into it. No scratch stream buffers, no
+/// occurrence traversal solely for sizing and no capacity growth are involved.
+pub fn encode_adaptive_postings_block(
+    segment_doc_count: u64,
+    postings: &[Posting],
+    limits: &SegmentLimits,
+) -> SegmentResult<Vec<u8>> {
+    if postings.len() as u64 > ADAPTIVE_COMPACT_MAX_DOCS {
+        return encode_split_postings_block(segment_doc_count, postings, limits);
+    }
+    let source = validate_source_postings::<true>(segment_doc_count, postings, limits)?;
+    let Some(lengths) = source.compact_lengths else {
+        // Only reachable if the enabled validator failed to measure.
+        return Err(adaptive_corrupt("length overflow"));
+    };
+    let positional = source.positional;
+    let short = source.posting_doc_count != 1;
+
+    let mut header_len = ADAPTIVE_MARKER_VERSION_BYTES;
+    if short {
+        header_len += compact_varint_len(source.posting_doc_count);
+    }
+    header_len += compact_varint_len(source.freq_total);
+    header_len += compact_varint_len(lengths.docs);
+    header_len += compact_varint_len(lengths.freqs);
+    header_len += compact_varint_len(lengths.positions);
+    let total = compact_total_len(header_len, lengths)?;
+    if total > limits.max_single_allocation() {
+        return Err(SegmentError::LimitExceeded {
+            limit: limits.max_single_allocation(),
+            requested: total,
+        });
+    }
+    let total_bytes = usize::try_from(total).map_err(|_| SegmentError::LimitExceeded {
+        limit: limits.max_single_allocation(),
+        requested: total,
+    })?;
+    let mut writer =
+        ByteWriter::try_with_capacity(total_bytes).map_err(|_| SegmentError::LimitExceeded {
+            limit: limits.max_single_allocation(),
+            requested: total,
+        })?;
+    #[cfg(test)]
+    encode_observation::record_compact_output_buffer(writer.capacity_for_test());
+
+    writer.u8(match (short, positional) {
+        (false, false) => COMPACT_SINGLETON_DOC_ONLY,
+        (false, true) => COMPACT_SINGLETON_POSITIONAL,
+        (true, false) => COMPACT_SHORT_DOC_ONLY,
+        (true, true) => COMPACT_SHORT_POSITIONAL,
+    });
+    writer.u8(ADAPTIVE_PAYLOAD_VERSION);
+    if short {
+        writer.varint(source.posting_doc_count);
+    }
+    writer.varint(source.freq_total);
+    writer.varint(lengths.docs);
+    writer.varint(lengths.freqs);
+    writer.varint(lengths.positions);
+    let header_end = writer.len();
+
+    let mut previous_doc: Option<u64> = None;
+    for posting in postings {
+        let delta = match previous_doc {
+            None => posting.doc_id,
+            Some(previous) => posting.doc_id - previous,
+        };
+        writer.varint(delta);
+        previous_doc = Some(posting.doc_id);
+    }
+    let docs_end = writer.len();
+    for posting in postings {
+        writer.varint(posting.freq);
+    }
+    let freqs_end = writer.len();
+    if positional {
+        for posting in postings {
+            let mut previous_position: Option<u64> = None;
+            for occurrence in &posting.occurrences {
+                let position_delta = match previous_position {
+                    None => occurrence.position,
+                    Some(previous) => occurrence.position - previous,
+                };
+                writer.varint(position_delta);
+                writer.varint(occurrence.position_length);
+                writer.varint(occurrence.value_index);
+                writer.varint(occurrence.start_offset);
+                writer.varint(occurrence.end_offset);
+                previous_position = Some(occurrence.position);
+            }
+        }
+    }
+    debug_assert_eq!(header_end as u64, header_len);
+    debug_assert_eq!((docs_end - header_end) as u64, lengths.docs);
+    debug_assert_eq!((freqs_end - docs_end) as u64, lengths.freqs);
+    debug_assert_eq!((writer.len() - freqs_end) as u64, lengths.positions);
+    debug_assert_eq!(writer.len() as u64, total);
+    #[cfg(test)]
+    encode_observation::record_final_capacity(writer.capacity_for_test());
+    Ok(writer.into_vec())
+}
+
 /// Where the shared decoder currently reads posting fields from.
 ///
 /// Rust does not permit enum items inside an `impl` block, so this private
@@ -374,6 +606,7 @@ pub fn encode_split_postings_block(
 enum PostingStreams<'a> {
     Legacy(ByteReader<'a>),
     Split(SplitStreams<'a>),
+    Compact(CompactStreams<'a>),
 }
 
 impl std::fmt::Debug for PostingStreams<'_> {
@@ -381,7 +614,28 @@ impl std::fmt::Debug for PostingStreams<'_> {
         match self {
             Self::Legacy(_) => formatter.write_str("PostingStreams::Legacy"),
             Self::Split(_) => formatter.write_str("PostingStreams::Split"),
+            Self::Compact(_) => formatter.write_str("PostingStreams::Compact"),
         }
+    }
+}
+
+/// Borrowed compact-postings streams (PERF-06-A5).
+///
+/// Every field borrows the verified segment bytes: constructing a compact cursor
+/// parses only the bounded header and three checked extents.
+struct CompactStreams<'a> {
+    docs: ByteReader<'a>,
+    freqs: ByteReader<'a>,
+    positions: ByteReader<'a>,
+    observed_freq_total: u64,
+}
+
+impl std::fmt::Debug for CompactStreams<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CompactStreams")
+            .field("observed_freq_total", &self.observed_freq_total)
+            .finish_non_exhaustive()
     }
 }
 
@@ -677,6 +931,132 @@ impl<'a> PostingsReader<'a> {
         })
     }
 
+    /// Parse a required-feature-selected adaptive postings payload
+    /// (PERF-06-A5 v1).
+    ///
+    /// Markers 2/3 are the unchanged A3 split payload: they delegate to
+    /// [`Self::new_split`] once over the complete slice and are then rejected if
+    /// their (already validated) posting count could have been compact. Markers
+    /// 4-7 are the compact framing; only the bounded header and three checked
+    /// extents are parsed here, so posting bodies stay lazy.
+    pub(crate) fn new_adaptive(
+        bytes: &'a [u8],
+        segment_doc_count: u64,
+        limits: &SegmentLimits,
+    ) -> SegmentResult<Self> {
+        let mut reader = ByteReader::new(bytes);
+        let marker = reader.u8("adaptive occurrence marker")?;
+        if marker == SPLIT_OCCURRENCE_DOC_ONLY || marker == SPLIT_OCCURRENCE_POSITIONAL {
+            let split = Self::new_split(bytes, segment_doc_count, limits)?;
+            if split.posting_doc_count <= ADAPTIVE_COMPACT_MAX_DOCS {
+                return Err(adaptive_corrupt("noncanonical split posting count"));
+            }
+            return Ok(split);
+        }
+        let (singleton, positional) = match marker {
+            COMPACT_SINGLETON_DOC_ONLY => (true, false),
+            COMPACT_SINGLETON_POSITIONAL => (true, true),
+            COMPACT_SHORT_DOC_ONLY => (false, false),
+            COMPACT_SHORT_POSITIONAL => (false, true),
+            _ => return Err(adaptive_corrupt("invalid occurrence marker")),
+        };
+        let payload_version = reader.u8("adaptive payload version")?;
+        if payload_version != ADAPTIVE_PAYLOAD_VERSION {
+            return Err(adaptive_corrupt("unsupported payload version"));
+        }
+        let posting_doc_count = if singleton {
+            1
+        } else {
+            let declared = reader.varint("adaptive posting doc count")?;
+            if !(2..=ADAPTIVE_COMPACT_MAX_DOCS).contains(&declared) {
+                return Err(adaptive_corrupt("noncanonical compact posting count"));
+            }
+            declared
+        };
+        if posting_doc_count > limits.max_postings_per_term() {
+            return Err(SegmentError::LimitExceeded {
+                limit: limits.max_postings_per_term(),
+                requested: posting_doc_count,
+            });
+        }
+        if posting_doc_count > segment_doc_count {
+            return Err(adaptive_corrupt("posting count exceeds segment doc count"));
+        }
+        let freq_total = reader.varint("adaptive freq total")?;
+        if freq_total < posting_doc_count {
+            return Err(adaptive_corrupt("frequency total below posting count"));
+        }
+        let doc_stream_len = reader.varint("adaptive doc stream length")?;
+        let freq_stream_len = reader.varint("adaptive frequency stream length")?;
+        let pos_stream_len = reader.varint("adaptive position stream length")?;
+        if positional {
+            // Five one-byte-minimum fields per occurrence.
+            let minimum_positions = freq_total
+                .checked_mul(5)
+                .ok_or_else(|| adaptive_corrupt("length overflow"))?;
+            if pos_stream_len < minimum_positions {
+                return Err(adaptive_corrupt("position stream too short"));
+            }
+        } else if pos_stream_len != 0 {
+            return Err(adaptive_corrupt("doc-only positional bytes"));
+        }
+        if doc_stream_len < posting_doc_count {
+            return Err(adaptive_corrupt("doc stream too short"));
+        }
+        if freq_stream_len < posting_doc_count {
+            return Err(adaptive_corrupt("frequency stream too short"));
+        }
+        let header_end = reader.position() as u64;
+        let declared_total = compact_total_len(
+            header_end,
+            CompactLengths {
+                docs: doc_stream_len,
+                freqs: freq_stream_len,
+                positions: pos_stream_len,
+            },
+        )?;
+        if declared_total != bytes.len() as u64 {
+            return Err(adaptive_corrupt("extent length mismatch"));
+        }
+        let doc_len =
+            usize::try_from(doc_stream_len).map_err(|_| adaptive_corrupt("length overflow"))?;
+        let freq_len =
+            usize::try_from(freq_stream_len).map_err(|_| adaptive_corrupt("length overflow"))?;
+        let pos_len =
+            usize::try_from(pos_stream_len).map_err(|_| adaptive_corrupt("length overflow"))?;
+        let header_end =
+            usize::try_from(header_end).map_err(|_| adaptive_corrupt("length overflow"))?;
+        let doc_end = header_end
+            .checked_add(doc_len)
+            .ok_or_else(|| adaptive_corrupt("length overflow"))?;
+        let freq_end = doc_end
+            .checked_add(freq_len)
+            .ok_or_else(|| adaptive_corrupt("length overflow"))?;
+        let pos_end = freq_end
+            .checked_add(pos_len)
+            .ok_or_else(|| adaptive_corrupt("length overflow"))?;
+        if pos_end != bytes.len() {
+            return Err(adaptive_corrupt("extent length mismatch"));
+        }
+        Ok(Self {
+            streams: PostingStreams::Compact(CompactStreams {
+                docs: ByteReader::new(&bytes[header_end..doc_end]),
+                freqs: ByteReader::new(&bytes[doc_end..freq_end]),
+                positions: ByteReader::new(&bytes[freq_end..pos_end]),
+                observed_freq_total: 0,
+            }),
+            positional,
+            posting_doc_count,
+            freq_total,
+            docs_read: 0,
+            previous_doc: None,
+            segment_doc_count,
+            limits: *limits,
+            current: None,
+            finished: false,
+        })
+    }
+
     /// Validate every block-directory entry using borrowed bytes only.
     fn validate_split_directory(
         streams: &SplitStreams<'a>,
@@ -851,12 +1231,12 @@ impl<'a> PostingsReader<'a> {
                         if position_delta == 0 {
                             return Err(SegmentError::NonMonotonePosition { doc_id });
                         }
-                        previous
-                            .checked_add(position_delta)
-                            .ok_or(SegmentError::Corrupt {
+                        previous.checked_add(position_delta).ok_or_else(|| {
+                            SegmentError::Corrupt {
                                 context: "postings",
                                 detail: "position overflow".to_owned(),
-                            })?
+                            }
+                        })?
                     }
                 };
                 let position_length = self.position_varint("position length")?;
@@ -896,11 +1276,20 @@ impl<'a> PostingsReader<'a> {
         }
         self.docs_read += 1;
         self.previous_doc = Some(doc_id);
-        if let PostingStreams::Split(split) = &mut self.streams {
-            split.observed_freq_total = split
-                .observed_freq_total
-                .checked_add(freq)
-                .ok_or_else(|| split_corrupt("frequency total overflow"))?;
+        match &mut self.streams {
+            PostingStreams::Split(split) => {
+                split.observed_freq_total = split
+                    .observed_freq_total
+                    .checked_add(freq)
+                    .ok_or_else(|| split_corrupt("frequency total overflow"))?;
+            }
+            PostingStreams::Compact(compact) => {
+                compact.observed_freq_total = compact
+                    .observed_freq_total
+                    .checked_add(freq)
+                    .ok_or_else(|| adaptive_corrupt("frequency total overflow"))?;
+            }
+            PostingStreams::Legacy(_) => {}
         }
         Ok(Some((DocFreqPosting { doc_id, freq }, occurrences)))
     }
@@ -913,7 +1302,8 @@ impl<'a> PostingsReader<'a> {
     /// against the validated directory entry before the posting is returned.
     fn read_doc_id(&mut self) -> SegmentResult<u64> {
         match &mut self.streams {
-            PostingStreams::Legacy(reader) => {
+            PostingStreams::Legacy(reader)
+            | PostingStreams::Compact(CompactStreams { docs: reader, .. }) => {
                 let delta = reader.varint("doc id delta")?;
                 match self.previous_doc {
                     None => Ok(delta),
@@ -924,10 +1314,12 @@ impl<'a> PostingsReader<'a> {
                                 next: previous,
                             });
                         }
-                        previous.checked_add(delta).ok_or(SegmentError::Corrupt {
-                            context: "postings",
-                            detail: "doc id overflow".to_owned(),
-                        })
+                        previous
+                            .checked_add(delta)
+                            .ok_or_else(|| SegmentError::Corrupt {
+                                context: "postings",
+                                detail: "doc id overflow".to_owned(),
+                            })
                     }
                 }
             }
@@ -990,6 +1382,7 @@ impl<'a> PostingsReader<'a> {
         match &mut self.streams {
             PostingStreams::Legacy(reader) => reader.varint("frequency"),
             PostingStreams::Split(split) => split.freqs.varint("frequency"),
+            PostingStreams::Compact(compact) => compact.freqs.varint("frequency"),
         }
     }
 
@@ -998,6 +1391,7 @@ impl<'a> PostingsReader<'a> {
         match &mut self.streams {
             PostingStreams::Legacy(reader) => reader.varint(context),
             PostingStreams::Split(split) => split.positions.varint(context),
+            PostingStreams::Compact(compact) => compact.positions.varint(context),
         }
     }
 
@@ -1017,6 +1411,20 @@ impl<'a> PostingsReader<'a> {
                 }
                 if split.observed_freq_total != self.freq_total {
                     return Err(split_corrupt("frequency total mismatch"));
+                }
+            }
+            PostingStreams::Compact(compact) => {
+                if !compact.docs.is_empty() {
+                    return Err(adaptive_corrupt("doc stream trailing bytes"));
+                }
+                if !compact.freqs.is_empty() {
+                    return Err(adaptive_corrupt("frequency stream trailing bytes"));
+                }
+                if !compact.positions.is_empty() {
+                    return Err(adaptive_corrupt("position stream trailing bytes"));
+                }
+                if compact.observed_freq_total != self.freq_total {
+                    return Err(adaptive_corrupt("frequency total mismatch"));
                 }
             }
         }
@@ -1121,5 +1529,118 @@ pub(crate) mod decode_observation {
 
     pub(super) fn record_cached_posting_clone() {
         CACHED_POSTING_CLONES.with(|cell| cell.set(cell.get() + 1));
+    }
+}
+
+/// Test-only witnesses for the adaptive compact encoder's structural cost
+/// contract: one source validation, one enabled (measuring) validation, width
+/// accounting calls, and exactly one admitted output buffer that never grows.
+///
+/// These prove named control-flow/allocation sites; they are not a heap
+/// profiler and make no claim about total allocator activity. No production
+/// counter, metric or tracing hook exists.
+#[cfg(test)]
+pub(crate) mod encode_observation {
+    use std::cell::Cell;
+
+    thread_local! {
+        static STATE: Cell<Counts> = const { Cell::new(Counts {
+            validation_calls: 0,
+            compact_validation_calls: 0,
+            width_calls: 0,
+            compact_output_buffers: 0,
+            initial_capacity: 0,
+            final_capacity: 0,
+        }) };
+    }
+
+    /// Accumulated encoder witnesses for the current thread.
+    #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+    pub(crate) struct Counts {
+        /// Entries into the shared source validator (both specializations).
+        pub validation_calls: u64,
+        /// Entries into the measuring specialization of the source validator.
+        pub compact_validation_calls: u64,
+        /// Calls to the private compact varint-width helper.
+        pub width_calls: u64,
+        /// Successful compact output-buffer admissions.
+        pub compact_output_buffers: u64,
+        /// Capacity after the single reservation.
+        pub initial_capacity: usize,
+        /// Capacity at the end of compact emission.
+        pub final_capacity: usize,
+    }
+
+    /// Reset every witness to zero for the current thread.
+    pub(crate) fn reset() {
+        STATE.with(|cell| cell.set(Counts::default()));
+    }
+
+    /// Current witnesses for this thread.
+    pub(crate) fn counts() -> Counts {
+        STATE.with(Cell::get)
+    }
+
+    pub(super) fn record_validation_call() {
+        STATE.with(|cell| {
+            let mut counts = cell.get();
+            counts.validation_calls += 1;
+            cell.set(counts);
+        });
+    }
+
+    pub(super) fn record_compact_validation_call() {
+        STATE.with(|cell| {
+            let mut counts = cell.get();
+            counts.compact_validation_calls += 1;
+            cell.set(counts);
+        });
+    }
+
+    pub(super) fn record_width_call() {
+        STATE.with(|cell| {
+            let mut counts = cell.get();
+            counts.width_calls += 1;
+            cell.set(counts);
+        });
+    }
+
+    pub(super) fn record_compact_output_buffer(capacity: usize) {
+        STATE.with(|cell| {
+            let mut counts = cell.get();
+            counts.compact_output_buffers += 1;
+            counts.initial_capacity = capacity;
+            cell.set(counts);
+        });
+    }
+
+    pub(super) fn record_final_capacity(capacity: usize) {
+        STATE.with(|cell| {
+            let mut counts = cell.get();
+            counts.final_capacity = capacity;
+            cell.set(counts);
+        });
+    }
+
+    /// Test-only access to the private varint-width helper.
+    pub(crate) fn test_varint_len(value: u64) -> u64 {
+        super::compact_varint_len(value)
+    }
+
+    /// Test-only access to the private checked-total helper.
+    pub(crate) fn test_total_len(
+        header: u64,
+        docs: u64,
+        freqs: u64,
+        positions: u64,
+    ) -> super::SegmentResult<u64> {
+        super::compact_total_len(
+            header,
+            super::CompactLengths {
+                docs,
+                freqs,
+                positions,
+            },
+        )
     }
 }
