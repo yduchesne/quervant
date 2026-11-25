@@ -15,7 +15,7 @@ PERF-06 consists of **three engineering subseries**, ordered **A → B → C**. 
 | --- | --- | --- | --- |
 | **PERF-06-A — Scoring and postings efficiency** | A1: Precomputed BM25 term weights; A2: doc/frequency-only decoder; A3: separated, versioned postings layout; A4: integration/correctness/warm qualification | Efficient scoring/postings primitives | Merged PERF-05 baseline |
 | **PERF-06-B — Fast-field and document identity** | B1: persistent keyword ordinals; B2: ordinal sort/segment merge; B3: compact key + duplicate identity; B4: integration/correctness/warm qualification | Efficient immutable sort/identity structures | Accepted A |
-| **PERF-06-C — Integrated physical executor** | C1: physical plan and contracts; C2: exact-count/Top-K executor; C3: deferred scoring and materialization where safe; C4: integration/correctness/warm qualification | Specialized executor using A and B | Accepted A+B |
+| **PERF-06-C — Integrated physical executor** | C1: **documentation-only** physical plan and source/evidence contracts; C2: exact-count/Top-K executor; C3: deferred scoring and materialization where proven safe; C4: integration/correctness/warm qualification | Specialized executor using A and B | Accepted A+B |
 
 **Dependency chain:** `PERF-05 (merged) → A1 → A2 → A3 → A4 → B1 → B2 → B3 → B4 → C1 → C2 → C3 → C4`. A and B address different technical subsystems, but sequential landing is the default to avoid overlapping incompatible changes and give C one stable dependency baseline. Changing the order requires a separate maintainer decision.
 
@@ -188,3 +188,16 @@ leaves the A/A control and structural host prerequisites binding. The result is 
 universal speedup and not a per-stage causal claim. Historical 15H-C / 15I-D1-F
 rejections and A-series outcomes are untouched. **G10 remains maintainer-owned:**
 no merge, no baseline promotion, no PERF-06-C1 start.
+
+## PERF-06-C1 contract status amendment (2026-11-25)
+
+**Current baseline:** B4 was independently accepted and merged in PR #129; the C-series source baseline is `main@8c9f51f311afa5b327f70432e32c0f6f5c205eab`. Earlier stage/status rows above remain the historical planning and pre-merge records; they are not retroactively recast as C1 approval.
+
+**C1 delivery is now documentation only (maintainer choice):**
+
+- [PERF06C_PHYSICAL_EXECUTION_CONTRACT.md](../../architecture/PERF06C_PHYSICAL_EXECUTION_CONTRACT.md) — strict compiled-term/keyword-sort shape, request-local physical dispatch, M>K+1 no-benefit fallback, full count and posting validation, B1/B2/B3 ranking/key reuse, C2 eager scoring, C3 score-safety certificate, memory/work/error ordering, immutable snapshots, cursor and mutation boundaries, and required future test matrices.
+- [PERF06C1_SOURCE_AUDIT.md](../perf-06-c/PERF06C1_SOURCE_AUDIT.md) — reviewed post-B4 code path, remaining full-M temporary representation, failures of 15H-A/A2 and 15I-C, design decisions and stage-specific evidence ownership.
+
+The C1 PR changes **docs only**. It creates no physical-plan type in Rust, no unit/integration tests, no benchmark acquisition or code changes, and no implementation plan for a coding agent. Approval of C1 documentation is **not** approval to run C2. C2 and C3 each require a separate prescriptive detailed plan and correctness/CI acceptance; C4 requires a separately frozen warm benchmark against the accepted A+B baseline and an independent adoption decision. No PR stage may bypass the historical low-hit regression evidence or assume that non-scoring sort allows loser's BM25 errors to be ignored.
+
+**C1 acceptance state:** independent document review and maintainer merge **OPEN**. After merge, use merged main for the C2 base, not this C1 branch.
