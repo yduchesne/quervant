@@ -191,11 +191,19 @@ acquisition, no local RustFS startup and no `perf` study.
 
 ## 8. CI (G8)
 
-The final executable/test source is pushed on `dev/perf06-b2` and the draft B2 PR
-is opened against the accepted `main` with the existing, unchanged
-`.github/workflows/ci.yml`. CI run/job status is recorded in
-`evidence/b2-ci-status.txt` and `evidence/b2-delivery.txt`. A pending or
-unavailable run is reported as `IMPLEMENTED_VERIFICATION_BLOCKED`, never PASS.
+The executable/test source `237ae6dcc01d1c179f292b05cf843df76c9f6ad4` was pushed
+on `dev/perf06-b2`; the draft B2 PR (#127, base `main`) ran the existing,
+unchanged `.github/workflows/ci.yml` (`pull_request`, run `45557000136`) on the
+then-tip `e396177eb0a29a087228cf841bde18ddecf49947`, whose diff from `TESTED` is
+empty under `crates/`, `.github/`, `benchmarks/` and `Cargo.*`. **All five required
+jobs are terminal success**: `rust` 21m58s, `msrv` 10m2s, `rustfs` 2m21s,
+`benchmark-adapter-contract` 1m33s, `python-benchmark-framework` 4m49s. The real
+RustFS job actually executed
+`cargo test -p quervant-core --all-features --test perf06_b1_rustfs -- --ignored`
+and `b1_r01_cold_shared_ordinals_and_pit ... ok`
+(`evidence/b2-ci-status.txt`, `evidence/b2-ci-rustfs-extract.txt`). Later commits
+on the branch are evidence/report text only; the agent records the actual branch
+tip in its final response. Nothing was dispatched, cancelled or re-run manually.
 
 ## 9. Decision-matrix ledger
 
