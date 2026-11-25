@@ -159,3 +159,32 @@ Sections above remain the historical planning agreement. Current facts:
 
 B2 does not claim latency, size or RSS improvement, does not renumber B1’s
 historical evidence, and does not authorize B3/B4. G10 remains maintainer-owned.
+
+## PERF-06-B3/B4 status amendment (2026-11-25)
+
+Sections above remain the historical planning agreement. Current facts:
+
+* **A6:** accepted/merged; numerical misses unchanged.
+* **B1:** accepted and merged (PR #126, merge commit
+  `3cb1cbdff4c3bc7bbc1cae1c4e92c5cb44ca95cc`).
+* **B2:** accepted and merged (PR #127, merge commit
+  `ce7dea12c0f8f84fdc3a80306083e38c8df30ce2`).
+* **B3:** accepted and merged (PR #128, merge commit
+  `d660ca9f487d5c54363d790a240abb7da30af245`). The reviewed executable source
+  `52d7e69f40759f27be79434118c47171b06702b7` reaches `main` unchanged; only
+  documentation/evidence commits follow it.
+* **B4:** executed. One paired cumulative warm qualification (A = pre-B1
+  `480a77e7…`, B = post-B3 `d660ca9f…`) completed with disposition
+  `PERF06_B4_QUALIFIED_TARGETS_MET_REVIEW_REQUIRED`. Plan:
+  [PERF06B4_DETAILED_PLAN.md](../perf-06-b/PERF06B4_DETAILED_PLAN.md); gate ledger:
+  [PERF06B4_EXECUTION_REPORT.md](../perf-06-b/PERF06B4_EXECUTION_REPORT.md);
+  configuration `4608c79a-c5a3-4d24-bec9-4ad61cd7bd94`; result `run_id`
+  `86fe9601-2574-4335-a673-63de7d0dcc26` (`-001`, `COMPLETE`, 16/16 A/A PASS).
+
+B4 is a measurement/qualification PR: no engine optimization, no engine or
+statistics change, and its single tool addition (`perf-06` advisory host readiness)
+leaves the A/A control and structural host prerequisites binding. The result is a
+**per-lane cumulative B1+B2+B3** comparison on one host/configuration, not a
+universal speedup and not a per-stage causal claim. Historical 15H-C / 15I-D1-F
+rejections and A-series outcomes are untouched. **G10 remains maintainer-owned:**
+no merge, no baseline promotion, no PERF-06-C1 start.

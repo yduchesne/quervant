@@ -112,6 +112,10 @@ Every adapter/process test uses a stub, mock, pure oracle or synthetic JSONL chi
 - CI tests the framework and compile-only/correctness contracts as applicable. Real performance campaigns must be scheduled separately; they are **not** a CI or coding-agent handoff step.
 - Historical BM-01–BM-09 certification machinery is retired from the new execution path; history remains in the repository's archived source/PR references. The canonical naming and scientific rules are in `docs/BENCHMARKING.md` (PR #112 is already merged). The exact current configuration/result field contracts are linked above.
 
+## PERF-06 advisory host readiness (opt-in, PERF-06 only)
+
+A `perf-06` configuration created with `quervant-bench prepare ... --readiness-advisory` records `policy.readiness.mode="advisory"`. Every existing host checkpoint still observes CPU busy/steal against the unchanged 25%/2% ceilings and stores the **actual** `clear`, `busy` or `unavailable` status in the result's `controls` object, but a non-clear reading is informational and no longer blocks staging or timed acquisition. The structural host prerequisites (Linux/WSL2, native filesystem, two distinct physical cores, `taskset`, Rust toolchain) and the A/A equivalence control remain binding. The option exists only on `prepare`; the mode is frozen in the immutable configuration, and `stage`/`run` have no runtime bypass flag. Configurations without `mode` keep the original blocking behavior. See the `policy.readiness` section of the [configuration format](../docs/BENCHMARK_CONFIGURATION.md#8-policyreadiness-object).
+
 ## PERF-05 B-only warm study
 
 `perf-05/warm` is a narrow B-only family used by PERF-05-C. It pins one Quervant commit (`arms.B.revision`), builds that single release adapter from a detached worktree, indexes 10K/100K locally, and runs one 16-lane warm B/B stability acquisition using temporary `BB`/`BB2` aliases of the same B executable. It then compares B's absolute block medians descriptively against the retained 2026-11-22 historical Q result (blob `a809f036…`, measured source `256501f0…`).

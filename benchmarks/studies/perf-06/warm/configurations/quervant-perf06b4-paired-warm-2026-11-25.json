@@ -1,0 +1,78 @@
+{
+  "arms": {
+    "A": {
+      "engine": "quervant",
+      "mode": "by-top-k",
+      "revision": "480a77e78c6897e05cb7ceb76b01434974b82ec6",
+      "source": "pinned"
+    },
+    "B": {
+      "engine": "quervant",
+      "mode": "by-top-k",
+      "revision": "d660ca9f487d5c54363d790a240abb7da30af245",
+      "source": "pinned"
+    }
+  },
+  "baseline": "A",
+  "build": {
+    "baseline_ref": null,
+    "locked": true,
+    "prefilter_profile": "P2",
+    "quervant_feature": null,
+    "release": true
+  },
+  "configuration_id": "4608c79a-c5a3-4d24-bec9-4ad61cd7bd94",
+  "control": {
+    "baseline": "AA",
+    "enabled": true,
+    "equivalent": "AA2"
+  },
+  "created_utc": "2026-11-25T22:27:58Z",
+  "description": "PERF-06-B4 paired cumulative B1-B3 warm qualification against last accepted pre-B1 source; advisory-only CPU readiness, binding A/A control",
+  "family": "perf-06",
+  "name": "quervant-perf06b4-paired-warm",
+  "policy": {
+    "blocks": 12,
+    "bootstrap_resamples": 10000,
+    "control_arms": [],
+    "exclude_blocks": {},
+    "max_aa_gain_percent": 15,
+    "max_regression_percent": 0,
+    "min_blocks": 4,
+    "min_gain_percent": 0,
+    "readiness": {
+      "interval_ms": 250,
+      "intervals": 4,
+      "max_busy_percent": 25,
+      "max_steal_percent": 2,
+      "mode": "advisory"
+    },
+    "samples": 20,
+    "seed": 20261122,
+    "slots_per_arm": 2,
+    "warmups": 5
+  },
+  "schema": "benchmark-configuration-v1",
+  "workload": {
+    "classes": [
+      "absent",
+      "rare",
+      "medium",
+      "common"
+    ],
+    "id": "pr15d-exact-keyword-v1",
+    "query_semantics": "exact-keyword-total-hits-and-ordered-doc-ids",
+    "regimes": [
+      "warm"
+    ],
+    "sizes": [
+      10000,
+      100000
+    ],
+    "timed_operation": "exact-term-search-plus-topk-projection",
+    "top_k": [
+      10,
+      100
+    ]
+  }
+}

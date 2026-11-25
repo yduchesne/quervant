@@ -2,7 +2,7 @@
 
 > **Milestone:** `v0.1-perf` — standalone Quervant search-engine performance improvements.
 >
-> **Status:** PERF-01 and PERF-02-A DONE; PERF-02-B **MERGED — `PERF02B_BLOCKED`** ([PR #116](https://github.com/yduchesne/quervant/pull/116)). **PERF-05 MERGED** ([PR #117](https://github.com/yduchesne/quervant/pull/117)): B1–B5 implemented; C completed a qualified B-only warm run with historical, unpaired performance targets met (first unstable attempt retained). **PERF-06 PLANNED**: three ordered engineering series, A1–A4, B1–B4, C1–C4; planning [PR #118](https://github.com/yduchesne/quervant/pull/118) remains draft. PERF-03/04 remain separate/deferred; ordinal-sort design is now proposed within PERF-06-B.
+> **Status:** PERF-01 and PERF-02-A DONE; PERF-02-B **MERGED — `PERF02B_BLOCKED`** ([PR #116](https://github.com/yduchesne/quervant/pull/116)). **PERF-05 MERGED** ([PR #117](https://github.com/yduchesne/quervant/pull/117)): B1–B5 implemented; C completed a qualified B-only warm run with historical, unpaired performance targets met (first unstable attempt retained). **PERF-06 IN PROGRESS**: three ordered engineering series, A1–A4, B1–B4, C1–C4; planning [PR #118](https://github.com/yduchesne/quervant/pull/118) remains draft; B1–B3 merged and B4 executed (`PERF06_B4_QUALIFIED_TARGETS_MET_REVIEW_REQUIRED`, G10 open). PERF-03/04 remain separate/deferred; ordinal-sort design is now proposed within PERF-06-B.
 >
 > **Authority boundary:** This is an ordered work register and research agenda, **not** blanket authorization to implement a proposed fast path, change a segment format, relax correctness rules, or run an unapproved benchmark. Each future PR requires a detailed execution plan and explicit acceptance gates under [DETAILED_PR_PLAN_AUTHORING_GUIDE.md](DETAILED_PR_PLAN_AUTHORING_GUIDE.md).
 
@@ -23,7 +23,7 @@ This milestone targets the **v0.1 single-shard lexical engine**. It does not inc
 | **PERF-02-B** | Bounded warm sort-path profiling | **MERGED — `BLOCKED`, PR #116** | Preserve the report and captured evidence. One lane has valid 11.6% sampled sort-path CPU; three fail the 85% attribution gate. No further PERF-02-B profiling or optimization claim |
 | **PERF-05** | High-hit physical execution and representation reuse | **MERGED — PR #117** | B1–B5 implemented and independently reviewed; [C qualification results](../benchmarks/studies/perf-05/warm/results/quervant-perf05-b-only-warm-2026-11-23-002.json) COMPLETE with 16/16 B/B PASS and all historical-relative targets met. Earlier INCOMPLETE attempt preserved. No profiling was part of final C.
 | **PERF-06-A** | Scoring and postings efficiency | **A1–A3 MERGED; A4 MERGED (targets not all met); A5 IMPLEMENTED — INDEPENDENT REVIEW PENDING; A6 PLANNED** | A1–A3 retained; A4 PR #123 merged with its measured `PERF06_A4_PAIRED_COMPLETE_TARGETS_NOT_MET_REVIEW_REQUIRED` disposition unchanged; A5 adds compact postings for 1–128-document terms and wires compaction to the same encoder; A6 is a separately planned qualification.
-| **PERF-06-B** | Fast-field and document-identity architecture | **B1 MERGED; B2 MERGED; B3 IMPLEMENTED — INDEPENDENT REVIEW PENDING; B4 PLANNED** | Persistent keyword ordinals; correct segment/cross-segment comparisons; compact validated document-key fingerprints with deferred owned identity; B4 owns consolidated correctness and warm qualification. |
+| **PERF-06-B** | Fast-field and document-identity architecture | **B1 MERGED; B2 MERGED; B3 MERGED; B4 EXECUTED — `PERF06_B4_QUALIFIED_TARGETS_MET_REVIEW_REQUIRED`; G10 OPEN** | Persistent keyword ordinals; correct segment/cross-segment comparisons; compact validated document-key fingerprints with deferred owned identity; B4 completed the cumulative paired warm qualification and awaits maintainer disposition. |
 | **PERF-06-C** | Integrated physical query executor | **PLANNED — C1–C4; AFTER A+B** | Approved execution contracts; exact-term count/Top-K collector; qualified deferred scoring; consolidated correctness and warm qualification.
 | **PERF-04 (second investigation)** | Residual reader-state / validated access reuse | **PLANNED — SHORT AUDIT** | Compare accepted code against PR 15G-A/B already delivered; identify one still-repeated material operation or close without broad profiling |
 | **Earlier ordinal-sort feasibility** | Prior source-only hypothesis | **INCORPORATED AS PERF-06-B DESIGN INPUT** | Design remains to be proven in B1/B2; not a preapproved implementation or a PERF-02-B revival. |
@@ -290,3 +290,47 @@ benchmark configuration, and performs no timing acquisition. **B2 is not a warm
 performance, footprint or RSS result.** B3 (document identity) and B4 (cumulative
 correctness plus separately approved warm qualification) remain pending; the A6
 remote-compaction publication residual is unchanged.
+
+## PERF-06-B4 amendment (current status, 2026-11-25)
+
+> **Superseding status note.** B2 is accepted and merged (PR #127, merge commit
+> `ce7dea12c0f8f84fdc3a80306083e38c8df30ce2`), and B3 is accepted and merged
+> (PR #128, merge commit `d660ca9f487d5c54363d790a240abb7da30af245`; the reviewed
+> B3 executable source `52d7e69f40759f27be79434118c47171b06702b7` reaches `main`
+> unchanged, with only documentation/evidence commits after it). Their evidence is
+> unchanged. B4 then ran **one** paired cumulative warm qualification of B1+B2+B3
+> against the last accepted pre-B1 source, per
+> [the B4 detailed plan](pr-artifacts/perf-06-b/PERF06B4_DETAILED_PLAN.md), with
+> results in [the B4 execution report](pr-artifacts/perf-06-b/PERF06B4_EXECUTION_REPORT.md).
+
+B4 is a **measurement/qualification** PR: it adds no engine optimization. Its only
+product change is a narrow, PERF-06-only benchmark-tool capability that preserves
+real host-load observations (`policy.readiness.mode="advisory"`, creation-only
+`prepare --readiness-advisory`) while leaving the original 25%/2% ceilings, the
+structural host prerequisites and the A/A equivalence control fully binding for
+every other family and every historical configuration.
+
+Acquisition identity: configuration
+`quervant-perf06b4-paired-warm-2026-11-25.json` (`4608c79a-c5a3-4d24-bec9-4ad61cd7bd94`),
+A `480a77e78c6897e05cb7ceb76b01434974b82ec6` vs B `d660ca9f487d5c54363d790a240abb7da30af245`,
+16 warm lanes, 12 randomized paired blocks × 2 slots × 5+20, seed `20261122`,
+10,000 whole-block bootstrap, `exclude_blocks={}`; one result
+`quervant-perf06b4-paired-warm-2026-11-25-001.json` (`run_id`
+`86fe9601-2574-4335-a673-63de7d0dcc26`), status `COMPLETE`, 16/16 A/A PASS, all
+per-sample oracles exact, host readiness observed `clear` at every checkpoint
+(informational).
+
+Frozen B4 policy applied to the stored, unrounded values: **4/4 primaries** passed
+(`100000/{common,medium}/k{10,100}`: +24.873% to +35.819%, each `IMPROVED` with a
+positive lower CI bound) and **12/12 guards** passed (worst point −2.685%, worst
+lower bound −3.570%, all inside the −10% bound). Disposition:
+`PERF06_B4_QUALIFIED_TARGETS_MET_REVIEW_REQUIRED`.
+
+The observed effect is **cumulative B1+B2+B3 on this host/configuration**, per
+lane; it is not a universal Quervant speedup, not a cross-engine ranking and not a
+per-stage causal attribution. The small absent/rare regressions (within ~2.7%) stay
+reported. Writer/commit/reopen/byte differences are descriptive untimed
+diagnostics, not warm latency and not a compaction or RSS result. **G10 remains
+maintainer-owned:** B4 does not merge, does not promote the B-series baseline, does
+not start PERF-06-C1, and leaves the historical 15H-C / 15I-D1-F rejections and the
+A-series outcomes intact.

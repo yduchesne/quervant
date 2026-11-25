@@ -144,7 +144,6 @@ The retained-key runner constructs a **pinned historical pre-optimization** sour
 | `exclude_blocks` | object | `{}` | Map of declared lane IDs to lists of **unique block numbers** in `[1,blocks]`; exclusions are symmetric across arms. |
 | `control_arms` | array | `[]` | Must be empty in the normal configuration. A/A analysis separately uses `["AA2"]`. |
 | `readiness` | object | See §8 | Predeclared host observation settings. |
-
 Example of an exclusion declaration (illustrative syntax **only**, not an authorized exclusion policy):
 
 ```json
@@ -167,8 +166,11 @@ Exclusions must be declared before measurement. The analyzer retains raw samples
 | `interval_ms` | positive integer | 250 | Duration of each observation, maximum 5,000 ms. |
 | `max_busy_percent` | integer | 25 | Maximum CPU busy fraction as a percent, 1–100. |
 | `max_steal_percent` | integer | 2 | Maximum CPU steal fraction as a percent, 1–100. |
+| `mode` | string | absent (= `blocking`) | Optional `blocking` or `advisory`. `advisory` is accepted only for `family="perf-06"`. |
 
 The Linux/WSL2 runner checks physical-core availability, usable filesystem/toolchains and contention around timed phases. Readiness results live in the **result's** `controls` object, not in configuration. These checks prevent invalid comparisons; they are not manual approval or cryptographic attestation.
+
+**Advisory mode (PERF-06 only).** A `perf-06` configuration created explicitly with `quervant-bench prepare --readiness-advisory` declares `policy.readiness.mode="advisory"`. In that mode the native CPU busy/steal observations are still acquired at every existing checkpoint and stored verbatim in the result's `controls` object, but a `busy` or `unavailable` reading no longer aborts acquisition. The true `clear`/`busy`/`unavailable` status and the original `max_busy_percent=25`/`max_steal_percent=2` ceilings are preserved and never rewritten; the observations simply become informational for interpretation. `mode` absent means the original blocking behavior, so every historical configuration and result keeps its meaning. Advisory mode does **not** relax the structural host prerequisites (Linux/WSL2, native filesystem, two distinct physical cores, `taskset`, Rust toolchain) or the A/A equivalence control, which still block a comparative acquisition when unstable. No other family accepts `--readiness-advisory`, and the CLI ignores no arbitrary override string.
 
 ## 9. Current limitations, validation and versioning
 
