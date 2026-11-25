@@ -1,0 +1,2 @@
+# Protected-path comparison vs origin/main (empty diff except allowed column.rs wrapper/tests)
+(end)

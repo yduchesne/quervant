@@ -261,3 +261,26 @@ B1 does not run or re-label any A6 acquisition, does not change the benchmark
 framework, thresholds or configurations, and does not claim latency, RSS or
 whole-index size improvements. Its evidence is correctness, exact wire bytes,
 structural size formulas and real local/remote lifecycle integration.
+
+## PERF-06-B2 amendment (current status, 2026-11-25)
+
+> **Superseding status note.** B1 is accepted and merged (PR #126, merge commit
+> `3cb1cbdff4c3bc7bbc1cae1c4e92c5cb44ca95cc`; the reviewed B1 executable source
+> `ad66e5e833616bafaaa97e15d89cdc511d715868` is an ancestor). Its unfavorable or
+> structural-only evidence is unchanged. B2 implements the collector adoption of
+> the B1 foundation per
+> [the B2 detailed plan](pr-artifacts/perf-06-b/PERF06B2_DETAILED_PLAN.md) and
+> records results in
+> [the B2 execution report](pr-artifacts/perf-06-b/PERF06B2_EXECUTION_REPORT.md).
+
+B2 ranks eligible strict single-term single-field `Keyword` sorts by
+snapshot-wide numeric ordinals in the existing global Top-K heap, with raw-UTF-8
+value order, missing/null placement, logical-key ties, exact `total_hits`, score
+bits, projections, duplicate checks, resource admission and owned string cursor
+tuples preserved. Ineligible shapes and B1 `NotAvailable` outcomes keep the
+original string/typed path; B1 corruption/cancellation errors remain typed. B2
+changes no index bytes, storage, public query/cursor contract, CI topology or
+benchmark configuration, and performs no timing acquisition. **B2 is not a warm
+performance, footprint or RSS result.** B3 (document identity) and B4 (cumulative
+correctness plus separately approved warm qualification) remain pending; the A6
+remote-compaction publication residual is unchanged.

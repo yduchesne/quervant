@@ -1,0 +1,53 @@
+# PERF-06-B2 diff inventory (working tree vs origin/main 3cb1cbd)
+
+ M crates/quervant-core/src/search/typed_compare.rs
+ M crates/quervant-core/src/search/unified.rs
+ M crates/quervant-core/src/segment/column.rs
+ M docs/ARCHITECTURE.md
+ M docs/BENCHMARKING.md
+ M docs/PERF_OPTIMIZATION_ROADMAP.md
+ M docs/pr-artifacts/perf-06/PERF06_SERIES_REGISTER.md
+?? crates/quervant-core/tests/perf06_b2_ordinals.rs
+?? docs/pr-artifacts/perf-06-b/PERF06B2_DETAILED_PLAN.md
+?? docs/pr-artifacts/perf-06-b/evidence/b2-bench_no-run.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-benchmark_scripts.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-clippy_1.85.0_all-features.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-clippy_1.98.1_all-features.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-clippy_1.98.1_default.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-coverage-all-features.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-coverage-default.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-diff-inventory.txt
+?? docs/pr-artifacts/perf-06-b/evidence/b2-doc_all-features.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-doc_default.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-fmt_1.85.0.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-fmt_1.98.1.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-focused-tests.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-git_diff_--check.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-p0-preflight.txt
+?? docs/pr-artifacts/perf-06-b/evidence/b2-test_1.85.0_all-features.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-test_1.98.1_all-features.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-test_1.98.1_default.log
+?? docs/pr-artifacts/perf-06-b/evidence/f2-ci-status.txt
+
+## committed/tracked diff --name-status
+M	crates/quervant-core/src/search/typed_compare.rs
+M	crates/quervant-core/src/search/unified.rs
+M	crates/quervant-core/src/segment/column.rs
+M	docs/ARCHITECTURE.md
+M	docs/BENCHMARKING.md
+M	docs/PERF_OPTIMIZATION_ROADMAP.md
+M	docs/pr-artifacts/perf-06/PERF06_SERIES_REGISTER.md
+
+## diff --stat
+ crates/quervant-core/src/search/typed_compare.rs   |  171 +-
+ crates/quervant-core/src/search/unified.rs         | 1721 +++++++++++++++++++-
+ crates/quervant-core/src/segment/column.rs         |  240 ++-
+ docs/ARCHITECTURE.md                               |   18 +
+ docs/BENCHMARKING.md                               |    9 +
+ docs/PERF_OPTIMIZATION_ROADMAP.md                  |   23 +
+ .../pr-artifacts/perf-06/PERF06_SERIES_REGISTER.md |   22 +
+ 7 files changed, 2179 insertions(+), 25 deletions(-)
+
+## new files
+crates/quervant-core/tests/perf06_b2_ordinals.rs
+docs/pr-artifacts/perf-06-b/PERF06B2_DETAILED_PLAN.md

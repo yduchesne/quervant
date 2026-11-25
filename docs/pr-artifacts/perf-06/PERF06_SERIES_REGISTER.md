@@ -137,3 +137,25 @@ Current dependency and status reconciliation:
 
 This register does not mark PERF-06-B done, does not describe B1 as a performance
 result and does not promote an unreviewed branch into the B2 dependency.
+
+## PERF-06-B2 status amendment (2026-11-25)
+
+Sections above remain the historical planning agreement. Current facts:
+
+* **A6:** accepted/merged; numerical misses unchanged.
+* **B1:** accepted and merged (PR #126, merge commit
+  `3cb1cbdff4c3bc7bbc1cae1c4e92c5cb44ca95cc`); reviewed executable source
+  `ad66e5e833616bafaaa97e15d89cdc511d715868` is an ancestor of `main`.
+* **B2:** implemented collector adoption of the B1 map, with the plan at
+  [PERF06B2_DETAILED_PLAN.md](../perf-06-b/PERF06B2_DETAILED_PLAN.md) and the gate
+  ledger at
+  [PERF06B2_EXECUTION_REPORT.md](../perf-06-b/PERF06B2_EXECUTION_REPORT.md).
+  Status is `READY_FOR_INDEPENDENT_REVIEW` only if every local and hosted gate in
+  that report passes on the final tested source; otherwise it is
+  `IMPLEMENTED_VERIFICATION_BLOCKED`.
+* **B3:** document-key/duplicate identity — unchanged.
+* **B4:** cumulative correctness plus separately approved warm qualification —
+  unchanged.
+
+B2 does not claim latency, size or RSS improvement, does not renumber B1’s
+historical evidence, and does not authorize B3/B4. G10 remains maintainer-owned.

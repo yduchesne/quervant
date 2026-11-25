@@ -1057,3 +1057,12 @@ foundation. It performs no benchmark acquisition, profiling, cross-engine run or
 threshold change, and no host-stability campaign is authorized or required for
 its acceptance. Host-load observations are advisory. B4 owns the cumulative warm
 qualification; this note changes no protocol or gate defined above.
+
+## PERF-06-B2 scope note (2026-11-25)
+
+B2 adds no benchmark acquisition. It adopts the B1 snapshot-wide keyword ordinals
+in the existing global Top-K collector with no on-disk, cursor or query-contract
+change. No warm result, cross-engine comparison, threshold, configuration or
+profiler evidence is produced or re-labelled by B2; B4 decides adoption and
+qualification using separately approved warm evidence. The frozen A4/A6/B1
+numbers above remain unchanged.
