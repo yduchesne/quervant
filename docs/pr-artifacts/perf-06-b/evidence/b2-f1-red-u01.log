@@ -1,0 +1,26 @@
+# F1-U01 initial RED witness on pre-fix source
+# source: ca573ef624529418fd1a6e4bdaa978b4e75f6b2a (detached scratch worktree, test-only addition, no production edit)
+# command: CARGO_TARGET_DIR=/tmp/b2f1-red-target cargo +1.98.1 test -p quervant-core --lib b2_f1_u01 -- --test-threads=1
+# expected: test must FAIL because the reviewed handler returns Ok(()) before the late full scan
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (/tmp/b2f1-red-target/debug/deps/quervant_core-4bce05dee4e4fed4)
+
+running 1 test
+test search::unified::b2_tests::b2_f1_u01_hidden_mixed_heap_rejected_even_for_loser ... FAILED
+
+failures:
+
+---- search::unified::b2_tests::b2_f1_u01_hidden_mixed_heap_rejected_even_for_loser stdout ----
+
+thread 'search::unified::b2_tests::b2_f1_u01_hidden_mixed_heap_rejected_even_for_loser' (3311900) panicked at crates/quervant-core/src/search/unified.rs:7711:10:
+a hidden legacy entry must fail before a losing return: ()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    search::unified::b2_tests::b2_f1_u01_hidden_mixed_heap_rejected_even_for_loser
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1146 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p quervant-core --lib`

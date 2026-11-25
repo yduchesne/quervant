@@ -242,3 +242,201 @@ tip in its final response. Nothing was dispatched, cancelled or re-run manually.
 B3 (document-key/duplicate identity) and B4 (cumulative correctness plus a
 separately approved warm qualification) are not started. G10 (maintainer
 acceptance/merge) remains open; the coding agent does not merge or approve.
+
+# F1 independent-review correction
+
+This section is additive and supersedes **only** the overbroad G3/G4/G5 claims of
+the B2 report above where they concern (a) hidden mixed-heap detection ordering
+and (b) the I07 losing-candidate fixture. Earlier negative evidence and the
+original QA log remain historical record and are not retroactively rewritten.
+
+F1 plan: [PERF06B2_F1_DETAILED_FIXUP_PLAN.md](PERF06B2_F1_DETAILED_FIXUP_PLAN.md)
+(SHA-256 `bf3de7919361c1a8a20bf187a356200c1b41cc46ee53d87a47ea16b8ee737815`,
+git blob `c64ca43aee059cac4b64f797722c21c0d5824074`, verbatim).
+
+## F1 pre-implementation invariant worksheet (gate G1)
+
+Starting head `ca573ef624529418fd1a6e4bdaa978b4e75f6b2a`; reviewed executable
+source `237ae6dcc01d1c179f292b05cf843df76c9f6ad4`; accepted `main`
+`3cb1cbdff4c3bc7bbc1cae1c4e92c5cb44ca95cc`. The diff
+`TESTED..HEAD` contains documentation/evidence only (D02).
+
+| INV | Current symbol / behavior | Positive proof | Counterexample / negative proof | Test |
+|---|---|---|---|---|
+| F1-INV01 | `consider_ordinal_keyword_candidate` compares `heap.peek()` before `ensure_ordinal_heap` at ~L2341/L2370 | Audit before first numeric comparison; every admitted entry `Some` by construction | Numeric worst + hidden legacy `None`; a losing candidate must still error, not return `Ok` | `b2_f1_u01_hidden_mixed_heap_rejected_even_for_loser` (red first) |
+| F1-INV02 | `ensure_ordinal_heap` is a full O(K) scan called per competitive candidate | One `OrdinalHeapAudit { checked }` per Ready request; O(1) afterwards | 1,000 competitive admissions must not rescan | `b2_f1_u02_one_time_audit_and_numeric_only_admissions` |
+| F1-INV03 | `MixedEntry::cmp`, `heap_admit_candidate`, `d3c::State::admit`, K+1 cursor | Unchanged ordering/count/score/charge/cursor | Lost/duplicate hit, wrong tie, skipped duplicate check | existing B2 U03–U18/U22, I01/I02 |
+| F1-INV04 | I07 has only two matching rows while K+1=2 | Three rows `a`,`b`,`z×80`; third lexically loses after two admissions | Two-doc fixture cannot fill K+1; page omission is not rejection | strengthened I07 + `b2_f1_u03_long_loser_after_k_plus_one` |
+| F1-INV05 | segment limits fixed at snapshot open; container open needs >80 bytes | `U07` bound accessor exactly `LimitExceeded{79,80}`; public I07 permissive | Do not lower limits or claim public 79-byte rejection | existing B2-U07 / I07 |
+| F1-INV06 | I07 rebuilds a valid outer container with corrupt unselected term | exact `InvalidUtf8{context:"keyword"}`; original bytes/map intact | Raw edit without envelope is invalid | I07 second half; B2-U17 |
+| F1-INV07 | allowlist: only `search/unified.rs` + the B2 integration file | protected-path diff empty; no format/cursor/d3c/benchmark change | changed B1 codec, `d3c`, limits, CI or benchmark | G0/G7/G9 inventory |
+
+State boundaries: `NotAvailable`/ineligible = legacy (no audit); `Ready` = numeric
+only; audit `Unchecked → Verified` once per request after a successful scan; error
+leaves `checked=false`, heap and accounting untouched; empty heap/zero candidates
+need no scan. Candidate order stays row read/Single budget → translation →
+logical charge/MultiOne decode → duplicate check → audit → numeric compare →
+owned string only on admission. No durable/remote state is introduced.
+
+## F1 source identity and production delta
+
+| Item | Value |
+|---|---|
+| PR / branch / base | #127 / `dev/perf06-b2` / `main` (draft, open) |
+| F1 starting head | `ca573ef624529418fd1a6e4bdaa978b4e75f6b2a` |
+| Reviewed B2 executable source | `237ae6dcc01d1c179f292b05cf843df76c9f6ad4` |
+| TESTED (F1 source+tests) | `7218d5e57c0ce1734a94ed0db93f94a3a7ecf477` |
+| Accepted post-B1 `main` | `3cb1cbdff4c3bc7bbc1cae1c4e92c5cb44ca95cc` |
+| F1 plan | SHA-256 `bf3de7919361c1a8a20bf187a356200c1b41cc46ee53d87a47ea16b8ee737815`, blob `c64ca43aee059cac4b64f797722c21c0d5824074` |
+
+The only production mutation is in `crates/quervant-core/src/search/unified.rs`:
+one request-local `OrdinalHeapAudit { checked: bool }`, created when the request
+has a B1 `Ready` map, passed into `consider_ordinal_keyword_candidate`, and
+invoked as `audit.verify_once(heap)?` immediately after the existing duplicate
+check and **before** any numeric comparison. The former
+`ensure_ordinal_heap(heap)?` immediately before materialization was removed. The
+one existing test-only `Cell` observation (`b2_observation::full_heap_audits`) is
+`#[cfg(test)]` and compiled out of normal builds. The integration file gained the
+third I07 source row and exact assertions. No B1 codec/map, `typed_compare`,
+`segment/column`, `d3c`, heap charge, cursor, format, storage, remote, CI or
+benchmark file changed.
+
+### Preservation argument (F1-INV01/02)
+
+The request heap starts empty. `verify_once` scans every existing entry before the
+first numeric competitiveness decision; with healthy production data that first
+scan sees the empty heap. For the rest of that same `Ready` request the only
+insertions/replacements are `MixedEntry` values built by the numeric handler with
+`ordinal_sort: Some(key)` and moved through the unchanged
+`d3c::State::admit` → `heap_admit_candidate` path; eviction only removes entries,
+and the legacy branch never executes while `ordinal_binding` exists
+(`continue`). Therefore every retained entry stays `Some` inductively. Source
+inspection of every `heap.push`/`heap.pop` under default and
+`pr15i-d3c-experiment` confirms no other insertion path exists in that request.
+Full scan at most once per eligible request; O(1) thereafter. No benchmark was
+run (D32).
+
+## F1 adversarial results
+
+### F1-U01 (F1-01) — hidden legacy entry with numeric worst
+
+Initial RED witness on the reviewed source (scratch detached worktree at
+`ca573ef`, test-only addition, no production edit; `evidence/b2-f1-red-u01.log`):
+the production handler returned `Ok(())` for the numeric-losing `k2="z"`
+candidate while a hidden `ordinal_sort=None` entry remained in the `K+1=2`
+heap — the exact reviewed defect.
+
+After the fix (`b2_f1_u01_hidden_mixed_heap_rejected_even_for_loser`): real B1
+v2 segment `k0="a"`, `k1="b"`, `k2="z"`; real translated ranks; synthetic heap
+`k0` legacy `None` + `k1` numeric `Some(rank_b)`; `peek()` asserted to be `k1`
+numeric; a fresh unchecked audit; real handler call for doc 2. Exact
+`Err(CorruptIndex { detail: "mixed ordinal and legacy sort entries" })`,
+`numeric_compares()==0`, `owned_single_strings()==0`,
+`full_heap_audits()==1`, heap keys/ranks/charges/scores/length unchanged.
+Positive arm: both entries `Some`, fresh audit, same losing `z` returns `Ok`,
+`numeric_compares()==1`, `owned_single_strings()==0`, one audit, no mutation.
+
+### F1-U02 (F1-INV02) — one audit under maximum competition
+
+`b2_f1_u02_one_time_audit_and_numeric_only_admissions` reuses the 1,000-document
+descending-input fixture where every candidate is competitive: `total_hits=1000`,
+ordered keys, `owned_single_strings()=1000`, `numeric_compares()=999`, and
+`full_heap_audits()==1`. A second eligible request on the same cached map audits
+exactly once again. An ineligible `Query::And([Term])` request prepares no map and
+audits zero times. U16 remains unchanged and passes.
+
+### F1-U03 / strengthened I07 (F1-02) — genuine third-candidate loser
+
+Fixture: one real `FsDirectory` v2 segment, physical/doc-id order `k0="a"`,
+`k1="b"`, `k2="z"×80`, all `body=common`, `K=1` (`K+1=2`). Exact results:
+
+| TopK | total_hits | keys | next_cursor Kth value |
+|---:|---:|---|---|
+| 1 | 3 | `["k0"]` | `Some`, `Keyword("a")` |
+| 2 | 3 | `["k0","k1"]` | `Some`, `Keyword("b")` |
+| 3 | 3 | `["k0","k1","k2"]` | `None` |
+
+`b2_f1_u03_long_loser_after_k_plus_one` proves the third candidate is the loser
+rather than page truncation: `numeric_candidates=3`, `numeric_compares=1`,
+`owned_single_strings=2`, `single_rejected_without_copy=1`,
+`full_heap_audits=1`, `total_hits=3`, keys `["k0"]`, with
+`Query::And([Term])` parity for keys, count, score bits and projected fields.
+I07 also asserts the real `doc_keys` order `k0,k1,k2`, the
+`FEATURE_KEYWORD_ORDINALS` requirement, the existing `city` ordinal column, the
+complete six-field projected values per row (literal input constructor), and
+legacy parity for K=1/K=2. The old two-row topology (K+1 not filled) is no longer
+used as proof.
+
+The corrupt-unselected half is preserved: a valid outer `ContainerBuilder`
+envelope around a mutated `Seattle` dictionary term still fails with exactly
+`SegmentError::InvalidUtf8 { context: "keyword" }`, and the original immutable
+segment bytes plus snapshot-map readiness remain intact.
+
+**79/80 statement (F1-INV05, D22):** the exact
+`LimitExceeded { limit:79, requested:80 }` remains established by the existing
+bound-accessor unit test on real v2 bytes. The public I07 snapshot cannot reach
+that per-value threshold because its container-open admission itself requires
+more than 80 bytes. No limit was lowered and no public 79-byte failure is
+claimed.
+
+## F1 local gate results (G0–G6, G9)
+
+| Gate | Evidence | Result |
+|---|---|---|
+| G0 preflight | `evidence/b2-f1-preflight.txt` | PASS — pinned PR/branch/base, only docs since TESTED, harmless untracked B1 `f2-ci-status.txt` preserved (D04a) |
+| G1 worksheet | section above | PASS — F1-INV01..07 mapped |
+| G2 implementation | source diff | PASS — one request-local bool audit, scan before compare, late scan removed |
+| G3 unit | `evidence/b2-f1-focused-tests.log`, `b2-f1-red-u01.log` | PASS — F1-U01/U02/U03 + U08/U14/U16 aliases; red witness retained |
+| G4 integration | `b2-f1-focused-tests.log` | PASS — I07 exact K=1/2/3, corruption half, all I01–I08 |
+| G5 regression | same log | PASS — B2 lib 29, B1 lib 64, B1 integration 9+2 ignored, PR15H `b_u` 12 |
+| G6 final QA | `b2-f1-qa-*.log`, `b2-f1-coverage-*.log` | PASS — see table below |
+
+Final QA on TESTED `7218d5e...`:
+
+| Command | Result |
+|---|---|
+| `cargo +1.98.1 fmt --all -- --check` | PASS |
+| `cargo +1.98.1 clippy --workspace --all-targets [--all-features] -- -D warnings` | PASS (both) |
+| `cargo +1.98.1 test --workspace --all-targets` | PASS — 2669 passed, 0 failed, 16 ignored |
+| `… --all-features` | PASS — 2714 passed, 0 failed, 100 ignored |
+| `cargo +1.98.1 llvm-cov … --fail-under-lines 85` | PASS — 93.03% (64176/68986) |
+| `… --all-features` | PASS — 92.62% (65291/70494) |
+| `cargo +1.98.1 doc … [--all-features]` | PASS |
+| `cargo +1.98.1 bench --workspace --no-run` (compile only) | PASS |
+| adapter `query_session_constructs_exactly_one_snapshot_for_the_whole_session` | PASS |
+| `bash benchmarks/scripts/test-scripts.sh` | PASS — 108/108 |
+| `cargo +1.85.0 fmt/clippy --all-features/test --all-features` | PASS — 2714 passed, 0 failed, 100 ignored |
+| `git diff --check` | PASS |
+
+No benchmark acquisition, profiler, cross-engine run or RustFS service was
+started (D32).
+
+## F1 decision ledger
+
+| Rule | Applied action |
+|---|---|
+| D01 | PR #127 open/draft, `dev/perf06-b2 → main`, pinned head; fast-forward only; no force ops |
+| D02 | Head differed from reviewed executable source only by docs/evidence; executable/test blobs compared |
+| D04a | Untracked B1 `evidence/f2-ci-status.txt` recorded, left byte-identical and uncommitted |
+| D06/D07 | One audit per Ready request; handler and the two U08 test call sites updated mechanically (one shared audit) |
+| D08/D09/D10 | Full scan once on first numeric candidate, before comparison; exact `CorruptIndex` on any `None`; O(1) afterwards |
+| D11/D12 | Existing `d3c`/heap admission reused; source inspection found no `None` insertion path in a Ready request |
+| D16 | Hidden-legacy fixture explicitly asserts numeric `peek()` and a deeper `None` |
+| D19/D20/D21 | Three real rows `a`,`b`,`z×80`; third loses with exact counters instead of page-only inference |
+| D22 | Bound-accessor 79/80 evidence retained; no public 79-byte claim |
+| D24/D27 | Narrow test-source corrections only (F1 tests and I07); invalidated gates rerun |
+| D30 | Only `#[cfg(test)]` `Cell` observation; release source inspected |
+| D32 | No timing; structural complexity documented and deferred to B4 |
+| D33 | Docs/evidence committed after TESTED with protected-path diff proof |
+
+No HARD STOP row applied.
+
+## F1 residual risks
+
+Unchanged from B2: B1 map optional unavailability, legacy/mixed segment limits,
+MultiOne full decoding, competitive-entry string materialization, no stable
+cross-snapshot rank identities, no B3 identity change, A6 remote-compaction
+publication unqualified, and no warm/RSS/footprint claim. The audit is a
+one-time proof plus inductive construction invariant; it is not a
+memory-corruption detector for arbitrary post-proof mutation outside the approved
+query code.

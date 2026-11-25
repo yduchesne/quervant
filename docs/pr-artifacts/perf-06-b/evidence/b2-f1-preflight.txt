@@ -1,0 +1,106 @@
+# PERF-06-B2-F1 preflight (UTC 2026-11-25T17:12:51Z)
+
+## status at start (only untracked B1 F2 artifact)
+ M docs/pr-artifacts/perf-06-b/PERF06B2_EXECUTION_REPORT.md
+?? docs/pr-artifacts/perf-06-b/PERF06B2_F1_DETAILED_FIXUP_PLAN.md
+?? docs/pr-artifacts/perf-06-b/evidence/b2-f1-coverage-all-features.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-f1-coverage-default.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-f1-focused-tests.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-f1-preflight.txt
+?? docs/pr-artifacts/perf-06-b/evidence/b2-f1-qa-clippy.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-f1-qa-doc-bench-adapter.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-f1-qa-scripts-msrv.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-f1-qa-test-msrv.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-f1-qa-tests.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-f1-red-u01.log
+?? docs/pr-artifacts/perf-06-b/evidence/f2-ci-status.txt
+
+## HEAD / origin branch / main / merge-base
+7218d5e57c0ce1734a94ed0db93f94a3a7ecf477
+ca573ef624529418fd1a6e4bdaa978b4e75f6b2a
+3cb1cbdff4c3bc7bbc1cae1c4e92c5cb44ca95cc
+3cb1cbdff4c3bc7bbc1cae1c4e92c5cb44ca95cc
+
+## diff accepted-main base..HEAD (path list)
+M	crates/quervant-core/src/search/typed_compare.rs
+M	crates/quervant-core/src/search/unified.rs
+M	crates/quervant-core/src/segment/column.rs
+A	crates/quervant-core/tests/perf06_b2_ordinals.rs
+M	docs/ARCHITECTURE.md
+M	docs/BENCHMARKING.md
+M	docs/PERF_OPTIMIZATION_ROADMAP.md
+A	docs/pr-artifacts/perf-06-b/PERF06B2_DETAILED_PLAN.md
+A	docs/pr-artifacts/perf-06-b/PERF06B2_EXECUTION_REPORT.md
+A	docs/pr-artifacts/perf-06-b/evidence/b2-bench_no-run.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-benchmark_scripts.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-ci-rustfs-extract.txt
+A	docs/pr-artifacts/perf-06-b/evidence/b2-ci-rustfs-job.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-ci-status.txt
+A	docs/pr-artifacts/perf-06-b/evidence/b2-clippy_1.85.0_all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-clippy_1.98.1_all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-clippy_1.98.1_default.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-coverage-all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-coverage-default.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-delivery.txt
+A	docs/pr-artifacts/perf-06-b/evidence/b2-diff-inventory.txt
+A	docs/pr-artifacts/perf-06-b/evidence/b2-doc_all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-doc_default.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-fmt_1.85.0.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-fmt_1.98.1.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-focused-tests.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-git_diff_--check.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-p0-preflight.txt
+A	docs/pr-artifacts/perf-06-b/evidence/b2-protected-blobs.txt
+A	docs/pr-artifacts/perf-06-b/evidence/b2-test_1.85.0_all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-test_1.98.1_all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-test_1.98.1_default.log
+M	docs/pr-artifacts/perf-06/PERF06_SERIES_REGISTER.md
+
+## diff reviewed-tested..HEAD (docs/evidence only)
+M	crates/quervant-core/src/search/unified.rs
+M	crates/quervant-core/tests/perf06_b2_ordinals.rs
+M	docs/ARCHITECTURE.md
+M	docs/BENCHMARKING.md
+M	docs/PERF_OPTIMIZATION_ROADMAP.md
+A	docs/pr-artifacts/perf-06-b/PERF06B2_DETAILED_PLAN.md
+A	docs/pr-artifacts/perf-06-b/PERF06B2_EXECUTION_REPORT.md
+A	docs/pr-artifacts/perf-06-b/evidence/b2-bench_no-run.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-benchmark_scripts.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-ci-rustfs-extract.txt
+A	docs/pr-artifacts/perf-06-b/evidence/b2-ci-rustfs-job.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-ci-status.txt
+A	docs/pr-artifacts/perf-06-b/evidence/b2-clippy_1.85.0_all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-clippy_1.98.1_all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-clippy_1.98.1_default.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-coverage-all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-coverage-default.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-delivery.txt
+A	docs/pr-artifacts/perf-06-b/evidence/b2-diff-inventory.txt
+A	docs/pr-artifacts/perf-06-b/evidence/b2-doc_all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-doc_default.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-fmt_1.85.0.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-fmt_1.98.1.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-focused-tests.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-git_diff_--check.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-p0-preflight.txt
+A	docs/pr-artifacts/perf-06-b/evidence/b2-protected-blobs.txt
+A	docs/pr-artifacts/perf-06-b/evidence/b2-test_1.85.0_all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-test_1.98.1_all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-test_1.98.1_default.log
+M	docs/pr-artifacts/perf-06/PERF06_SERIES_REGISTER.md
+
+## PR #127
+{"baseRefName":"main","headRefName":"dev/perf06-b2","headRefOid":"ca573ef624529418fd1a6e4bdaa978b4e75f6b2a","isDraft":true,"number":127,"state":"OPEN","url":"https://github.com/yduchesne/quervant/pull/127"}
+
+## plan/guide identities
+8b72ca511a902b61740ee0726d2cd0e3772e939d9a419c8aba6392fb328350db  docs/DETAILED_PR_PLAN_AUTHORING_GUIDE.md
+871bd0116bf87a3c8e056a89ffc96adccaa0e57ad1aeb22a401f3e4db69ff70f  docs/pr-artifacts/perf-06-b/PERF06B2_DETAILED_PLAN.md
+bf3de7919361c1a8a20bf187a356200c1b41cc46ee53d87a47ea16b8ee737815  docs/pr-artifacts/perf-06-b/PERF06B2_F1_DETAILED_FIXUP_PLAN.md
+c871d370dc050fad9457bfa81a8421dbb846fbf2
+b01844136d1a610d7b0e09227ad715dffb02f4d3
+c64ca43aee059cac4b64f797722c21c0d5824074
+
+## handler call sites at reviewed source
+ca573ef624529418fd1a6e4bdaa978b4e75f6b2a:crates/quervant-core/src/search/unified.rs:946:                    consider_ordinal_keyword_candidate(
+ca573ef624529418fd1a6e4bdaa978b4e75f6b2a:crates/quervant-core/src/search/unified.rs:6909:        consider_ordinal_keyword_candidate(
+ca573ef624529418fd1a6e4bdaa978b4e75f6b2a:crates/quervant-core/src/search/unified.rs:6935:        let error = consider_ordinal_keyword_candidate(

@@ -1,0 +1,15 @@
+# F1 final QA ledger (UTC 2026-11-25T16:28:30Z)
+# source (working tree on) ca573ef624529418fd1a6e4bdaa978b4e75f6b2a
+
+$ cargo +1.98.1 fmt --all -- --check
+EXIT:0
+
+$ cargo +1.98.1 clippy --workspace --all-targets -- -D warnings
+    Checking quervant-distributed v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-distributed)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.11s
+EXIT:0
+
+$ cargo +1.98.1 clippy --workspace --all-targets --all-features -- -D warnings
+    Checking quervant-distributed v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-distributed)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.67s
+EXIT:0

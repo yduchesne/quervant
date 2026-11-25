@@ -1,0 +1,16 @@
+$ bash benchmarks/scripts/test-scripts.sh
+== AR2-T08 frozen tooling identity and workload invariants ==
+
+script tests: 108 passed, 0 failed
+EXIT:0
+
+$ cargo +1.85.0 fmt --all -- --check
+EXIT:0
+
+$ cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings
+    Checking quervant-distributed v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-distributed)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 17.11s
+EXIT:0
+
+$ git diff --check
+EXIT:0
