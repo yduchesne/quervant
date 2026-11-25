@@ -1,0 +1,48 @@
+# PERF-06-B1 diff inventory
+generated: 2026-11-25T00:09:44Z
+base pin: 480a77e78c6897e05cb7ceb76b01434974b82ec6
+
+## changed tracked paths
+   M .github/workflows/ci.yml
+   M crates/quervant-core/src/index/merge.rs
+   M crates/quervant-core/src/index/mod.rs
+   M crates/quervant-core/src/index/snapshot.rs
+   M crates/quervant-core/src/segment/build.rs
+   M crates/quervant-core/src/segment/column.rs
+   M crates/quervant-core/src/segment/format.rs
+   M crates/quervant-core/src/segment/reader.rs
+   M crates/quervant-core/tests/pr08_integration.rs
+   M docs/ARCHITECTURE.md
+   M docs/BENCHMARKING.md
+   M docs/PERF_OPTIMIZATION_ROADMAP.md
+   M docs/ROADMAP.md
+   M docs/architecture/VERIFIED_SEGMENT_READER_REUSE.md
+  A  docs/pr-artifacts/perf-06-b/PERF06B1_DETAILED_PLAN.md
+   M docs/pr-artifacts/perf-06/PERF06_SERIES_REGISTER.md
+  ?? crates/quervant-core/src/index/keyword_ordinals.rs
+  ?? crates/quervant-core/tests/fixtures/index/perf06_b1_columns_v1/
+  ?? crates/quervant-core/tests/perf06_b1_common/
+  ?? crates/quervant-core/tests/perf06_b1_ordinals.rs
+  ?? crates/quervant-core/tests/perf06_b1_rustfs.rs
+  ?? docs/pr-artifacts/perf-06-b/evidence/
+
+## numstat vs pin
+1	0	.github/workflows/ci.yml
+39	7	crates/quervant-core/src/index/merge.rs
+5	0	crates/quervant-core/src/index/mod.rs
+67	0	crates/quervant-core/src/index/snapshot.rs
+17	8	crates/quervant-core/src/segment/build.rs
+2636	121	crates/quervant-core/src/segment/column.rs
+6	0	crates/quervant-core/src/segment/format.rs
+52	4	crates/quervant-core/src/segment/reader.rs
+6	2	crates/quervant-core/tests/pr08_integration.rs
+92	0	docs/ARCHITECTURE.md
+9	0	docs/BENCHMARKING.md
+18	0	docs/PERF_OPTIMIZATION_ROADMAP.md
+11	0	docs/ROADMAP.md
+35	0	docs/architecture/VERIFIED_SEGMENT_READER_REUSE.md
+1798	0	docs/pr-artifacts/perf-06-b/PERF06B1_DETAILED_PLAN.md
+19	0	docs/pr-artifacts/perf-06/PERF06_SERIES_REGISTER.md
+
+## protected scope diff (must be empty)
+(end)

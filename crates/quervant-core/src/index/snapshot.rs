@@ -26,6 +26,7 @@ use crate::segment::reader::VerifiedSegmentState;
 use crate::segment::{SegmentLimits, SegmentReader, TimeBounds};
 
 use super::error::{IndexError, IndexResult};
+use super::keyword_ordinals::{KeywordOrdinalCache, KeywordOrdinalPreparation};
 use super::pit::PinCounter;
 
 /// Process-wide monotonic allocator for snapshot identity bindings.
@@ -252,6 +253,10 @@ impl Drop for ReaderReservation {
 pub struct GuardedSegmentReader {
     reader: SegmentReader,
     _reservation: ReaderReservation,
+    /// Identity of the snapshot that admitted this guard (never persisted).
+    snapshot_binding: u64,
+    /// Canonical position of this segment inside that snapshot.
+    segment_index: usize,
 }
 
 impl GuardedSegmentReader {
@@ -259,6 +264,16 @@ impl GuardedSegmentReader {
     #[must_use]
     pub const fn reader(&self) -> &SegmentReader {
         &self.reader
+    }
+
+    /// Process-local identity of the admitting snapshot.
+    pub(super) const fn snapshot_binding(&self) -> u64 {
+        self.snapshot_binding
+    }
+
+    /// Canonical segment position inside the admitting snapshot.
+    pub(super) const fn segment_index(&self) -> usize {
+        self.segment_index
     }
 }
 
@@ -375,6 +390,7 @@ pub struct ReaderSnapshot {
     reader_budget: Arc<ReaderByteBudget>,
     metadata_budget: Arc<MetadataBudget>,
     slots: Vec<SegmentCacheSlot>,
+    keyword_ordinals: KeywordOrdinalCache,
     #[cfg(test)]
     verifications: AtomicU64,
     #[cfg(test)]
@@ -503,6 +519,7 @@ impl ReaderSnapshot {
             reader_budget: ReaderByteBudget::new(reader_copy_limit),
             metadata_budget: MetadataBudget::new(metadata_cap),
             slots,
+            keyword_ordinals: KeywordOrdinalCache::new(),
             #[cfg(test)]
             verifications: AtomicU64::new(0),
             #[cfg(test)]
@@ -591,7 +608,45 @@ impl ReaderSnapshot {
         Ok(GuardedSegmentReader {
             reader,
             _reservation: reservation,
+            snapshot_binding: self.binding_id,
+            segment_index: index,
         })
+    }
+
+    /// Prepare (or reuse) the snapshot-wide numeric keyword ordinal map for one
+    /// eligible columnar single-valued `Keyword` field.
+    ///
+    /// `guards` must contain exactly one guard per snapshot segment, in
+    /// canonical segment order, all acquired from **this** snapshot. The
+    /// returned map is ready at most once per `(snapshot, field)`; every
+    /// successful request returns the same shared owner.
+    ///
+    /// Availability is optional acceleration. Mixed legacy/new snapshots and
+    /// resource-bounded cases return a sticky
+    /// [`KeywordOrdinalUnavailable`](super::KeywordOrdinalUnavailable) result;
+    /// codec corruption, schema disagreement, a foreign guard, cancellation and
+    /// a poisoned cache are typed errors.
+    ///
+    /// # Errors
+    ///
+    /// [`IndexError::Cancelled`], [`IndexError::CorruptCommittedState`],
+    /// [`IndexError::SchemaMismatch`] or [`IndexError::Segment`] with the
+    /// authoritative codec error.
+    pub fn prepare_keyword_ordinals(
+        &self,
+        field_id: u32,
+        guards: &[GuardedSegmentReader],
+        cancellation: &dyn crate::analysis::Cancellation,
+    ) -> IndexResult<KeywordOrdinalPreparation> {
+        self.keyword_ordinals.prepare(
+            self.binding_id,
+            &self.metadata_budget,
+            self.segment_limits,
+            self.segments.len(),
+            field_id,
+            guards,
+            cancellation,
+        )
     }
 
     /// Acquire a query-local reader, reusing the snapshot-scoped verified state
@@ -831,6 +886,18 @@ impl ReaderSnapshot {
             .get(index)
             .map(|slot| slot.state.try_lock().is_ok())
             .unwrap_or(false)
+    }
+
+    /// The snapshot-wide ordinal cache (test-only inspection).
+    #[cfg(test)]
+    pub(crate) fn ordinal_cache(&self) -> &KeywordOrdinalCache {
+        &self.keyword_ordinals
+    }
+
+    /// Poison the ordinal cache lock deterministically.
+    #[cfg(test)]
+    pub(crate) fn poison_ordinal_cache(&self) {
+        self.keyword_ordinals.poison_lock();
     }
 
     /// Poison one slot's lock deterministically.

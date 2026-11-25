@@ -956,3 +956,95 @@ This is a storage-format and cost-structure capability, not a measured latency o
 writer-throughput result. Full-corpus index-size figures in the A5 report are
 source-model projections; PERF-06-A6 owns actual benchmark-corpus sizes and warm
 qualification.
+
+## PERF-06-B1 persistent keyword ordinals and snapshot-wide value maps (implemented foundation)
+
+> **Status:** B1 implementation only. Candidate selection, comparator dispatch,
+> scoring, cursor representation and Top-K behaviour are **unchanged**; B2 owns
+> collector adoption, B3 owns document/duplicate identity and B4 owns the warm
+> qualification. No latency, RSS or whole-index percentage claim is made here.
+
+**Scope.** Every columnar `Keyword` field whose declared cardinality is `Single`
+is *eligible*. Multi-cardinality keyword, Text, JSON strings and every other
+column type keep their existing encoding. Canonical field ids are unchanged:
+`CodecSchema::from_contract` still assigns dense `u32` ids in UTF-8 field-name
+order, so compatible schemas already agree across segments. No global field
+registry, persistent interning service, manifest field or extra object is added.
+
+**Required feature and section version.** New eligible segments require
+`FEATURE_KEYWORD_ORDINALS = 0x0010/1` **and** `FEATURE_COLUMNS = 0x0004/1` and
+emit `COLUMNS` payload version `2`. This is a *feature* id namespace; the
+`JsonPaths = 0x0010` section kind is unrelated and ids are not renumbered.
+Version `1` remains readable and byte-frozen. A version-2 body without at least
+one eligible ordinal column, a version-1 body declaring the feature, a
+version-2 body whose feature is absent or optional-only, or the feature without
+any `COLUMNS` body is corruption at the existing `COLUMNS` validation boundary
+(before payload decoding), not a silent upgrade.
+
+**Layout `0x03` (`LAYOUT_KEYWORD_ORDINAL_SINGLE`).** The 46-byte field header and
+36-byte block entry keep their width and meaning; only the payload changes. At
+`data_base = dir_offset + dir_len`:
+
+| Relative offset | Encoding | Meaning |
+| --- | --- | --- |
+| 0 | `u64` | `U`, number of distinct raw terms |
+| 8 | `u64` | `L`, total raw dictionary bytes |
+| 16 | `(U+1)` packed unsigned little-endian | offsets into the dictionary blob |
+| `16 + (U+1)*ow` | `L` bytes | distinct terms in strict UTF-8 **byte** order |
+| after the blob | per-block state bytes then `rows*dw` packed ordinals | document rows |
+
+`ow = packed_width(L)`, `dw = packed_width(U-1)`, where `packed_width` returns
+the smallest width in `1..=8` (`0 → 1`). Widths are derived, never stored. Row
+states are `0x00` absent, `0x01` explicit null, `0x03` single and `0x04` the
+allowed single-element multi; `0x02` and anything else are illegal. Missing and
+null rows carry a zero ordinal slot and never alias a real value, so the empty
+string is an ordinary value. Terms are compared as raw bytes exactly like the
+existing keyword comparator: no case folding, normalization, locale collation or
+reuse of normalized postings terms.
+
+**Logical compatibility.** `ColumnReader::value`, `keyword_sort_view` and
+`encoded_value_shape` keep their observable semantics: the encoded shape reports
+the *legacy logical* span (`term_len+2` for single, `term_len+3` for the
+single-element multi, one element) so `search/typed_compare.rs` value admission
+still charges materialized strings. `keyword_sort_view` keeps the single-element
+multi on the legacy decode path. Logical decode budgets are unchanged, including
+the multi-one ordering (entry check, one-element vector, then the keyword string
+budget).
+
+**Borrowed local access.** `ColumnReader::bind_keyword_ordinals(field_id)`
+returns a `KeywordOrdinalColumn<'_>` borrowing the immutable section bytes. It
+copies only the validated per-field geometry and performs constant block
+arithmetic plus one packed read per document, with no schema/field-name/
+dictionary search and no allocation. `doc_ordinal` preserves the source row shape
+(`Single` versus `MultiOne`) and never needs a second row read.
+
+**Snapshot-wide maps.** `ReaderSnapshot::prepare_keyword_ordinals(field_id,
+guards, cancellation)` merges every admitted segment's dictionary into one exact
+order-preserving numeric space for **one field in one exact snapshot instance**
+(including volatile refreshes; the snapshot binding, not the generation, is the
+key). One streaming k-way heap merge over borrowed terms yields `O(T log S)` byte
+comparisons; a single segment is the identity map with no vectors. The retained
+payload is numeric only (`width * T` plus measured headers) and is charged to the
+snapshot's existing `MetadataBudget`; the reservation lives with the last map
+`Arc`. No strings, readers, segment bytes, active-reader charge,
+`Arc<ReaderSnapshot>` or inverse table are retained, so no snapshot→cache→snapshot
+cycle exists.
+
+**Optional capability and errors.** `KeywordOrdinalPreparation` distinguishes
+`Ready(Arc<SnapshotKeywordOrdinals>)` from four sticky, documented outcomes
+(`LegacySegment`, `ResourceBudget`, `Allocation`, `UnsupportedField`). Sticky
+means the same `(snapshot, field)` never retries. Codec corruption, schema
+disagreement, a foreign/reordered/duplicate guard slice, cancellation and a
+poisoned cache are always typed errors, never optional fallbacks. Ranks are **not**
+durable identifiers: a new snapshot may renumber them, old PITs keep their old
+map, and B1 persists nothing.
+
+**Cost model (structural, not measured).** The new per-column payload is
+`36*B + N + 16 + (U+1)*ow + L + N*dw`; the legacy payload is
+`36*B + N + 8*(N+B) + R + 2*V + M`. For valid single-valued input
+`ordinal <= legacy + 17`, i.e. a tiny-field overhead ceiling. The encoder sorts
+borrowed `(term, doc)` occurrences and emits one final buffer; retained ordinary
+(non-eligible) column buffers are charged before final output admission, while the
+inherited temporary `ByteWriter` behaviour of the ordinary layout is explicitly
+unchanged in B1. Merge reconstruction opens each source's columns once instead of
+per document/column.

@@ -1048,3 +1048,12 @@ PERF-05-C is a deliberate, family-scoped exception to the paired-block methodolo
 - The retained historical A was measured from source `256501f0e700ed199f316e79d128389375177530`, not the later pre-PERF-05 `main` base `9775bfca4c58a27e65ca28c1d705efad00a65ec8`.
 - A/B ratios are cross-session absolute comparisons. They are **not** a paired confidence interval, a contemporaneous A/B run, or a causal code-only attribution. The numeric target/guard flags are review signals; adoption and merge require human review.
 - This exception applies only to `perf-05`; all other families keep the paired-block protocol unchanged.
+
+## PERF-06-B1 scope note (2026-11-24)
+
+B1 is a **correctness and structural-size** change only: COLUMNS v2 persistent
+keyword dictionaries, compact document ordinals and the snapshot-wide numeric map
+foundation. It performs no benchmark acquisition, profiling, cross-engine run or
+threshold change, and no host-stability campaign is authorized or required for
+its acceptance. Host-load observations are advisory. B4 owns the cumulative warm
+qualification; this note changes no protocol or gate defined above.

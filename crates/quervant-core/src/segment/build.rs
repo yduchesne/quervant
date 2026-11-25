@@ -16,13 +16,14 @@ use crate::contract::schema::Schema;
 use crate::contract::value::{FieldType, FieldValue};
 
 use super::bounds::{GeoBounds, TimeBounds, presence_of};
-use super::column::encode_columns;
+use super::column::{ColumnDocuments, encode_columns_with_ordinals};
 use super::dictionary::{DictionaryEntry, encode_dictionary};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
     ContainerBuilder, ContainerKind, FEATURE_ADAPTIVE_POSTINGS, FEATURE_BASELINE, FEATURE_BOUNDS,
-    FEATURE_COLUMNS, FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_POSITIONAL, FEATURE_REMAP,
-    FEATURE_SPATIAL_POINTS, FEATURE_STORED, FEATURE_STORED_BLOCKS, SectionKind,
+    FEATURE_COLUMNS, FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_KEYWORD_ORDINALS,
+    FEATURE_POSITIONAL, FEATURE_REMAP, FEATURE_SPATIAL_POINTS, FEATURE_STORED,
+    FEATURE_STORED_BLOCKS, SectionKind,
 };
 use super::json_paths::{JsonFieldOccurrences, encode_json_paths, extract_field_paths};
 use super::limits::SegmentLimits;
@@ -255,16 +256,21 @@ impl SegmentBuilder {
         let stored_bytes =
             encode_stored_blocks(&self.schema, &ordered_docs(&ordered), &self.limits)?;
         let has_columns = self.schema.fields().iter().any(|field| field.is_columnar());
-        let columns_bytes = if has_columns {
-            Some(encode_columns(
+        // Reuse the already borrowed physical-order references: columns must not
+        // force a second full document clone.
+        let encoded_columns = if has_columns {
+            Some(encode_columns_with_ordinals(
                 &self.schema,
-                &ordered_docs(&ordered),
+                ColumnDocuments::References(&ordered),
                 self.block_docs,
                 &self.limits,
             )?)
         } else {
             None
         };
+        let has_keyword_ordinals = encoded_columns
+            .as_ref()
+            .is_some_and(|encoded| encoded.has_keyword_ordinals);
 
         let doc_keys = encode_doc_keys(&ordered)?;
         let version_refs = encode_version_refs(&ordered)?;
@@ -368,6 +374,9 @@ impl SegmentBuilder {
         if has_columns {
             builder.require_feature(FEATURE_COLUMNS, 1);
         }
+        if has_keyword_ordinals {
+            builder.require_feature(FEATURE_KEYWORD_ORDINALS, 1);
+        }
         if time_bounds.is_some() || !geo_bounds.is_empty() {
             builder.require_feature(FEATURE_BOUNDS, 1);
         }
@@ -397,8 +406,8 @@ impl SegmentBuilder {
         // The norms section is required to be present whenever the feature is
         // declared; both are emitted together for every new segment.
         builder.section(SectionKind::FieldNorms, 0, 0, norms_bytes);
-        if let Some(columns_bytes) = columns_bytes {
-            builder.section(SectionKind::Columns, 0, 0, columns_bytes);
+        if let Some(encoded) = encoded_columns {
+            builder.section(SectionKind::Columns, 0, 0, encoded.bytes);
         }
         if let Some(time_bounds) = &time_bounds {
             builder.section(SectionKind::TimeBounds, 0, 0, time_bounds.encode());

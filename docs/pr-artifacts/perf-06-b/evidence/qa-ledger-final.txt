@@ -1,0 +1,17 @@
+date: 2026-11-24T23:37:08Z
+source: 480a77e78c6897e05cb7ceb76b01434974b82ec6
+fmt 1.98.1: exit=0 duration=1s log=docs/pr-artifacts/perf-06-b/evidence/final-fmt_1.98.1.log
+clippy 1.98.1 default: exit=0 duration=0s log=docs/pr-artifacts/perf-06-b/evidence/final-clippy_1.98.1_default.log
+clippy 1.98.1 all-features: exit=0 duration=1s log=docs/pr-artifacts/perf-06-b/evidence/final-clippy_1.98.1_all-features.log
+test 1.98.1 default: exit=0 duration=300s log=docs/pr-artifacts/perf-06-b/evidence/final-test_1.98.1_default.log
+test 1.98.1 all-features: exit=0 duration=377s log=docs/pr-artifacts/perf-06-b/evidence/final-test_1.98.1_all-features.log
+doc default: exit=0 duration=5s log=docs/pr-artifacts/perf-06-b/evidence/final-doc_default.log
+doc all-features: exit=0 duration=5s log=docs/pr-artifacts/perf-06-b/evidence/final-doc_all-features.log
+bench no-run: exit=0 duration=41s log=docs/pr-artifacts/perf-06-b/evidence/final-bench_no-run.log
+benchmark scripts: exit=0 duration=46s log=docs/pr-artifacts/perf-06-b/evidence/final-benchmark_scripts.log
+fmt 1.85.0: exit=0 duration=2s log=docs/pr-artifacts/perf-06-b/evidence/final-fmt_1.85.0.log
+clippy 1.85.0 all-features: exit=0 duration=0s log=docs/pr-artifacts/perf-06-b/evidence/final-clippy_1.85.0_all-features.log
+test 1.85.0 all-features: exit=0 duration=423s log=docs/pr-artifacts/perf-06-b/evidence/final-test_1.85.0_all-features.log
+git diff --check: exit=0 duration=0s log=docs/pr-artifacts/perf-06-b/evidence/final-git_diff_--check.log
+coverage default: exit=0 duration=346s log=docs/pr-artifacts/perf-06-b/evidence/coverage-default.log
+coverage all-features: exit=0 duration=396s log=docs/pr-artifacts/perf-06-b/evidence/coverage-all-features.log

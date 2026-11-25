@@ -243,3 +243,21 @@ The [benchmark methodology](BENCHMARKING.md) is normative for terms such as lane
 `v0.1-perf` is **not DONE** merely because PERF-01 and PERF-05 have been merged. An approved set of remaining investigations must receive reviewable dispositions. Each adopted A/B/C subseries must satisfy independent correctness, **same-run stability controls and the chosen approved warm qualification methodology**, applicable Rust stable/MSRV/coverage/CI and relevant storage tests, immutable data, and read-only reanalysis. A qualified **historical B-only** comparison does not equal a same-session paired A/B result. RustFS is required only for work whose affected storage/remote contracts justify it, not automatically for unrelated query or documentation changes. Cold-start and index build metrics are separate diagnostics. Preserve failures and no-change outcomes without relabeling them.
 
 Advance each table status only after its required gate and human review. Keep `docs/ROADMAP.md` and this register aligned at milestone boundaries; leave earlier immutable qualification and historical PR reports unchanged.
+
+## PERF-06-B1 amendment (current status, 2026-11-24)
+
+> **Superseding status note.** A6 is user-accepted and merged (PR #125); the A6
+> numerical misses recorded above remain unchanged and are not relabelled. An
+> approved B1 execution plan now exists
+> ([detailed plan](pr-artifacts/perf-06-b/PERF06B1_DETAILED_PLAN.md)) and the
+> implementation is recorded in
+> [the B1 execution report](pr-artifacts/perf-06-b/PERF06B1_EXECUTION_REPORT.md).
+> B1 now delivers the persistent segment representation, bounded local access and
+> the snapshot-wide numeric map foundation; **B2 owns collector adoption**, B3
+> owns document/duplicate identity and B4 owns the warm qualification. B1 is not
+> an accepted or measured performance win.
+
+B1 does not run or re-label any A6 acquisition, does not change the benchmark
+framework, thresholds or configurations, and does not claim latency, RSS or
+whole-index size improvements. Its evidence is correctness, exact wire bytes,
+structural size formulas and real local/remote lifecycle integration.

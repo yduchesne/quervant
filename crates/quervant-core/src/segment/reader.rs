@@ -28,14 +28,17 @@ use quervant_objectstore::ContentDescriptor;
 use crate::contract::document::DocumentKey;
 
 use super::bounds::{GeoBounds, TimeBounds};
-use super::column::{ColumnGeometry, ColumnReader, column_geometry_allowance};
+use super::column::{
+    ColumnGeometry, ColumnReader, column_geometry_allowance, columns_body_version,
+};
 use super::decode_budget::DecodeBudget;
 use super::dictionary::{DictionaryEntry, DictionaryReader};
 use super::error::{SegmentError, SegmentResult};
 use super::format::{
-    ByteReader, ContainerKind, ContainerView, FEATURE_ADAPTIVE_POSTINGS, FEATURE_FIELD_NORMS,
-    FEATURE_JSON_PATHS, FEATURE_SPATIAL_POINTS, FEATURE_SPLIT_POSTINGS, FEATURE_STORED_BLOCKS,
-    SectionEntry, SectionKind, parse_container, reserve_exact_vec,
+    ByteReader, ContainerKind, ContainerView, FEATURE_ADAPTIVE_POSTINGS, FEATURE_COLUMNS,
+    FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS, FEATURE_KEYWORD_ORDINALS, FEATURE_SPATIAL_POINTS,
+    FEATURE_SPLIT_POSTINGS, FEATURE_STORED_BLOCKS, SectionEntry, SectionKind, parse_container,
+    reserve_exact_vec,
 };
 use super::json_paths::{JsonDocOffset, JsonPathDirectory, JsonPathsReader};
 use super::limits::SegmentLimits;
@@ -1505,6 +1508,10 @@ fn decode_metadata(
     // individual column values remain lazily decoded. A budget-admitted
     // candidate retains the already validated per-field table; the unmetered
     // path parses and discards it exactly as before.
+    // Keyword-ordinal feature/body agreement is checked at the existing COLUMNS
+    // boundary, before any payload decoding. The standalone column parser has no
+    // container feature context and therefore accepts both known versions.
+    validate_keyword_ordinal_feature(view, &required)?;
     let column_geometry = match view.body(SectionKind::Columns) {
         None => None,
         Some(body) => match meter.as_deref_mut() {
@@ -1594,6 +1601,47 @@ fn decode_metadata(
         column_geometry,
         stored_version,
     })
+}
+
+/// Enforce the exact required-feature/COLUMNS-version agreement matrix.
+///
+/// A mismatch is corruption; an unsupported required feature version is already
+/// rejected by the container feature parser before this point.
+fn validate_keyword_ordinal_feature(
+    view: &ContainerView<'_>,
+    required: &[(u16, u16)],
+) -> SegmentResult<()> {
+    let body = view.body(SectionKind::Columns);
+    let has_ordinals = required.contains(&(FEATURE_KEYWORD_ORDINALS, 1));
+    let has_columns = required.contains(&(FEATURE_COLUMNS, 1));
+    // `None` means the two-byte version prefix is absent, which reaches the
+    // parser's existing `Truncated` error rather than a feature mismatch.
+    let version = match body {
+        Some(body) => columns_body_version(body).ok(),
+        None => None,
+    };
+    let mismatch = || SegmentError::Corrupt {
+        context: "keyword ordinals",
+        detail: "columns version/feature mismatch".to_owned(),
+    };
+    match (body, version, has_ordinals) {
+        (None, _, false) => Ok(()),
+        (None, _, true) => Err(SegmentError::Corrupt {
+            context: "keyword ordinals",
+            detail: "feature requires columns".to_owned(),
+        }),
+        (Some(_), Some(2), true) => {
+            if has_columns {
+                Ok(())
+            } else {
+                Err(mismatch())
+            }
+        }
+        (Some(_), None, _) => Ok(()),
+        (Some(_), Some(2), false) => Err(mismatch()),
+        (Some(_), Some(_), true) => Err(mismatch()),
+        (Some(_), Some(_), false) => Ok(()),
+    }
 }
 
 fn read_all(

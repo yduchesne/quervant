@@ -118,3 +118,22 @@ benchmark acquisition, staging invocation, writer observation or quality check.
 Host stability observations during F1 were advisory and non-blocking by the same
 explicit user instruction. See
 [A6 execution report](../perf-06-a/PERF06A6_EXECUTION_REPORT.md).
+
+## PERF-06-B1 status amendment (2026-11-24)
+
+The historical "B1 blocked" statements above predate the user's explicit
+acceptance/merge of A6 (PR #125) and the subsequent approved B1 execution plan.
+Current dependency and status reconciliation:
+
+* **A6:** user-accepted and merged; unfavorable numerical evidence unchanged.
+* **B1:** implementation of the persistent keyword-ordinal codec, bounded local
+  access and the snapshot-wide numeric map foundation. Gates are recorded in
+  [PERF06B1_EXECUTION_REPORT.md](../perf-06-b/PERF06B1_EXECUTION_REPORT.md).
+  **Not accepted before independent maintainer review (G10 remains open).**
+* **B2:** query-collector adoption of the B1 foundation — separate plan.
+* **B3:** document-key/duplicate identity — unchanged scope.
+* **B4:** cumulative correctness plus the separately approved warm
+  qualification — unchanged scope.
+
+This register does not mark PERF-06-B done, does not describe B1 as a performance
+result and does not promote an unreviewed branch into the B2 dependency.

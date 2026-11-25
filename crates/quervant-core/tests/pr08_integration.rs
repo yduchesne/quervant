@@ -487,8 +487,8 @@ fn p8_t14_mixed_legacy_new_bm25() {
 fn p8_t42_golden_bytes_features_unchanged() {
     use quervant_core::segment::format::{
         FEATURE_ADAPTIVE_POSTINGS, FEATURE_BASELINE, FEATURE_BOUNDS, FEATURE_COLUMNS,
-        FEATURE_FIELD_NORMS, FEATURE_POSITIONAL, FEATURE_REMAP, FEATURE_SPLIT_POSTINGS,
-        FEATURE_STORED, FEATURE_STORED_BLOCKS,
+        FEATURE_FIELD_NORMS, FEATURE_KEYWORD_ORDINALS, FEATURE_POSITIONAL, FEATURE_REMAP,
+        FEATURE_SPLIT_POSTINGS, FEATURE_STORED, FEATURE_STORED_BLOCKS,
     };
     let directory = memory();
     pr08_commit_batches(
@@ -513,6 +513,10 @@ fn p8_t42_golden_bytes_features_unchanged() {
         FEATURE_SPLIT_POSTINGS,
         // PERF-06-A5: new non-empty lexical segments declare adaptive postings v1.
         FEATURE_ADAPTIVE_POSTINGS,
+        // PERF-06-B1: eligible single-valued keyword columns declare COLUMNS v2
+        // ordinals v1. This fixture has no eligible field, so the pair is only
+        // part of the supported-feature allowlist.
+        FEATURE_KEYWORD_ORDINALS,
     ];
     assert!(
         required

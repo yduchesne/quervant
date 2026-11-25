@@ -21,13 +21,14 @@ use crate::analysis::{Cancellation, NeverCancel};
 use crate::contract::document::{DocumentKey, FieldValues};
 use crate::contract::value::{FieldType, FieldValue};
 use crate::segment::bounds::presence_of;
-use crate::segment::column::encode_columns;
+use crate::segment::column::{ColumnDocuments, encode_columns_with_ordinals};
 use crate::segment::dictionary::{DictionaryEntry, encode_dictionary};
 use crate::segment::format::{
     ByteWriter, ContainerBuilder, ContainerKind, FEATURE_ADAPTIVE_POSTINGS, FEATURE_BASELINE,
     FEATURE_BOUNDS, FEATURE_COLUMNS, FEATURE_FIELD_NORMS, FEATURE_JSON_PATHS,
-    FEATURE_MUTATION_STATE, FEATURE_MUTATION_STATE_V2, FEATURE_MUTATION_STATE_V3,
-    FEATURE_POSITIONAL, FEATURE_SPATIAL_POINTS, FEATURE_STORED, FEATURE_STORED_BLOCKS, SectionKind,
+    FEATURE_KEYWORD_ORDINALS, FEATURE_MUTATION_STATE, FEATURE_MUTATION_STATE_V2,
+    FEATURE_MUTATION_STATE_V3, FEATURE_POSITIONAL, FEATURE_SPATIAL_POINTS, FEATURE_STORED,
+    FEATURE_STORED_BLOCKS, SectionKind,
 };
 use crate::segment::norms::{encode_field_norms, scoring_field_ids};
 use crate::segment::postings::{Posting, encode_adaptive_postings_block};
@@ -270,6 +271,20 @@ pub(crate) fn compact(
         }
     }
 
+    // Open each source's column reader exactly once for the whole reconstruction.
+    // The `column_value` convenience accessor would re-open and re-validate every
+    // column for every document; retained readers keep this O(sources).
+    let mut source_columns: Vec<Option<crate::segment::column::ColumnReader<'_>>> = Vec::new();
+    source_columns
+        .try_reserve_exact(readers.len())
+        .map_err(|_| IndexError::ResourceLimit {
+            limit: readers.len() as u64,
+            requested: u64::MAX,
+        })?;
+    for reader in &readers {
+        source_columns.push(reader.open_columns()?);
+    }
+
     // Deterministic mapping in (segment, old_doc_id) order.
     let mut mappings: Vec<Vec<Option<u64>>> = Vec::new();
     let mut new_meta: Vec<(usize, u64)> = Vec::new();
@@ -318,7 +333,11 @@ pub(crate) fn compact(
                 continue;
             }
             cancel.step(1)?;
-            if let Some(values) = reader.column_value(field.id, *old_doc)? {
+            let column_values = match &source_columns[*source_index] {
+                Some(columns) => columns.value(field.id, *old_doc)?,
+                None => None,
+            };
+            if let Some(values) = column_values {
                 if !values.is_absent() {
                     doc.insert(field.name.clone(), values)?;
                 }
@@ -327,19 +346,27 @@ pub(crate) fn compact(
         out_docs.push(doc);
     }
 
+    // The retained per-source column readers are no longer needed once the
+    // output documents are complete.
+    drop(source_columns);
+
     let stored_bytes =
         crate::segment::stored_blocks::encode_stored_blocks(&schema, &out_docs, &limits)?;
     let has_columns = schema.fields().iter().any(|field| field.is_columnar());
-    let columns_bytes = if has_columns {
-        Some(encode_columns(
+    let encoded_columns = if has_columns {
+        Some(encode_columns_with_ordinals(
             &schema,
-            &out_docs,
+            ColumnDocuments::Documents(&out_docs),
             limits.block_docs_default(),
             &limits,
         )?)
     } else {
         None
     };
+    let has_keyword_ordinals = encoded_columns
+        .as_ref()
+        .is_some_and(|encoded| encoded.has_keyword_ordinals);
+    let columns_bytes = encoded_columns.map(|encoded| encoded.bytes);
 
     // Field norms: use persisted norms, or reconstruct from postings for a
     // genuine legacy segment.
@@ -616,6 +643,7 @@ pub(crate) fn compact(
             postings_body.as_slice(),
             has_positional,
             has_columns,
+            has_keyword_ordinals,
             has_json_paths,
             json_bytes.as_deref(),
             has_spatial,
@@ -870,6 +898,7 @@ fn build_merged_segment(
     postings_body: &[u8],
     has_positional: bool,
     has_columns: bool,
+    has_keyword_ordinals: bool,
     has_json_paths: bool,
     json_bytes: Option<&[u8]>,
     has_spatial: bool,
@@ -894,6 +923,9 @@ fn build_merged_segment(
     builder.require_feature(FEATURE_STORED_BLOCKS, 1);
     if has_columns {
         builder.require_feature(FEATURE_COLUMNS, 1);
+    }
+    if has_keyword_ordinals {
+        builder.require_feature(FEATURE_KEYWORD_ORDINALS, 1);
     }
     if time_bounds.is_some() || !geo_bounds.is_empty() {
         builder.require_feature(FEATURE_BOUNDS, 1);
