@@ -441,3 +441,200 @@ Written **before** any F1 production or test edit.
    drop and `MetadataReservation` releases the measured charge when the last owner drops. The ready-state charge may only
    be observed non-zero while a `Ready` owner (state or bound handle) is alive; after all threads exit and the last
    `Arc<VerifiedSegmentState>` is dropped, `MetadataBudget::used()` must be `0`. A non-zero value proves a leaked charge.
+
+## F1-2. What changed (source scope, allowlist §3)
+
+Only test code plus two `#[cfg(test)]` witnesses. No production behavior changed.
+
+| File | F1 delta | Production semantics |
+|---|---|---|
+| `crates/quervant-core/src/search/unified.rs` | new `b3_tests::b3_f1_u01_matching_query_rejects_corrupt_unselected_doc_key`; rewritten `b3_u09_mode_gating_and_ineligible_shapes` | untouched (`UnifiedSearcher`, handlers, `d3c`, `KeyBinder`, comparator, costs, `MixedEntry` all byte-identical) |
+| `crates/quervant-core/src/segment/reader.rs` | two `#[cfg(test)]` `AtomicU64` fields on `KeyFingerprintCache` (`wait_entries`, `raii_wake_notifications`) + their init and increment sites; new `b3_f1_u02`, `b3_f1_u03`, `b3_f1_u04`; strengthened `b3_u21` | untouched: state transitions, poll cadence, `notify_all`, `disarm`, public reader methods, metadata allowance, DOC_KEYS parsing, fingerprints and error mapping |
+| `crates/quervant-core/tests/perf06_b3_keys.rs` | second half of `b3_i08` now requests K=32 on a fresh snapshot with literal oracles | n/a (test) |
+| `docs/pr-artifacts/perf-06-b/PERF06B3_F1_DETAILED_FIXUP_PLAN.md` | verbatim authorized plan (md5 `a9aa4a47e7cbef2ae0f392ece61e3fe9`, 462 lines) | n/a |
+| `docs/pr-artifacts/perf-06-b/evidence/b3-f1-*` | new sanitized logs/evidence | n/a |
+
+`#[cfg(test)]`-only additions (compiled out of normal/benchmark builds):
+
+```
+KeyFingerprintCache { …, #[cfg(test)] wait_entries: AtomicU64, #[cfg(test)] raii_wake_notifications: AtomicU64 }
+ensure_key_fingerprints  Next::Wait  → wait_entries.fetch_add(1, SeqCst)   (immediately before wait_timeout)
+KeyFingerprintBuildGuard::drop       → raii_wake_notifications.fetch_add(1, SeqCst)  (before notify_all)
+```
+
+Both witnesses are read only inside `b3_key_identity_tests`, are per-`VerifiedSegmentState`,
+and no release-build counter, lock, metric or tracing was added.
+
+## F1-3. Invariant ledger (G1 → executed proof)
+
+| Invariant | Test | Executed command | Result |
+|---|---|---|---|
+| F1-I01 | `b3_f1_u01_matching_query_rejects_corrupt_unselected_doc_key` | `cargo +1.98.1 test -p quervant-core --lib search::unified::b3_tests::b3_f1_u01_… -- --exact --test-threads=1` | **PASS** (1 selected, 1 passed) |
+| F1-I02 | same test (zero-match arm first) | same | **PASS** |
+| F1-I03 | `b3_f1_u02_error_wakes_actual_waiter_and_retries` | `… --lib b3_f1_u02_error_wakes_actual_waiter_and_retries -- --test-threads=1` | **PASS** (1/1) |
+| F1-I04 | `b3_f1_u03_panic_wakes_actual_waiter_and_retries` | `… --lib b3_f1_u03_panic_wakes_actual_waiter_and_retries …` | **PASS** (1/1) |
+| F1-I05 | `b3_f1_u04_poisoned_fingerprint_lock_is_typed` | `… --lib b3_f1_u04_poisoned_fingerprint_lock_is_typed …` | **PASS** (1/1) |
+| F1-I06 | updated `b3_u21_concurrent_binders_share_one_owner` + U02/U03 | `… --lib b3_u21_concurrent_binders_share_one_owner …` | **PASS** (1/1) |
+| F1-I07 | corrected `b3_i08_resource_limits_and_exact_set_fallback` + `production_mode_for_test` assertions in `b3_u09` | `cargo +1.98.1 test -p quervant-core --test perf06_b3_keys b3_i08_… -- --exact --test-threads=1`; `… --lib b3_u09_mode_gating_and_ineligible_shapes …` | **PASS** (1/1 each) |
+| F1-I08 | corrected `b3_u09` (exact keys, count, cursor absence, legacy comparison) | same | **PASS** |
+| F1-I09 | whole-workspace default/all-feature QA + protected inventory (F1-5) | §7.3 ledger | **PASS** |
+
+Every command above selected **exactly one** named test (`running 1 test` in
+`b3-f1-focused-tests.log`); `b3_` now selects **27** lib tests (23 B3 + 4 F1) and
+the integration target selects **8**.
+
+## F1-4. Concern-by-concern evidence
+
+### F1-4.1 Corrupt-snapshot collector query (G2) — `b3_f1_u01`
+
+Fixture: two real `MemoryDirectory` documents in one segment, physical order
+`doc_keys() == ["k0","k1"]`, with `k0`/`grp=common` (matching) and
+`k1`/`grp=other` (non-matching). Pristine matched query: `total_hits=1`, key `k0`,
+projection `doc_id="a"`.
+
+Corruption: the pristine segment is parsed and rebuilt through
+`ContainerBuilder::new(ContainerKind::Segment, doc_count)` with **every** original
+required/optional feature and **every** original section `(kind, flags, aux, body)`;
+only the cloned `DOC_KEYS` body changes, at `windows(2)` position of the unique
+literal `k1` payload (`assert_eq!(hits.len(), 1)`, `corrupt_at > 12`, first byte →
+`0xFF`). The result is a fresh checksum-valid container; the original bytes are
+asserted unchanged and no committed `CURRENT`/manifest/index object is touched.
+
+Lazy open is asserted with the authoritative decoder:
+`SegmentReader::open(rebuilt)` succeeds, while `doc_key(0)` returns
+`SegmentError::InvalidUtf8 { context: "doc key" }` because the full decoder
+validates the **unselected** `k1` record.
+
+Then a real `ReaderSnapshot::for_test` is built from exactly one
+`SegmentSnapshot::new(SegmentMeta::new(…, ContentDescriptor::of(&rebuilt), …),
+Arc::new(rebuilt), doc_count)` with 256 MiB reader-copy and metadata caps
+(the 2-document fixture is orders of magnitude smaller, so R15 does not apply),
+and the **real `UnifiedSearcher`** runs, in this order:
+
+| # | Request on the corrupt snapshot | Required result | Observed |
+|---|---|---|---|
+| 1 | `Term(grp = "no-such-group")`, K=1 | `Ok`, `total_hits=0`, empty hits, no cursor, `b3_build_attempts()==0` | PASS |
+| 2 | strict `term()` = `Term(grp = "common")`, K=1 | `Err(SearchError::Segment(SegmentError::InvalidUtf8 { context: "doc key" }))` | PASS |
+| 3 | same request repeated | same exact typed error (not a sticky success) | PASS |
+| 4 | ineligible `legacy_term()` = `And([term()])`, K=1 | same exact typed error | PASS |
+| 5 | pristine original snapshot | `Ok`, `total_hits=1`, key `k0`, projection `doc_id="a"` | PASS |
+
+No partial response, no `NotAvailable`-as-success, no panic and no production
+change was required (R12 path; R13/R14/R16 not triggered).
+
+### F1-4.2 Failing-builder waiter recovery (G3) — `b3_f1_u02`/`u03`/`u04`/`u21`
+
+Each test uses its **own** `admitted_state(bytes_with(400))` (400 documents, so the
+`HashIndex256` boundary and a 7-byte key at `doc_id=399` really exist) and its own
+budget; nothing is shared between U02, U03 and U04.
+
+Protocol (identical shape for U02/U03): the builder thread installs the existing
+`B3Probe::AfterHashAllocation` hook — which runs **outside** the cache mutex after
+the real `Vec<u64>` allocation — signals `entered`, then blocks on a `release`
+channel. The main thread starts a second binder only after `entered`, waits for
+**that cache's** `wait_entries` to increase above its recorded baseline, and only
+then releases the builder. Because the waiter increments while holding the mutex
+and `wait_timeout` releases it atomically, the reset+notify cannot complete before
+the waiter parked.
+
+| Test | Builder outcome | Waiter | Post-conditions |
+|---|---|---|---|
+| `b3_f1_u02` | injected `Corrupt { context: "doc key identity", detail: "b3-f1-injected-error" }` after allocation | recovers, reads `meta(399).utf8_len == 7` | `state_code == 2` (Ready), one retained owner, `raii_wake_notifications` strictly increased, `budget.used() == 0` after the last owner drops |
+| `b3_f1_u03` | `panic!("b3-f1-injected-post-allocation-panic")`, caught by `catch_unwind` in the builder thread | recovers, `meta(399).utf8_len == 7` | Ready, mutex **not** poisoned, notify witness increased, `budget.used() == 0` |
+| `b3_f1_u04` | separate thread poisons only the fingerprint mutex | n/a | both binds return exactly `Corrupt { context: "doc key identity", detail: "fingerprint cache lock poisoned" }`; poison still set afterwards; `budget.used() == 0` |
+| `b3_u21` | successful publication | parked waiter reuses the same owner | one build attempt, one directory build, waiter builds 0, `waiter_waits >= 1` (5 ms cadence may re-enter), state-local sequencing |
+
+The RAII witness proves the cleanup notify **site executed**; it does **not** claim
+the wake was caused only by it, because the production waiter also wakes on its
+5 ms poll cadence. No timeout occurred in any run; 20 repeated executions of
+U02/U03/U21 at `--test-threads=8` all passed (`repeat_runs_failed=0`), so no
+flakiness classification was needed (R37 not triggered).
+
+### F1-4.3 ExactSet at the real threshold (G5) — `b3_i08`
+
+Threshold kept at the contract value 32 and the request TopK is now **32** on a
+**fresh** snapshot taken after the resource-budget half of the test:
+
+* `total_hits == 18`, `hits.len() == 18`, `next_cursor.is_none()`;
+* `keys == order_for(corpus_rows(), Asc, Last)` — the literal input-derived
+  18-key oracle;
+* every hit's full six-field projection equals `expected_projected_fields(key)`;
+* every score is `Some(finite)` and **bit-equal** to the separately executed
+  ineligible `fallback_query()` request at K=32 on the same snapshot
+  (`assert_scores_and_projection`, which also compares `generation` and
+  `view_ordinal`);
+* the default duplicate configuration at K=32 (resolves Prefilter) produces the
+  same keys/count/score bits/projections — a differential contract check, not
+  proof of ExactSet dispatch.
+
+Proof that K=32 selects ExactSet lives at the unit seam (`b3_u09`):
+`d3c::State::production_mode_for_test(32, exact_set_config()) == (ExactSet, P2)` and
+`(31, …) == (Linear, P0)`, plus `b3_build_attempts() == 0` and
+`b3_directory_builds() == 0` for that exact request as the **first** request on a
+fresh snapshot (so a cached directory could not mask the observation). R30 path;
+R34 not triggered.
+
+### F1-4.4 Non-vacuous ineligible assertions (G4) — `b3_u09`
+
+The former `assert!(error.is_ok() || error.is_err())` is replaced by an exact
+oracle for the valid two-column sort (`doc_id ASC`, `n ASC`) on the three literal
+rows: `Ok`, `total_hits == 3`, `keys == ["k00000","k00001","k00002"]`,
+`hits.len() == 3`, `next_cursor.is_none()`, `b3_build_attempts() == 0` and
+`b3_directory_builds() == 0` on a fresh snapshot, followed by an exact comparison
+against the semantically equivalent ineligible `legacy_term()` request (keys,
+count, score `to_bits()`, projected fields). No tautology remains.
+
+## F1-5. Final QA ledger (G7) — one run on TESTED `52d7e69`
+
+| # | Command | Result | Evidence |
+|---|---|---|---|
+| 1 | `cargo +1.98.1 fmt --all -- --check` | PASS | `b3-f1-fmt_1.98.1.log` |
+| 2 | `cargo +1.98.1 clippy --workspace --all-targets -- -D warnings` | PASS | `b3-f1-clippy_1.98.1_default.log` |
+| 3 | `cargo +1.98.1 clippy --workspace --all-targets --all-features -- -D warnings` | PASS | `b3-f1-clippy_1.98.1_all-features.log` |
+| 4 | `cargo +1.98.1 test --workspace --all-targets` | PASS — **2701 passed, 0 failed, 16 ignored** | `b3-f1-test_1.98.1_default.log` |
+| 5 | `cargo +1.98.1 test --workspace --all-targets --all-features` | PASS — **2746 passed, 0 failed, 100 ignored** | `b3-f1-test_1.98.1_all-features.log` |
+| 6 | `cargo +1.98.1 llvm-cov --workspace --all-targets --fail-under-lines 85` | PASS — **93.12 %** lines (71 228 lines, 4 897 missed), 93.53 % regions | `b3-f1-coverage-default.log` |
+| 7 | `cargo +1.98.1 llvm-cov --workspace --all-targets --all-features --fail-under-lines 85` | PASS — **92.70 %** lines (72 737 lines, 5 313 missed), 93.20 % regions | `b3-f1-coverage-all-features.log` |
+| 8 | `cargo +1.98.1 doc --workspace --no-deps` | PASS | `b3-f1-doc_default.log` |
+| 9 | `cargo +1.98.1 doc --workspace --all-features --no-deps` | PASS | `b3-f1-doc_all-features.log` |
+| 10 | `cargo +1.98.1 bench --workspace --no-run` | PASS (compile only; no samples run) | `b3-f1-bench_no-run.log` |
+| 11 | `bash benchmarks/scripts/test-scripts.sh` | PASS | `b3-f1-benchmark_scripts.log` |
+| 12 | `cargo +1.85.0 fmt --all -- --check` | PASS | `b3-f1-fmt_1.85.0.log` |
+| 13 | `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | PASS | `b3-f1-clippy_1.85.0_all-features.log` |
+| 14 | `cargo +1.85.0 test --workspace --all-targets --all-features` | PASS — 2746 passed, 0 failed, 100 ignored | `b3-f1-test_1.85.0_all-features.log` |
+| 15 | `git diff --check origin/main...HEAD` | PASS (see F1-5.1) | `b3-f1-git_diff_--check.log` |
+
+Coverage scope: whole Rust workspace, all targets, **no exclusions**; both floors
+above 85 %. Both toolchains used unchanged (Rust 1.98.1 and MSRV 1.85.0); no
+dependency, lockfile or toolchain change.
+
+Focused matrix on TESTED (`b3-f1-focused-tests.log`): the seven F1 named tests each
+selected exactly 1 and passed; `b3_` lib **27 passed**; `perf06_b3_keys` **8
+passed**; `b2_` lib **30 passed**; `perf06_b2_ordinals` **8 passed**; `b1_` lib
+**64 passed**; `perf06_b1_ordinals` **9 passed / 2 ignored**;
+`--features pr15i-d3c-experiment d3c_tests::` **41 passed / 1 ignored**; the
+untimed adapter contract test passed; 20/20 repeat runs of the concurrency tests
+passed.
+
+### F1-5.1 Evidence sanitization (disclosed mechanical change)
+
+`git diff --check origin/main...HEAD` initially failed **only** on trailing
+whitespace inside six *verbatim captured CI-log copies* from the already-committed
+B3 evidence (`b3-ci-rustfs-job.log`, `b3-ci-rustfs-extract.txt`, `b3-ci-status.txt`,
+`b3-test_1.98.1_default.log`, `b3-test_1.98.1_all-features.log`,
+`b3-test_1.85.0_all-features.log`). The F1 delta itself was already clean
+(`git diff --check 76609e8..HEAD` → rc 0). The same class already exists in
+`origin/main` (`b2-ci-rustfs-job.log` carries 124 such lines), so this is a
+pre-existing property of the evidence directory, not an F1 defect.
+
+Because §7.3 makes the check mandatory and §3 explicitly contemplates *sanitized*
+logs/evidence, the six files were sanitized mechanically: trailing spaces stripped
+and one blank line at EOF removed from three logs. This is provably
+content-preserving — non-blank line counts are unchanged (1380 / 22 / 3430 / 3430
+/ 3301) and `git diff -w` shows only the three single blank-EOF deletions, with no
+other hunk. No test result, timestamp, exit code or line of evidence was altered or
+removed, nothing was promoted, and the change touches documentation only, so it
+does not invalidate the TESTED source QA (R39). It is isolated in its own commit
+and is trivially revertible if the maintainer prefers the unsanitized logs.
+
+New `b3-f1-*` evidence was sanitized on creation for the same reason.
