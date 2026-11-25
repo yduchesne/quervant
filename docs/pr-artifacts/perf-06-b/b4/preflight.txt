@@ -1,6 +1,6 @@
 PERF-06-B4 PREFLIGHT (P0/G0) — immutable source and host identity
 ================================================================
-recorded_utc: 2026-11-26
+recorded_utc: 2026-11-25T22:28:01Z (host clock)
 repository: yduchesne/quervant
 
 Source identities
@@ -57,5 +57,7 @@ authorized compatibility fallback in use: PYTHONPATH=benchmarks python3 -m querv
 Frozen experiment
 -----------------
 config_name: quervant-perf06b4-paired-warm
-config_path: benchmarks/studies/perf-06/warm/configurations/quervant-perf06b4-paired-warm-<UTC-creation-date>.json (created by CLI)
+config_path: benchmarks/studies/perf-06/warm/configurations/quervant-perf06b4-paired-warm-2026-11-25.json (created by CLI; exact path from prepare stdout)
+config_id: 4608c79a-c5a3-4d24-bec9-4ad61cd7bd94
+config_created_utc: 2026-11-25T22:27:58Z
 scratch_root: target/perf06-b4
