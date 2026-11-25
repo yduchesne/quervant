@@ -1,0 +1,8 @@
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T19:39:33.6756394Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T19:39:34.8300318Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 1.22s
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T19:39:34.8414959Z ^[[1m^[[92m     Running^[[0m tests/perf06_b1_rustfs.rs (target/debug/build/quervant-core/ab1751408d2681fc/out/perf06_b1_rustfs-ab1751408d2681fc)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T19:39:34.8435230Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T19:39:34.8435677Z running 1 test
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T19:39:37.2712937Z test b1_r01_cold_shared_ordinals_and_pit ... ok
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T19:39:37.2713260Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T19:39:37.2713428Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.43s

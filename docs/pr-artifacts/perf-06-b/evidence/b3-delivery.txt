@@ -1,0 +1,25 @@
+# PERF-06-B3 delivery identity
+
+START (accepted post-B2 main): ce7dea12c0f8f84fdc3a80306083e38c8df30ce2
+TESTED (final executable/test source): aa5c4497bb2a1fcc99a6ab9d9731db86ef7a4479
+REMOTE_VERIFIED: CI run 45687076012 on aa5c4497bb2a1fcc99a6ab9d9731db86ef7a4479 (rust, msrv, rustfs, benchmark-adapter-contract, python-benchmark-framework all PASS)
+
+## executable/test/protected blob diff TESTED..working-tree
+paths: crates/ benchmarks/ .github/ Cargo.toml Cargo.lock rust-toolchain*
+(empty above == TESTED already contains every executable/test change)
+
+## changed paths TESTED..HEAD (or working tree)
+ M docs/pr-artifacts/perf-06-b/PERF06B3_EXECUTION_REPORT.md
+?? docs/pr-artifacts/perf-06-b/evidence/b3-ci-rustfs-extract.txt
+?? docs/pr-artifacts/perf-06-b/evidence/b3-ci-rustfs-job.log
+?? docs/pr-artifacts/perf-06-b/evidence/b3-ci-status.txt
+?? docs/pr-artifacts/perf-06-b/evidence/b3-delivery.txt
+?? docs/pr-artifacts/perf-06-b/evidence/f2-ci-status.txt
+
+## protected path recursion (must be empty)
+(empty above == no protected path changed)
+
+## executable source blobs at TESTED
+f5b374005b8d5acbbd129bab0593073ac896e61f
+04b03a4507e4c0019749d87352026f1d11b6c82d
+7fba18aa99952f5806dae061151e97895a69dc5f

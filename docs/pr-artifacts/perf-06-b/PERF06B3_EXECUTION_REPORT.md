@@ -280,24 +280,50 @@ builder, no `doc_keys()` call on the compact path, and no per-candidate
 tracing/metric/allocation. Every new allocation is charged to
 `MetadataBudget`/`SegmentLimits` before it happens.
 
-## 7. CI (G8) and RustFS (G6)
+## 7. CI (G8) and RustFS (G6) — PASS on the tested source
 
-Ordinary `.github/workflows/ci.yml` is unchanged; all five normal jobs
-(`rust`, `msrv`, `rustfs`, `benchmark-adapter-contract`,
-`python-benchmark-framework`) are required on the exact tested source. State:
-**recorded in `b3-ci-status.txt` / `b3-ci-rustfs-extract.txt` once the draft PR
-run completes**; a green job alone does not close a correctness gate, and the
-hosted `rustfs` log must show
-`test b1_r01_cold_shared_ordinals_and_pit ... ok` for G6 to pass. No local RustFS
-bootstrap, no fake remote adapter and no new remote code or claim.
+Ordinary `.github/workflows/ci.yml` is unchanged (no workflow, trigger or job
+edit in this change set). Run `45687076012` (`event: pull_request`) on head
+`aa5c4497bb2a1fcc99a6ab9d9731db86ef7a4479` — the exact tested executable/test
+source — completed with **all five normal jobs successful**:
+
+| Job | Result | Duration | Job id |
+|---|---|---|---|
+| `rust` | PASS | 22m18s | `139462389252` |
+| `msrv` | PASS | 7m38s | `139462389952` |
+| `rustfs` | PASS | 2m32s | `139462389977` |
+| `benchmark-adapter-contract` | PASS | 1m14s | `139462389850` |
+| `python-benchmark-framework` | PASS | 2m47s | `139462389923` |
+
+**G6 real-boundary evidence (not merely a green job).** The hosted `rustfs` job
+actually ran the pinned real-RustFS acceptance test; its log
+(`b3-ci-rustfs-job.log`, extract `b3-ci-rustfs-extract.txt`) shows:
+
+```
+Running tests/perf06_b1_rustfs.rs (...)
+running 1 test
+test b1_r01_cold_shared_ordinals_and_pit ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.43s
+```
+
+No local RustFS bootstrap, no fake remote adapter, no new remote code and no
+remote-performance claim. Status: `b3-ci-status.txt`.
+
+No duplicate-run trigger was introduced: PR changes run through `pull_request`
+only, and no feature branch was added to any `push.branches` filter.
 
 ## 8. Identities and applied decision rules
 
 | Identity | Value |
 |---|---|
 | START (accepted post-B2 `main`) | `ce7dea12c0f8f84fdc3a80306083e38c8df30ce2` |
-| TESTED (final executable/test source) | see `b3-delivery.txt` |
-| FINAL (terminal PR head, may be docs-only) | see `b3-delivery.txt` |
+| TESTED (final executable/test source) | `aa5c4497bb2a1fcc99a6ab9d9731db86ef7a4479` |
+| FINAL (terminal PR head, docs-only after TESTED) | see `b3-delivery.txt` |
+| REMOTE_VERIFIED (CI run for TESTED) | run `45687076012`, head `aa5c4497…`, all five jobs green |
+
+`aa5c4497…` contains the production and test source **and** the first version of
+this report; every later commit on this branch is documentation/evidence only,
+and `b3-delivery.txt` records the executable-blob diff between TESTED and FINAL.
 
 Decision rows applied:
 
