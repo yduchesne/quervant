@@ -1,0 +1,9 @@
+TESTED_SHA: 1b9621e2d089f7658e5749a8ad73e3153d1b2045 (working tree = tested tree)
+REVIEWED_SHA: 8e11484af49e38243a97d765ef21662f7e3060a3
+START_SHA: 63638d5b59441b9a075ac28d7ec90314ce72a456
+PIN: 480a77e78c6897e05cb7ceb76b01434974b82ec6
+PR: #126 (draft, base main, head dev/perf06-b1)
+protected_path_diff_vs_reviewed: empty (see f1-diff-inventory.txt)
+real_rustfs_run: evidence/f1-rustfs-r01.log (PERF06_B1_R01_PASS)
+local_qa: evidence/f1-qa-ledger.txt
+coverage: default 92.84% lines, all-features 92.99% lines
