@@ -201,3 +201,38 @@ Each snapshot has a segment-indexed slot with `Empty | Building | Ready(Arc<Veri
 ### G1–G4 completion criteria and authority
 
 This section settles the intended representation, cap policy, accounting units, trust boundaries, fallback and concurrency state machine. **Before implementation begins**, compile-time trait checks and allocation-inventory coverage must be shown against fresh source; the implementation agent must STOP rather than extend the architecture for any unlisted owner or unsupported preflight. These are verification gates on a fixed design, not permission to choose another design. PR 15C-A is delivery metadata only; all normative choices remain in this permanent document.
+
+### PERF-06-B1 implementation addendum — snapshot-wide ordinal map ownership
+
+The snapshot-owned optional numeric keyword ordinal map (one field, one exact
+`ReaderSnapshot` binding) follows the same reuse rules as verified segment state:
+
+* **Owner.** `ReaderSnapshot` owns one inline ordinal cache (one `Mutex` plus one
+  `Condvar`). It is allocated lazily on the first explicit
+  `prepare_keyword_ordinals` call; ordinary query paths never initialize it in B1.
+* **Budget.** The map reuses the existing `MetadataBudget` (cap == reader-copy
+  limit). There is no new configurable budget, no unaccounted retained cache and
+  no second segment cache. Construction scratch is reserved through the existing
+  `MetadataMeter` and released at finalization; the finished owner keeps only its
+  measured reservation, which lives with the last map `Arc` even after the
+  snapshot and cache are dropped.
+* **Reader admission.** `ReaderByteBudget` and active-reader admission are
+  untouched. Preparation takes already-admitted `GuardedSegmentReader`s; it never
+  re-opens or re-admits a reader and never creates a second reader copy.
+* **Identity.** Every `GuardedSegmentReader` records the admitting snapshot
+  binding and its canonical segment index. A foreign, reordered, duplicated or
+  incomplete guard slice is rejected before any ready-cache lookup
+  (`"keyword ordinal readers do not match snapshot"`), and a map refuses a guard
+  from another snapshot (`"keyword ordinal map does not match snapshot"`). Both
+  checks happen once per segment setup, never per document.
+* **Once-only publication.** The registry and each field use the same
+  `Empty/Building/Ready` RAII discipline as the segment slot cache: at most one
+  successful builder, `Arc`-identical results for every concurrent requester, no
+  partially filled map is ever published, and cancellation/unwind restores the
+  pre-build state and wakes waiters with a fixed 5 ms `wait_timeout`. A poisoned
+  lock fails closed and never serves recovered contents.
+* **Sticky optional outcomes.** `LegacySegment`, `ResourceBudget`, `Allocation`
+  and `UnsupportedField` are sticky for the snapshot lifetime; only a new
+  snapshot may retry. Codec corruption, schema disagreement, cancellation and
+  poisoning remain typed errors.
+* **No claim.** This is retained numeric metadata accounting, not an RSS bound.

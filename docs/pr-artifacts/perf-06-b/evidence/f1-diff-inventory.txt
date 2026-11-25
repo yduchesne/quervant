@@ -1,0 +1,21 @@
+# F1 diff inventory
+base_start: 63638d5b59441b9a075ac28d7ec90314ce72a456
+reviewed_source: 8e11484af49e38243a97d765ef21662f7e3060a3
+pin: 480a77e78c6897e05cb7ceb76b01434974b82ec6
+
+## changed paths vs reviewed source
+  M	crates/quervant-core/src/index/keyword_ordinals.rs
+  M	crates/quervant-core/src/segment/column.rs
+  M	crates/quervant-core/tests/perf06_b1_ordinals.rs
+  M	crates/quervant-core/tests/perf06_b1_rustfs.rs
+  M	docs/pr-artifacts/perf-06-b/PERF06B1_EXECUTION_REPORT.md
+  A	docs/pr-artifacts/perf-06-b/evidence/ci-status.txt
+
+## protected paths diff vs reviewed source (must be empty)
+(end)
+
+## numstat vs reviewed source
+  733	96	crates/quervant-core/src/index/keyword_ordinals.rs
+  601	101	crates/quervant-core/src/segment/column.rs
+  767	82	crates/quervant-core/tests/perf06_b1_ordinals.rs
+  554	212	crates/quervant-core/tests/perf06_b1_rustfs.rs

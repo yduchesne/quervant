@@ -1,0 +1,8 @@
+tested_source: 87745ed6a7902967e25bfce817a45d754d36c1a8 (working tree = committed tree)
+base_pin: 480a77e78c6897e05cb7ceb76b01434974b82ec6
+branch: dev/perf06-b1
+origin: git@github.com:yduchesne/quervant.git
+auth: gh github.com
+final_source: e42d97aa0e0f2d10f85ce6799dbd0decbc67a27f
+source_equivalence_87745ed_vs_final (non-docs diff, must be empty):
+(end)

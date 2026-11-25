@@ -352,3 +352,14 @@ performance rejection: the negative evidence was archived, campaign 02 was not
 run, and the candidate production delta was rolled back additively to the exact
 BASE blob. See
 [the execution status](pr-artifacts/pr-15i-d3-b-f1-2/execution-status.md).
+
+## PERF-06-B1 status (implementation, pending independent review)
+
+Persistent per-segment keyword dictionaries with compact document ordinals
+(`COLUMNS` v2, required feature `0x0010/1`) and the snapshot-wide numeric value
+map foundation are **implemented**, with the gate ledger in the
+[B1 execution report](pr-artifacts/perf-06-b/PERF06B1_EXECUTION_REPORT.md).
+Scope is deliberately narrow: **no query collector, comparator, scoring, cursor
+or Top-K change**; B2 adopts the foundation, B3 owns document/duplicate identity
+and B4 owns the cumulative warm qualification. This is not a measured latency,
+RSS or whole-index size result and it does not close PERF-06.

@@ -1,0 +1,24 @@
+# F2 preflight
+date: 2026-11-25T03:24:15Z
+status_before:
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-preflight.txt
+  Already on 'dev/perf06-b1'
+  Your branch is up to date with 'origin/dev/perf06-b1'.
+  From github.com:yduchesne/quervant
+   * branch            dev/perf06-b1 -> FETCH_HEAD
+  Already up to date.
+status_after:
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-preflight.txt
+HEAD=d579b7fd926ee96f0f79df6b74c58bd8ff61c51a
+origin/dev/perf06-b1=d579b7fd926ee96f0f79df6b74c58bd8ff61c51a
+origin/main=480a77e78c6897e05cb7ceb76b01434974b82ec6
+merge_base=480a77e78c6897e05cb7ceb76b01434974b82ec6
+diff_vs_F1_tested_source (1b9621e2):
+  M	docs/pr-artifacts/perf-06-b/PERF06B1_EXECUTION_REPORT.md
+  A	docs/pr-artifacts/perf-06-b/evidence/f1-ci-status.txt
+  A	docs/pr-artifacts/perf-06-b/evidence/f1-delivery.txt
+protected_blob_equality_vs_F1 (empty = identical):
+f2_plan_sha256: 5f735e89e82a734815dbc585d2e1b98b7edb3cb9debc13f05ae2f45f083be4e3
+f2_plan_git_blob: 4f5483c349226e826b378fc0277afbc0eb7b8c0c
+b1_plan_sha256: fe5ef98d100f8e1160e19c5d88663abde580d201d806c04721f94cb4a429f951
+f1_plan_sha256: 1a536f5e96cc0b00e615d89367ed9994d69ed9f2e67a1f05d01a73e329091e8e

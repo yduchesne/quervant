@@ -1,0 +1,30 @@
+# CI evidence (ordinary draft-PR workflow)
+run_id: 45516023460
+head_sha: 8e11484af49e38243a97d765ef21662f7e3060a3
+pr: https://github.com/yduchesne/quervant/pull/126
+tested_source_sha: 87745ed6a7902967e25bfce817a45d754d36c1a8 (final head differs only in docs/pr-artifacts evidence; see delivery.txt)
+status: completed
+conclusion: success
+event: pull_request
+workflow: Rust CI
+head: 8e11484af49e38243a97d765ef21662f7e3060a3
+jobs:
+  rust: completed success
+  rustfs: completed success
+  msrv: completed success
+  python-benchmark-framework: completed success
+  benchmark-adapter-contract: completed success
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T00:11:50.0178026Z ^[[36;1mcargo test -p quervant-core --all-features --test perf06_b1_rustfs -- --ignored --test-threads=1^[[0m
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T00:12:35.5598913Z ^[[1m^[[92m     Running^[[0m tests/perf06_b1_rustfs.rs (target/debug/build/quervant-core/ab1751408d2681fc/out/perf06_b1_rustfs-ab1751408d2681fc)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T00:12:35.8379552Z test b1_r01_cold_shared_ordinals_and_pit ... ok
+
+# final-head CI (docs-only evidence commit)
+run_id: 45518977758
+head_sha: 9c0009626bddb582a49bfb07d3d04abad82876ea
+status: completed
+conclusion: success
+  rustfs: success
+  rust: success
+  msrv: success
+  benchmark-adapter-contract: success
+  python-benchmark-framework: success

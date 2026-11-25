@@ -26,6 +26,7 @@
 
 mod current;
 mod error;
+mod keyword_ordinals;
 mod limits;
 mod merge;
 mod mutation_state;
@@ -46,6 +47,10 @@ pub use current::{
     manifest_key_for, segment_key_for_hex,
 };
 pub use error::{IndexError, IndexResult};
+pub use keyword_ordinals::{
+    KeywordOrdinalPreparation, KeywordOrdinalUnavailable, SegmentOrdinalMap,
+    SnapshotKeywordOrdinals,
+};
 pub use limits::IndexLimits;
 pub use merge::MergeOutcome;
 pub use pit::PitHandle;

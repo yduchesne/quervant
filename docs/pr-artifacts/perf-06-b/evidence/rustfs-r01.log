@@ -1,0 +1,16 @@
+# B1-R01 real RustFS execution
+date: 2026-11-24T23:17:51Z
+container_id: 9e43b4625964c93decd7cb9c611edab27e69b66fb273c88c710d8b3bc8be6c67
+image_digest: rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
+endpoint: http://127.0.0.1:19010 bucket: quervant-perf06-b1 region: us-east-1
+cmd: cargo +1.98.1 test -p quervant-core --all-features --test perf06_b1_rustfs -- --ignored --test-threads=1 --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running tests/perf06_b1_rustfs.rs (target/debug/deps/perf06_b1_rustfs-8eb64107fc0cb5b9)
+
+running 1 test
+test b1_r01_cold_shared_ordinals_and_pit ... PERF06_B1_R01_PASS
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.75s
+
+exit=0

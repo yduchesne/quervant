@@ -79,6 +79,11 @@ pub const FEATURE_SPLIT_POSTINGS: u16 = 0x000E;
 /// feature must reject the segment before decoding postings.
 pub const FEATURE_ADAPTIVE_POSTINGS: u16 = 0x000F;
 
+/// Persistent sorted keyword dictionaries with compact document ordinals in
+/// `COLUMNS` v2. This is a *feature* namespace; it is unrelated to the
+/// `JsonPaths = 0x0010` section kind.
+pub const FEATURE_KEYWORD_ORDINALS: u16 = 0x0010;
+
 /// Features this reader supports (id, version). Unknown *required* features fail.
 pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
     (FEATURE_BASELINE, 1),
@@ -96,6 +101,7 @@ pub const SUPPORTED_FEATURES: &[(u16, u16)] = &[
     (FEATURE_STORED_BLOCKS, 1),
     (FEATURE_SPLIT_POSTINGS, 1),
     (FEATURE_ADAPTIVE_POSTINGS, 1),
+    (FEATURE_KEYWORD_ORDINALS, 1),
 ];
 
 /// Section kind identifiers.
