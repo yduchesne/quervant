@@ -336,3 +336,191 @@ call, typed `NotAvailable` fallback, logical admission, comparisons, ties and
 cursor/PIT behaviour — a separate, source-specific plan, not automatic work
 authorized by B1. B3 owns document/duplicate identity and B4 owns the cumulative
 warm qualification.
+
+---
+
+# F1 independent-review correction (supersedes overbroad claims above)
+
+**Fixup plan:** [`PERF06B1_F1_DETAILED_FIXUP_PLAN.md`](PERF06B1_F1_DETAILED_FIXUP_PLAN.md),
+SHA-256 `1a536f5e96cc0b00e615d89367ed9994d69ed9f2e67a1f05d01a73e329091e8e`.
+
+Everything above this line is retained as **historical observation**. The F1 review
+found resource-admission defects, a malformed-input panic, waiting/cancellation gaps
+and missing proof obligations, so the earlier G2/G3/G4/G5/G6/G7/G8 `PASS` labels are
+**superseded** for those gates: G2/G3 were *implemented but incorrect in the ways
+listed below*, G4/G5/G6 were *executed but inadequately verified*, and G7/G8 belonged
+to the earlier source. G10 remains **OPEN** and maintainer-owned. The table in §1 is
+correct only for the pre-F1 source; the authoritative gate table for the corrected
+source is §F1.6 below.
+
+## F1.0 Source identities
+
+| Role | Value |
+| --- | --- |
+| START_SHA (branch head at preflight) | `63638d5b59441b9a075ac28d7ec90314ce72a456` |
+| REVIEWED_SHA (production source under review) | `8e11484af49e38243a97d765ef21662f7e3060a3` |
+| Intervening commits since REVIEWED_SHA | report/evidence only (`PERF06B1_EXECUTION_REPORT.md`, `evidence/ci-status.txt`) — D02 |
+| Frozen pin / merge base | `480a77e78c6897e05cb7ceb76b01434974b82ec6` (= `origin/main`) |
+| Preflight | clean worktree, fast-forward `already up to date`, plan hashes verified (`evidence/f1-p0-preflight.txt`) |
+| IMPLEMENTED_SHA / TESTED_SHA / FINAL_SHA | recorded in the PR body and `evidence/f1-delivery.txt` |
+
+Allowed executable delta: `src/index/keyword_ordinals.rs`, `src/segment/column.rs`,
+`tests/perf06_b1_ordinals.rs`, `tests/perf06_b1_rustfs.rs`.
+`evidence/f1-diff-inventory.txt` shows an **empty protected-path diff** against the
+reviewed source: `segment/metadata.rs`, `segment/reader.rs`, `segment/format.rs`,
+`index/merge.rs`, `index/snapshot.rs`, `index/mod.rs`, production `search/*`,
+`contract/*`, `remote/*`, `storage/*`, `quervant-objectstore`, `quervant-distributed`,
+`.github/workflows/ci.yml`, manifests/toolchain, `benchmarks/` and the frozen fixture
+are untouched. No new dependency, feature flag, budget implementation or public API
+shape was added.
+
+## F1.1 Pre-implementation invariant worksheet
+
+| INV-F1 | Symbols | Positive case | Counterexample case | Accepting tests |
+| --- | --- | --- | --- | --- |
+| 01 peak map admission | `keyword_ordinals::fixed_peak_allowance`, `build_field_map`, `grow`, `MetadataMeter` | exact peak `R+P` succeeds, retained ≤ peak | one byte under `R+P-1` sticky `ResourceBudget`; hidden vector capacity charged/rejected | `b1_g15_*`, `b1_g16_*`, `b1_g19_*`, `b1_g20_*` |
+| 02 ordinary retained backings | `column::check_ordinary_retained`, `encode_columns_with_ordinals` | exact-cap encode succeeds | retained `BlockPlan`/state/value capacity > cap while finished body fits | `b1_u09_*` |
+| 03 malformed v2 never panics | `column::read_dictionary_prefix`, `dictionary_geometry_from`, `validate_keyword_dictionary` | valid 116-byte witness parses | `U = u64::MAX` → typed count-exceeds-docs; extent overflow typed | `b1_u05_hostile_*`, `b1_u05_geometry_*`, `b1_i07_*` |
+| 04 no gratuitous wait | `KeywordOrdinalCache::wait`, `WaitFor` | publish inside the wait window returns Ready with zero `wait_timeout` | spurious notify while `Building` rechecks; cancelled waiter returns `Cancelled` | `b1_g13_*` |
+| 05 cancellation completeness | `initialize_registry(.., cancellation)`, `prepare`, `build_field_map` | post-publication cancel keeps the shared map | pre-publication cancel resets the claim; no cancel while locked | `b1_g12_*`, `b1_g14_*` |
+| 06 frozen U/G behaviors executed | unit tests | each named group has a dedicated test | `.is_err()`-style substitution rejected | this report §F1.3 |
+| 07 genuine v1→mixed→v2 proof | `tests/perf06_b1_ordinals.rs` | full 18/20-row oracles, immutable bytes, child process | fixture regenerated, partial oracle | `b1_i03_*`, `b1_i04_*` |
+| 08 real remote immutability | `tests/perf06_b1_rustfs.rs` | five recorded g3 objects re-GET byte-identical | provider counter or PIT only | `b1_r01_*` |
+| 09 frozen error labels/precedence | `column` v2 decode | table-driven label matrix | convenient category substitution | `b1_u05_*`, `b1_u06_*`, `b1_i07_*` |
+| 10 fallible keyword copy | `column::fallible_owned_keyword` | Single/MultiOne exact budget success | 79/80 section budget, vector-bytes−1 | `b1_u13_*` |
+| 11 evidence belongs to final source | QA ledger, CI ledger | source SHA ↔ logs ↔ CI | reusing earlier-source QA | §F1.5–F1.7 |
+
+Plausible wrong implementations challenged: hidden vector capacity (G15/G16 charge
+actual capacities), `U=u64::MAX` (explicit hostile-count test), notify-before-wait
+(G13 predicate wait), cancellation right after entry (G12 pre-publication reset),
+false `PASS` on a legacy index (I04 asserts `LegacySegment` and genuine v1 bodies), and
+a cold open that checks only some documents (I04/R01 assert every row and every key).
+
+## F1.2 F1-01…F1-11 disposition
+
+| ID | Prior defect | Correction (symbol) | Test | Result |
+| --- | --- | --- | --- | --- |
+| F1-01 | `sources` allocated before `MetadataMeter::reserve`; peak model omitted the outer map vector | `fixed_peak_allowance` (checked source+heads+outer+owner, per-backing `check_allocation_bytes`) reserved **before** any allocation; `grow` used for sources/outer/inner/heads; `extend(payload)` once; owner charged before `Arc::new`; scratch dropped before `finalize` | `b1_g15_exact_peak_allowance_and_sticky_budget`, `b1_g16_every_allocation_site_is_sticky`, `b1_g19_*`, `b1_g20_*` | PASS |
+| F1-02 | ordinary retained buffers only sum-charged | `check_ordinary_retained` checks each `BlockPlan`/state/values backing against `max_single_allocation` before the cumulative charge | `b1_u09_ordinary_retained_backings_are_checked_individually` | PASS |
+| F1-03 | `(U+1)*ow` computed before `U > doc_count` → overflow panic at `U=u64::MAX` | `read_dictionary_prefix` (no count arithmetic) + `dictionary_geometry_from` (checked `U.checked_add(1)`, checked `usize`, checked `strings_end`) | `b1_u05_hostile_dictionary_count_is_typed_not_a_panic`, `b1_u05_geometry_helper_is_checked`, `b1_i07_*` (valid outer envelope) | PASS |
+| F1-04 | waiter dropped the lock then unconditionally `wait_timeout`ed | `WaitFor::{Registry,Field}` re-evaluates the live predicate under the lock; skip the wait when already published | `b1_g13_wait_predicate_avoids_gratuitous_waits` | PASS |
+| F1-05 | `initialize_registry` had no cancellation; no pre-publication poll | cancellation plumbed through registry build with 256-unit polls, before entry reservation, after filling, before returning the candidate, and immediately before publication | `b1_g12_cancellation_is_checked_everywhere`, `b1_g12_cancellation_across_registry_and_build`, `b1_g14_*` | PASS |
+| F1-06 | missing U09/U10/U14/G08/G13/G15/G16/G20 proofs | added the mixed-capacity encoder case, the 64-case codec differential, the real-writer Multi0 commit, the pre-compaction deleted-only Boston view, the deterministic wait/cancel interleavings, isolated-budget peak tests, a 7-site allocation-fault ledger and the explicit-preparation structural test | `b1_u09_*`, `b1_u10_*`, `b1_u14_*`, `b1_i03_*` (G08 block), `b1_g12_*`…`b1_g20_*` | PASS |
+| F1-07 | I03 lacked intermediate inventories; I04 used `type-a` appended rows, partial oracles and no child marker | I03 records g3/g4 immutable closures, asserts 18/19/18 live docs and 3/4/4/1 segments, the deleted-only physical term, and byte-identical old objects; I04 appends `type-d` d0/d1, asserts 20-row values/orders/K/projections/predicates/aggregates (sum 190, distinct 20, 4 category groups), compares all recorded g3/g4 object bytes, and runs a `PERF06_B1_I04_MODE=g5` child with `PERF06_B1_I04_CHILD_PASS` | `b1_i03_*`, `b1_i04_*`, `b1_i04_child_body` | PASS |
+| F1-08 | R01 used the map from a different snapshot instance, no immutable-object proof, one g4 open | one prefix, four workspaces; provider-only five-object g3 closure via `ObjectStore::get` + `prefix.object_key`; two independent g4 cold opens with complete 19-row oracle + aggregation; post-g4 byte comparison of the same five keys | `b1_r01_cold_shared_ordinals_and_pit` | PASS (real pinned RustFS) |
+| F1-09 | two-pass offset/term validation let a later bad offset mask an earlier invalid term | single ordered pass: first-offset-zero, then `≤L`, monotonicity, then the just-delimited term (length/UTF-8/order), terminal last | `b1_u05_early_term_error_precedes_later_offset_error`, `b1_u05_dictionary_corruption_is_rejected_at_open` | PASS |
+| F1-10 | ordinal-row `Keyword` strings used infallible `to_owned()` | `fallible_owned_keyword` (`try_reserve_exact`, byte-accurate `LimitExceeded`) after the unchanged logical admission; MultiOne sequence preserved (entries → vector → separate string budget) | `b1_u13_ordinal_branch_budgets_and_fallback_copy` | PASS |
+| F1-11 | v2 illegal state reported the legacy label | layout-3 rows report `invalid keyword ordinal state`; other layouts keep `invalid state tag` | `b1_u06_row_state_and_extent_corruption_is_rejected` | PASS |
+
+## F1.3 Executed test inventory (actual counts)
+
+`cargo +1.98.1 test -p quervant-core --lib b1_ -- --test-threads=1` → **55 passed,
+0 failed** (`evidence/f1-test_1.98.1_all-features.log` also contains them).
+`cargo +1.98.1 test -p quervant-core --test perf06_b1_ordinals` → 9 passed, 2 ignored
+(the two ignored child entrypoints are executed by their parents, which pass).
+Named new/restored tests: `b1_u05_hostile_dictionary_count_is_typed_not_a_panic`,
+`b1_u05_geometry_helper_is_checked`,
+`b1_u05_early_term_error_precedes_later_offset_error`,
+`b1_u09_ordinary_retained_backings_are_checked_individually`,
+`b1_u10_frozen_codec_differential_families`,
+`b1_u13_ordinal_branch_budgets_and_fallback_copy`,
+`b1_u14_real_writer_rejects_zero_multi_count`,
+`b1_g12_cancellation_across_registry_and_build`,
+`b1_g13_wait_predicate_avoids_gratuitous_waits`,
+`b1_g15_exact_peak_allowance_and_sticky_budget`,
+`b1_g16_every_allocation_site_is_sticky`,
+`b1_i04_child_body` (+ the expanded `b1_i03`, `b1_i04`, `b1_r01`).
+
+## F1.4 Deterministic seams (test-only, compiled out in production)
+
+`thread_local` `WAIT_STARTS` counter, `PRE_WAIT_HOOK` and `AFTER_CLAIM_HOOK`
+(`keyword_ordinals.rs`), plus the existing `ALLOC_FAULT` countdown. Audited
+`alloc_fault_check` sites for a three-segment fixture: 0 registry entries, 1 bound
+sources, 2 outer map vector, 3–5 inner packed buffers, 6 heap heads — G16 iterates
+exactly these and requires `Allocation` at each. No production hook, atomic, metric or
+sleep establishes an event ordering; the only `sleep` calls bound a *real* waiter so a
+spurious notification and a cancelled wait can occur, and the no-wait proofs use hooks
+plus the `wait_starts` counter.
+
+## F1.5 Final local QA on the corrected source
+
+`evidence/f1-qa-ledger.txt` (logs `evidence/f1-*.log`):
+
+| Command | Exit |
+| --- | --- |
+| `cargo +1.98.1 fmt --all -- --check` | 0 |
+| `cargo +1.98.1 clippy --workspace --all-targets -- -D warnings` | 0 |
+| `cargo +1.98.1 clippy --workspace --all-targets --all-features -- -D warnings` | 0 |
+| `cargo +1.98.1 test --workspace --all-targets` | 0 — **2629 passed**, 0 failed, 16 ignored |
+| `cargo +1.98.1 test --workspace --all-targets --all-features` | 0 — **2674 passed**, 0 failed, 100 ignored |
+| `cargo +1.98.1 doc --workspace --no-deps` | 0 |
+| `cargo +1.98.1 doc --workspace --all-features --no-deps` | 0 |
+| `cargo +1.98.1 bench --workspace --no-run` | 0 (compile gate only) |
+| `bash benchmarks/scripts/test-scripts.sh` | 0 |
+| `cargo +1.85.0 fmt --all -- --check` | 0 |
+| `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | 0 |
+| `cargo +1.85.0 test --workspace --all-targets --all-features` | 0 — **2674 passed**, 0 failed, 100 ignored |
+| `git diff --check` | 0 |
+
+Coverage (`evidence/f1-coverage-*.log`, `--fail-under-lines 85`, no exclusions):
+default **92.84 %** lines (66485/4763), all-features **92.99 %** lines (67992/5147).
+
+## F1.6 Corrected gate ledger
+
+| Gate | Result on the corrected source |
+| --- | --- |
+| G0/G1 | **PASS** — clean fast-forward, approved plan hashes, invariant worksheet (§F1.1) |
+| G2 | **PASS** — decoder/encoder/ordinary-backing/fallible-copy corrections; U05/U06/U09/U10/U13/U14 executed |
+| G3 | **PASS** — G12–G16/G19/G20 prove peak admission, fault taxonomy, wait/cancel/reset/release |
+| G4 | **PASS** — 55 `b1_*` unit tests, including the restored adversarial cases |
+| G5 | **PASS** — full I01–I08; the g5 child actually executed (`PERF06_B1_I04_CHILD_PASS`); g3/g4 immutable bytes unchanged |
+| G6 | **PASS** — R01 passed against the pinned RustFS image with five-object byte verification and two independent g4 cold opens |
+| G7 | **PASS** — every §17.1 command exit 0; both coverage floors met |
+| G8 | **PASS/PENDING** — see §F1.7 (recorded after the ordinary push) |
+| G9 | **PASS** — additive correction, source/test/CI/protected diffs recorded |
+| G10 | **OPEN — maintainer only** |
+
+## F1.7 Real RustFS and CI evidence
+
+R01 executed on the corrected source against
+`rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c`
+(task-owned `podman` container `c2291d78…`, loopback only, no host mount): `ok` with
+`PERF06_B1_R01_PASS` (`evidence/f1-rustfs-r01.log`). Cleanup: id-scoped `stop` +
+`rm --volumes`; container absent and port released (`evidence/f1-rustfs-cleanup.log`).
+
+Ordinary draft-PR CI results for the F1 head are recorded in
+`evidence/f1-ci-status.txt` after the single push (see that file for run id, head SHA
+and per-job conclusions). No workflow dispatch, extra job or repeated push was used.
+
+## F1.8 Mandatory adversarial self-review
+
+| INV-F1 | Plausible bug | Catching evidence |
+| --- | --- | --- |
+| 01 | peak model omits a concurrently live backing, or `charge` silently accepts an uncharged growth | G15 exact/one-under boundary; G16 per-site faults with `budget.used()` unchanged; G16 requires exactly `Allocation`, not `ResourceBudget` |
+| 02 | retained ordinary capacity accepted because the final body fits | U09 synthetic over-capacity backings plus the real-encoder exact boundary |
+| 03 | `U`-dependent arithmetic runs before the count check and panics | hostile-count test at `u64::MAX` (and near-max), pure-geometry overflow tests, container-wrapped case |
+| 04 | publication is missed and the waiter sleeps a full interval | G13 asserts `wait_starts() == 0` in both registry and field modes after an in-window publish |
+| 05 | cancel-time reset leaves `Building`/`Initializing` stuck, or a post-publication cancel erases a valid map | G12 pre-publication reset on the same snapshot; post-publication cancel keeps `Arc`-identical map; G14 poison fails closed |
+| 06 | a group is "covered" by an unrelated assertion | explicit per-group tests listed in §F1.3 |
+| 07 | compaction silently drops nonstored/absent values or rewrites old objects | I03/I04 assert every row/state/rank, old object bytes, and the child process |
+| 08 | remote "immutability" inferred from a counter or a held PIT | R01 re-GETs the five recorded g3 keys and compares bytes; the g4 workspace is newly created |
+| 09 | a convenient error category replaces the frozen label | compound adversary proves the earlier term error wins; the label matrix covers each new check |
+| 10 | string copy stays infallible or budgets merge | U13 asserts exact 80/79 budgets, the vector-bytes−1 failure, and the fallible helper's byte-accurate error |
+| 11 | evidence from the pre-F1 source is reused | QA/CI ledgers carry the source SHA; the protected diff is empty |
+
+Disclosed residual risks are unchanged from §8 (high-cardinality map payload, many
+held PITs, open-time validation cost, snapshot-scoped non-durable ranks, mixed
+legacy/new snapshots, out-of-scope multi/Text/JSON, inherited ordinary temporary
+allocations, remote compaction unqualified, no performance claim).
+
+## F1.9 Disposition
+
+`PERF06_B1_F1_READY_FOR_INDEPENDENT_REVIEW` — implementation, correctness tests,
+local QA, coverage and real-RustFS acceptance pass on the corrected source; the gate
+table above is the authority. **G10 remains open**: independent review, acceptance and
+merge are maintainer-owned. Nothing here is a measured latency, RSS or index-size
+result, and A6's numerical outcomes are unchanged.
+
+**Handoff:** PR #126 (draft, base `main`, branch `dev/perf06-b1`). B2 owns collector
+adoption, B3 owns document/duplicate identity, B4 owns the cumulative warm
+qualification. Do not merge, start B2, or promote B1 as accepted from this report.

@@ -17,7 +17,7 @@ use quervant_core::contract::aggregation::{
 use quervant_core::contract::batch::{BatchQueryRequest, PerQueryOutcome, QueryRequest};
 use quervant_core::contract::budget::Budgets;
 use quervant_core::contract::capability::CapabilitySet;
-use quervant_core::contract::document::{DocumentKey, FieldValues, MutationRequest};
+use quervant_core::contract::document::{Document, DocumentKey, FieldValues, MutationRequest};
 use quervant_core::contract::error::{InvalidBatchReason, InvalidQueryReason, QueryError};
 use quervant_core::contract::query::{Bound, Query};
 use quervant_core::contract::result::{MissingValuePosition, Sort, SortDirection, SortField, TopK};
@@ -385,12 +385,20 @@ fn b1_i02_child_body() {
 fn b1_i03_append_delete_compact_and_held_pits() {
     let dir = TempDir::new("i03");
     let index = build_corpus(fs_directory(dir.path()));
+    // The frozen three-batch corpus produces three segments at generation 3.
+    let g3_objects = reachable_immutable(dir.path());
+    assert_eq!(g3_objects.len(), 5, "g3 manifest + 3 segments + state");
     let old_pit = index.pin().expect("pin");
     let old_snapshot = Arc::clone(old_pit.snapshot());
+    assert_eq!(old_snapshot.generation(), Some(3));
+    assert_eq!(old_snapshot.document_count(), 18);
+    assert_eq!(old_snapshot.segment_count(), 3);
     let old_guards = guards(&old_snapshot);
     let old_preparation = prepare_city(&old_snapshot, &old_guards);
     let old_map = Arc::clone(ready_map(&old_preparation));
     assert_eq!(shared_city_rank(&old_guards, &old_map, "b0"), Some(3));
+    let g3_live = live_keys(&old_snapshot);
+    assert_eq!(g3_live.len(), 18);
 
     let mut writer = index.writer().expect("writer");
     writer
@@ -399,9 +407,24 @@ fn b1_i03_append_delete_compact_and_held_pits() {
     assert_eq!(writer.commit().expect("commit").generation, 4);
     drop(writer);
 
+    let g4_objects = {
+        let after_append = reopen(dir.path());
+        assert_eq!(after_append.generation(), Some(4));
+        reachable_immutable(dir.path())
+    };
+    assert_eq!(g4_objects.len(), 6, "g4 manifest + 4 segments + state");
+    for (path, bytes) in &g3_objects {
+        assert_eq!(
+            std::fs::read(dir.path().join(path)).expect("g3 object"),
+            *bytes,
+            "g3 immutable object {path} changed after the append"
+        );
+    }
     let appended = reopen(dir.path()).pin().expect("pin");
     let appended_snapshot = Arc::clone(appended.snapshot());
+    assert_eq!(appended_snapshot.generation(), Some(4));
     assert_eq!(appended_snapshot.document_count(), 19);
+    assert_eq!(appended_snapshot.segment_count(), 4);
     let appended_guards = guards(&appended_snapshot);
     let appended_preparation = prepare_city(&appended_snapshot, &appended_guards);
     let appended_map = ready_map(&appended_preparation);
@@ -428,7 +451,36 @@ fn b1_i03_append_delete_compact_and_held_pits() {
         .expect("delete");
     assert_eq!(writer.commit().expect("commit").generation, 5);
     drop(writer);
+    // G08: before compaction the physical dictionary still contains the
+    // deleted-only term, while live results exclude the deleted document.
     let index = reopen(dir.path());
+    assert_eq!(index.generation(), Some(5));
+    assert_eq!(index.snapshot().document_count(), 18);
+    assert_eq!(index.snapshot().segment_count(), 4, "no compaction yet");
+    {
+        let snapshot = index.snapshot();
+        assert_eq!(snapshot.document_count(), 18);
+        let guards = guards(&snapshot);
+        let preparation = prepare_city(&snapshot, &guards);
+        let map = ready_map(&preparation);
+        assert_eq!(
+            map.term_count(),
+            13,
+            "the deleted-only Boston term is still physical"
+        );
+        assert_eq!(shared_city_rank(&guards, map, "b0"), Some(3));
+        let live = live_keys(&snapshot);
+        assert!(!live.contains(&"b0".to_owned()), "b0 is not live");
+        assert!(live.contains(&"b1".to_owned()));
+        // Physical dictionaries are visible for every retained segment.
+        let segments = segment_ordinals(&snapshot, &guards, map);
+        assert!(segments.iter().any(|segment| {
+            segment
+                .terms
+                .iter()
+                .any(|term| term.as_slice() == b"Boston")
+        }));
+    }
     let mut writer = index.writer().expect("writer");
     let outcome = writer.compact().expect("compact");
     assert_eq!(outcome.documents, 18);
@@ -436,6 +488,14 @@ fn b1_i03_append_delete_compact_and_held_pits() {
     drop(writer);
 
     let index = reopen(dir.path());
+    for (path, bytes) in g3_objects.iter().chain(g4_objects.iter()) {
+        assert_eq!(
+            std::fs::read(dir.path().join(path))
+                .unwrap_or_else(|error| panic!("immutable {path} disappeared: {error}")),
+            *bytes,
+            "immutable object {path} changed after compaction"
+        );
+    }
     let current = index.pin().expect("pin");
     let current_snapshot = Arc::clone(current.snapshot());
     assert_eq!(current_snapshot.generation(), Some(6));
@@ -452,9 +512,87 @@ fn b1_i03_append_delete_compact_and_held_pits() {
         Some(5)
     );
 
-    // Held views remain exactly what they were.
+    // Held views remain exactly what they were, including complete key sets.
     assert_eq!(shared_city_rank(&old_guards, &old_map, "b0"), Some(3));
     assert_eq!(shared_city_rank(&old_guards, &old_map, "a4"), Some(5));
+    assert_eq!(live_keys(&old_snapshot), g3_live);
+    assert_eq!(live_keys(&appended_snapshot).len(), 19);
+    assert_eq!(live_keys(&current_snapshot), {
+        let mut keys = g3_live.clone();
+        keys.retain(|key| key != "b0");
+        keys.push("d0".to_owned());
+        keys.sort();
+        keys
+    });
+}
+
+// B1-U14 — a real commit rejects a noncanonical zero-element multi before any
+// durable publication.
+#[test]
+fn b1_u14_real_writer_rejects_zero_multi_count() {
+    use quervant_core::contract::document::{Cardinality, Document};
+    use quervant_core::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use quervant_core::contract::value::FieldType;
+    use quervant_core::index::IndexError;
+    use quervant_core::segment::SegmentError;
+
+    let schema = Schema::new(
+        vec![FieldDefinition::new(
+            "city",
+            FieldType::Keyword,
+            Cardinality::Single,
+            FieldOptions::new(false, false, true),
+        )],
+        None,
+    )
+    .expect("schema");
+    let dir = TempDir::new("u14");
+    let index =
+        Index::create(fs_directory(dir.path()), schema.clone(), registry()).expect("create");
+    {
+        let mut writer = index.writer().expect("writer");
+        let mut doc = Document::new(DocumentKey::new("k0").expect("key"));
+        doc.insert(
+            "city",
+            FieldValues::Single(FieldValue::Keyword("alpha".to_owned())),
+        )
+        .expect("city");
+        writer.insert(doc).expect("insert");
+        assert_eq!(writer.commit().expect("commit").generation, 1);
+    }
+    let before = directory_inventory(dir.path());
+
+    let index =
+        Index::open_existing(fs_directory(dir.path()), schema.clone(), registry()).expect("reopen");
+    let mut writer = index.writer().expect("writer");
+    let mut document = Document::new(DocumentKey::new("k1").expect("key"));
+    // The public schema still admits the noncanonical zero-element multi.
+    document
+        .insert("city", FieldValues::Multi(Vec::new()))
+        .expect("city");
+    writer.insert(document).expect("pending insert is accepted");
+    let error = writer.commit().expect_err("commit must reject Multi0");
+    match error {
+        IndexError::Segment(SegmentError::InvalidColumnGeometry { detail }) => {
+            assert_eq!(detail, "zero multi count");
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    drop(writer);
+
+    // Nothing durable changed, and a fresh reader still opens generation 1.
+    let after = directory_inventory(dir.path());
+    assert_eq!(before, after, "a rejected commit must not publish anything");
+    let reopened =
+        Index::open_existing(fs_directory(dir.path()), schema, registry()).expect("reopen");
+    assert_eq!(reopened.generation(), Some(1));
+    let snapshot = reopened.snapshot();
+    assert_eq!(snapshot.segment_count(), 1);
+    let guard = snapshot.open_segment_reader(0).expect("guard");
+    assert_eq!(
+        guard.reader().column_value(0, 0).expect("value"),
+        Some(FieldValues::Single(FieldValue::Keyword("alpha".to_owned())))
+    );
 }
 
 // B1-I06 — the exact large-dictionary compaction allocation boundary.
@@ -570,6 +708,38 @@ fn b1_i06_exact_large_dictionary_allocation_boundary() {
         other => panic!("expected a ready map, got {other:?}"),
     };
     assert_eq!(map.term_count(), 16);
+}
+
+/// Byte-exact inventory of every file under an index root, keyed by relative path.
+fn directory_inventory(root: &std::path::Path) -> BTreeMap<String, Vec<u8>> {
+    let mut inventory = BTreeMap::new();
+    for path in walkdir(root) {
+        if path.is_dir() {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .expect("relative")
+            .to_string_lossy()
+            .into_owned();
+        inventory.insert(relative, std::fs::read(&path).expect("read object"));
+    }
+    inventory
+}
+
+/// Live document keys from an ordinary `MatchAll` search.
+fn live_keys(snapshot: &ReaderSnapshot) -> Vec<String> {
+    let request = UnifiedRequest::new(Query::MatchAll, TopK::new(1_000).expect("top-k"));
+    let response = UnifiedSearcher::new(snapshot, &schema(), &registry(), SearchLimits::default())
+        .search(&request, &Budgets::new(), &cancel())
+        .expect("search");
+    let mut keys: Vec<String> = response
+        .hits
+        .iter()
+        .map(|hit| hit.key.as_str().to_owned())
+        .collect();
+    keys.sort();
+    keys
 }
 
 fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
@@ -1017,6 +1187,427 @@ fn b1_i08_pinned_cursor_pagination_and_negative_outcomes() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// F1-07 / B1-I04 — genuine historical fixture: g3 -> g4 -> g5 with full proof.
+// ---------------------------------------------------------------------------
+
+/// Appended `type-d` corpus rows (never part of the frozen first 18).
+const APPENDED: [(&str, City, i64); 2] = [
+    ("d0", City::Value("Chicago"), 18),
+    ("d1", City::Value("Seattle"), 19),
+];
+
+/// Build an appended `type-d` document.
+fn appended_document(key: &str, city: City, n: i64) -> Document {
+    let mut doc = Document::new(DocumentKey::new(key).expect("key"));
+    doc.insert(
+        "body",
+        FieldValues::Single(FieldValue::Text("common".to_owned())),
+    )
+    .expect("body");
+    doc.insert(
+        "category",
+        FieldValues::Single(FieldValue::Keyword("type-d".to_owned())),
+    )
+    .expect("category");
+    doc.insert("city", city.values()).expect("city");
+    doc.insert("n", FieldValues::Single(FieldValue::I64(n)))
+        .expect("n");
+    doc.insert(
+        "stored_tag",
+        FieldValues::Single(FieldValue::Keyword("stored".to_owned())),
+    )
+    .expect("stored_tag");
+    doc.insert(
+        "tags",
+        FieldValues::Multi(vec![
+            FieldValue::Keyword("one".to_owned()),
+            FieldValue::Keyword("two".to_owned()),
+        ]),
+    )
+    .expect("tags");
+    doc
+}
+
+/// Independent expected `city` ordering over an arbitrary row set.
+fn order_for(
+    rows: &[(String, City)],
+    direction: SortDirection,
+    missing: MissingValuePosition,
+) -> Vec<String> {
+    let mut values: Vec<(Vec<u8>, String)> = rows
+        .iter()
+        .filter_map(|(key, city)| match city {
+            City::Value(value) => Some((value.as_bytes().to_vec(), key.clone())),
+            _ => None,
+        })
+        .collect();
+    values.sort_by(|left, right| {
+        let term_order = match direction {
+            SortDirection::Asc => left.0.cmp(&right.0),
+            SortDirection::Desc => right.0.cmp(&left.0),
+        };
+        term_order.then_with(|| left.1.cmp(&right.1))
+    });
+    let mut missing_rows: Vec<String> = rows
+        .iter()
+        .filter(|(_, city)| *city == City::Missing)
+        .map(|(key, _)| key.clone())
+        .collect();
+    missing_rows.sort();
+    let mut null_rows: Vec<String> = rows
+        .iter()
+        .filter(|(_, city)| *city == City::Null)
+        .map(|(key, _)| key.clone())
+        .collect();
+    null_rows.sort();
+    let mut order: Vec<String> = Vec::new();
+    if missing == MissingValuePosition::First {
+        order.extend(missing_rows.iter().cloned());
+        order.extend(null_rows.iter().cloned());
+    }
+    order.extend(values.into_iter().map(|(_, key)| key));
+    if missing == MissingValuePosition::Last {
+        order.extend(null_rows);
+        order.extend(missing_rows);
+    }
+    order
+}
+
+fn corpus_rows(extra: &[(&str, City, i64)]) -> Vec<(String, City)> {
+    let mut rows: Vec<(String, City)> = ROWS
+        .iter()
+        .map(|(key, _, city)| ((*key).to_owned(), *city))
+        .collect();
+    rows.extend(
+        extra
+            .iter()
+            .map(|(key, city, _)| ((*key).to_owned(), *city)),
+    );
+    rows
+}
+
+fn corpus_values(extra: &[(&str, City, i64)]) -> BTreeMap<String, FieldValues> {
+    let mut values: BTreeMap<String, FieldValues> = ROWS
+        .iter()
+        .map(|(key, _, city)| ((*key).to_owned(), city.values()))
+        .collect();
+    values.extend(
+        extra
+            .iter()
+            .map(|(key, city, _)| ((*key).to_owned(), city.values())),
+    );
+    values
+}
+
+/// Immutable objects reachable from `CURRENT` (manifest, segments, state).
+fn reachable_immutable(root: &std::path::Path) -> BTreeMap<String, Vec<u8>> {
+    let current = std::fs::read(root.join("index/CURRENT")).expect("CURRENT");
+    let pointer = quervant_core::index::CurrentPointer::parse(&current).expect("pointer");
+    let manifest_key = pointer.manifest_key().as_str().to_owned();
+    let manifest_bytes = std::fs::read(root.join(&manifest_key)).expect("manifest");
+    let manifest =
+        quervant_core::segment::Manifest::decode(&manifest_bytes, &SegmentLimits::default())
+            .expect("manifest decode");
+    let mut objects = BTreeMap::new();
+    objects.insert(manifest_key, manifest_bytes);
+    for segment in &manifest.segments {
+        objects.insert(
+            segment.object_key.clone(),
+            std::fs::read(root.join(&segment.object_key)).expect("segment"),
+        );
+    }
+    if let Some(state) = &manifest.mutation_state {
+        objects.insert(
+            state.object_key.clone(),
+            std::fs::read(root.join(&state.object_key)).expect("state"),
+        );
+    }
+    objects
+}
+
+/// Full ordered/state/rank assertions for one exact snapshot view.
+fn assert_city_view(
+    snapshot: &ReaderSnapshot,
+    rows: &[(String, City)],
+    expected_terms: &[&str],
+) -> BTreeMap<String, FieldValues> {
+    let guards = guards(snapshot);
+    let preparation = prepare_city(snapshot, &guards);
+    let map = ready_map(&preparation);
+    assert_eq!(map.term_count(), expected_terms.len() as u64);
+    let segments = segment_ordinals(snapshot, &guards, map);
+    assert_eq!(segments.len(), snapshot.segment_count());
+    let all_terms: BTreeSet<Vec<u8>> = segments
+        .iter()
+        .flat_map(|segment| segment.terms.iter().cloned())
+        .collect();
+    let expected: BTreeSet<Vec<u8>> = expected_terms
+        .iter()
+        .map(|term| term.as_bytes().to_vec())
+        .collect();
+    assert_eq!(all_terms, expected);
+
+    let mut values: BTreeMap<String, FieldValues> = BTreeMap::new();
+    for guard in &guards {
+        let reader = guard.reader();
+        let columns = reader.open_columns().expect("columns").expect("section");
+        let handle = columns
+            .bind_keyword_ordinals(CITY)
+            .expect("bind")
+            .expect("ordinal");
+        let translation = map.bind_segment(guard).expect("segment map");
+        let keys = reader.doc_keys().expect("keys");
+        for doc_id in 0..reader.doc_count() {
+            let key = keys[doc_id as usize].as_str().to_owned();
+            let value = reader
+                .column_value(CITY, doc_id)
+                .expect("value")
+                .expect("city column");
+            values.insert(key.clone(), value);
+            let city = rows
+                .iter()
+                .find(|(row, _)| *row == key)
+                .map(|(_, city)| *city)
+                .expect("row");
+            // Expected ranks come from the literal term table for *this* view,
+            // not from a fixed 18-row ranking.
+            let expected_rank = match city {
+                City::Value(value) => Some(
+                    expected_terms
+                        .iter()
+                        .position(|term| term.as_bytes() == value.as_bytes())
+                        .expect("term in the expected table") as u64,
+                ),
+                City::Missing | City::Null => None,
+            };
+            match (handle.doc_ordinal(doc_id).expect("ordinal"), expected_rank) {
+                (KeywordOrdinalValue::Value { ordinal, state }, Some(rank)) => {
+                    assert_eq!(translation.translate(ordinal).expect("translate"), rank);
+                    assert_eq!(state, KeywordOrdinalState::Single);
+                }
+                (KeywordOrdinalValue::Missing, None) => assert_eq!(city, City::Missing),
+                (KeywordOrdinalValue::Null, None) => assert_eq!(city, City::Null),
+                (other, wanted) => panic!("{key}: {other:?} vs {wanted:?}"),
+            }
+        }
+    }
+    let expected_values: BTreeMap<String, FieldValues> = rows
+        .iter()
+        .map(|(key, city)| (key.clone(), city.values()))
+        .collect();
+    assert_eq!(values, expected_values);
+
+    for direction in [SortDirection::Asc, SortDirection::Desc] {
+        for missing in [MissingValuePosition::First, MissingValuePosition::Last] {
+            let expected = order_for(rows, direction, missing);
+            let mut field = SortField::new("city", direction);
+            field.missing = missing;
+            let mut request = UnifiedRequest::new(Query::MatchAll, TopK::new(1_000).expect("k"));
+            request.sort = Sort::new(vec![field]);
+            request.projection = projection();
+            let response =
+                UnifiedSearcher::new(snapshot, &schema(), &registry(), SearchLimits::default())
+                    .search(&request, &Budgets::new(), &cancel())
+                    .expect("search");
+            assert_eq!(response.total_hits, rows.len() as u64);
+            let actual: Vec<String> = response
+                .hits
+                .iter()
+                .map(|hit| hit.key.as_str().to_owned())
+                .collect();
+            assert_eq!(actual, expected, "{direction:?} {missing:?}");
+            for hit in &response.hits {
+                assert_eq!(hit.fields.len(), 6, "complete projection");
+            }
+            for limit in [1usize, 5, rows.len()] {
+                let mut request =
+                    UnifiedRequest::new(Query::MatchAll, TopK::new(limit).expect("k"));
+                let mut field = SortField::new("city", direction);
+                field.missing = missing;
+                request.sort = Sort::new(vec![field]);
+                request.projection = projection();
+                let response =
+                    UnifiedSearcher::new(snapshot, &schema(), &registry(), SearchLimits::default())
+                        .search(&request, &Budgets::new(), &cancel())
+                        .expect("search");
+                assert_eq!(
+                    response
+                        .hits
+                        .iter()
+                        .map(|hit| hit.key.as_str().to_owned())
+                        .collect::<Vec<_>>(),
+                    expected[..limit].to_vec()
+                );
+            }
+        }
+    }
+    values
+}
+
+/// Values, complete orders and the sticky legacy outcome for a v1-only view.
+fn assert_legacy_city_view(snapshot: &ReaderSnapshot, rows: &[(String, City)]) {
+    let guards = guards(snapshot);
+    assert_eq!(
+        prepare_city(snapshot, &guards).unavailable(),
+        Some(KeywordOrdinalUnavailable::LegacySegment)
+    );
+    let mut values: BTreeMap<String, FieldValues> = BTreeMap::new();
+    for guard in &guards {
+        let reader = guard.reader();
+        let keys = reader.doc_keys().expect("keys");
+        for doc_id in 0..reader.doc_count() {
+            values.insert(
+                keys[doc_id as usize].as_str().to_owned(),
+                reader
+                    .column_value(CITY, doc_id)
+                    .expect("value")
+                    .expect("city column"),
+            );
+        }
+    }
+    let expected_values: BTreeMap<String, FieldValues> = rows
+        .iter()
+        .map(|(key, city)| (key.clone(), city.values()))
+        .collect();
+    assert_eq!(values, expected_values);
+    for direction in [SortDirection::Asc, SortDirection::Desc] {
+        for missing in [MissingValuePosition::First, MissingValuePosition::Last] {
+            let expected = order_for(rows, direction, missing);
+            let mut field = SortField::new("city", direction);
+            field.missing = missing;
+            let mut request = UnifiedRequest::new(Query::MatchAll, TopK::new(1_000).expect("k"));
+            request.sort = Sort::new(vec![field]);
+            request.projection = projection();
+            let response =
+                UnifiedSearcher::new(snapshot, &schema(), &registry(), SearchLimits::default())
+                    .search(&request, &Budgets::new(), &cancel())
+                    .expect("search");
+            assert_eq!(response.total_hits, rows.len() as u64);
+            assert_eq!(
+                response
+                    .hits
+                    .iter()
+                    .map(|hit| hit.key.as_str().to_owned())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            for hit in &response.hits {
+                assert_eq!(hit.fields.len(), 6, "complete projection");
+            }
+        }
+    }
+}
+
+/// Aggregate expectations for one row set.
+fn assert_aggregates(
+    snapshot: &ReaderSnapshot,
+    category_counts: &[(&str, u64)],
+    n_sum: i128,
+    n_distinct: u64,
+    tag_count: u64,
+) {
+    let definitions = [
+        Aggregation {
+            group_by: Some(GroupBy::new(vec![GroupKey::Field("category".into())])),
+            aggregates: vec![Aggregate::count()],
+            ..Aggregation::new()
+        },
+        Aggregation {
+            aggregates: vec![Aggregate::sum("n")],
+            exact_distinct: Some(ExactDistinct { field: "n".into() }),
+            ..Aggregation::new()
+        },
+        Aggregation {
+            group_by: Some(GroupBy::new(vec![GroupKey::Field("tags".into())])),
+            aggregates: vec![Aggregate::count()],
+            ..Aggregation::new()
+        },
+    ];
+    let queries: Vec<QueryRequest> = definitions
+        .into_iter()
+        .map(|aggregation| {
+            let mut request = QueryRequest::new(Query::MatchAll);
+            request.top_k = TopK::new(1_000).expect("top-k");
+            request.projection = projection();
+            request.aggregation = Some(aggregation);
+            request
+        })
+        .collect();
+    let batch = BatchQueryRequest::new(queries, None, batch_budget());
+    let response = execute_batch(
+        snapshot,
+        &schema(),
+        &registry(),
+        SearchLimits::default(),
+        &batch,
+        &batch_policy(),
+        &CapabilitySet::new(),
+        &cancel(),
+    )
+    .expect("aggregate batch");
+    let Some(PerQueryOutcome::Success(slot0)) = response.slot(0) else {
+        panic!("slot0 failed");
+    };
+    let aggregation = slot0.aggregation.as_ref().expect("aggregation");
+    let mut actual: BTreeMap<String, u64> = BTreeMap::new();
+    for group in &aggregation.groups {
+        let AggregationGroupValue::Value(FieldValue::Keyword(category)) =
+            group.components.first().expect("component")
+        else {
+            panic!("unexpected group");
+        };
+        let AggregationMetricValue::Count(count) = group.metrics[0] else {
+            panic!("unexpected metric");
+        };
+        actual.insert(category.clone(), count);
+    }
+    let expected: BTreeMap<String, u64> = category_counts
+        .iter()
+        .map(|(name, count)| ((*name).to_owned(), *count))
+        .collect();
+    assert_eq!(actual, expected);
+
+    let Some(PerQueryOutcome::Success(slot1)) = response.slot(1) else {
+        panic!("slot1 failed");
+    };
+    let aggregation = slot1.aggregation.as_ref().expect("aggregation");
+    assert_eq!(aggregation.groups.len(), 1);
+    assert_eq!(
+        aggregation.groups[0].metrics,
+        vec![
+            AggregationMetricValue::Sum(NumericAggregate::Signed(n_sum)),
+            AggregationMetricValue::ExactDistinct(n_distinct),
+        ]
+    );
+
+    let Some(PerQueryOutcome::Success(slot2)) = response.slot(2) else {
+        panic!("slot2 failed");
+    };
+    let aggregation = slot2.aggregation.as_ref().expect("aggregation");
+    let mut tags: BTreeMap<String, u64> = BTreeMap::new();
+    for group in &aggregation.groups {
+        let AggregationGroupValue::Value(FieldValue::Keyword(tag)) =
+            group.components.first().expect("component")
+        else {
+            panic!("unexpected group");
+        };
+        let AggregationMetricValue::Count(count) = group.metrics[0] else {
+            panic!("unexpected metric");
+        };
+        tags.insert(tag.clone(), count);
+    }
+    assert_eq!(
+        tags,
+        BTreeMap::from([("one".to_owned(), tag_count), ("two".to_owned(), tag_count)])
+    );
+}
+
+const HISTORICAL_TERMS_20: [&str; 13] = [
+    "", "\0", "Austin", "Boston", "Chicago", "Dallas", "Seattle", "Z", "a", "aa", "e\u{301}", "é",
+    "😀",
+];
+
 // B1-I04 — the genuine historical pre-B1 fixture lifecycle.
 #[test]
 fn b1_i04_historical_fixture_append_compact_and_reopen() {
@@ -1029,11 +1620,23 @@ fn b1_i04_historical_fixture_append_compact_and_reopen() {
     let index = Index::open_existing(fs_directory(dir.path()), schema(), registry())
         .expect("open generation 3");
     assert_eq!(index.generation(), Some(3));
-    let snapshot = index.snapshot();
-    assert_eq!(snapshot.document_count(), 18);
-    assert_eq!(snapshot.segment_count(), 3);
+
+    // --- g3: genuine legacy COLUMNS v1 ---
+    let g3_objects = reachable_immutable(dir.path());
+    assert_eq!(
+        g3_objects.len(),
+        5,
+        "manifest + 3 segments + state, got {:?}",
+        g3_objects.keys().collect::<Vec<_>>()
+    );
+    let g3_pit = index.pin().expect("pin");
+    let g3_snapshot = Arc::clone(g3_pit.snapshot());
+    assert_eq!(g3_snapshot.document_count(), 18);
+    assert_eq!(g3_snapshot.segment_count(), 3);
     for segment_index in 0..3 {
-        let guard = snapshot.open_segment_reader(segment_index).expect("guard");
+        let guard = g3_snapshot
+            .open_segment_reader(segment_index)
+            .expect("guard");
         let reader = guard.reader();
         assert!(
             !reader
@@ -1048,46 +1651,55 @@ fn b1_i04_historical_fixture_append_compact_and_reopen() {
             .expect("columns section");
         assert_eq!(&body[..2], &1u16.to_le_bytes(), "genuine COLUMNS v1");
     }
-    let old_pit = index.pin().expect("pin");
-    let old_snapshot = Arc::clone(old_pit.snapshot());
-    let old_guards = guards(&old_snapshot);
     assert_eq!(
-        prepare_city(&old_snapshot, &old_guards).unavailable(),
+        prepare_city(&g3_snapshot, &guards(&g3_snapshot)).unavailable(),
         Some(KeywordOrdinalUnavailable::LegacySegment)
     );
+    assert_legacy_city_view(&g3_snapshot, &corpus_rows(&[]));
+    assert_aggregates(
+        &g3_snapshot,
+        &[("type-a", 6), ("type-b", 6), ("type-c", 6)],
+        153,
+        18,
+        18,
+    );
 
-    // Append one genuine v2 segment.
+    // --- g4: append two `type-d` documents in one real commit ---
     let mut writer = index.writer().expect("writer");
-    writer
-        .insert(document_with("d0", Batch::A, City::Value("Chicago"), 18))
-        .expect("d0");
-    writer
-        .insert(document_with("d1", Batch::A, City::Value("Seattle"), 19))
-        .expect("d1");
+    for (key, city, n) in APPENDED {
+        writer
+            .insert(appended_document(key, city, n))
+            .expect("append");
+    }
     assert_eq!(writer.commit().expect("commit").generation, 4);
     drop(writer);
 
     let index = reopen(dir.path());
-    let mixed = index.snapshot();
-    assert_eq!(mixed.document_count(), 20);
-    assert_eq!(mixed.segment_count(), 4);
-    let mixed_guards = guards(&mixed);
-    assert_eq!(
-        prepare_city(&mixed, &mixed_guards).unavailable(),
-        Some(KeywordOrdinalUnavailable::LegacySegment)
-    );
-    let mut v1_segments = 0;
-    let mut v2_segments = 0;
-    for guard in &mixed_guards {
+    let g4_objects = reachable_immutable(dir.path());
+    assert_eq!(g4_objects.len(), 6, "manifest + 4 segments + state");
+    let g4_pit = index.pin().expect("pin");
+    let g4_snapshot = Arc::clone(g4_pit.snapshot());
+    assert_eq!(g4_snapshot.generation(), Some(4));
+    assert_eq!(g4_snapshot.document_count(), 20);
+    assert_eq!(g4_snapshot.segment_count(), 4);
+    let mut v1 = 0;
+    let mut v2 = 0;
+    for guard in &guards(&g4_snapshot) {
         let reader = guard.reader();
         let body = parse_container(reader.bytes(), &SegmentLimits::default())
             .expect("container")
             .body(SectionKind::Columns)
             .expect("columns");
         if body[..2] == 1u16.to_le_bytes() {
-            v1_segments += 1;
+            v1 += 1;
+            assert!(
+                !reader
+                    .required_features()
+                    .iter()
+                    .any(|(id, _)| *id == FEATURE_KEYWORD_ORDINALS)
+            );
         } else {
-            v2_segments += 1;
+            v2 += 1;
             assert!(
                 reader
                     .required_features()
@@ -1096,66 +1708,119 @@ fn b1_i04_historical_fixture_append_compact_and_reopen() {
             );
         }
     }
-    assert_eq!((v1_segments, v2_segments), (3, 1));
-    let mixed_pit = index.pin().expect("pin");
-    let mixed_snapshot = Arc::clone(mixed_pit.snapshot());
-    let mixed_guards = guards(&mixed_snapshot);
-    let mixed_values = city_values_of(&mixed_guards);
+    assert_eq!((v1, v2), (3, 1), "three genuine v1 and one v2 segment");
+    assert_eq!(
+        prepare_city(&g4_snapshot, &guards(&g4_snapshot)).unavailable(),
+        Some(KeywordOrdinalUnavailable::LegacySegment)
+    );
+    assert_legacy_city_view(&g4_snapshot, &corpus_rows(&APPENDED));
+    assert_aggregates(
+        &g4_snapshot,
+        &[("type-a", 6), ("type-b", 6), ("type-c", 6), ("type-d", 2)],
+        190,
+        20,
+        20,
+    );
 
-    // Real compaction produces one all-v2 segment.
+    // --- g5: real compaction to one all-v2 segment ---
     let mut writer = index.writer().expect("writer");
     assert_eq!(writer.compact().expect("compact").documents, 20);
     drop(writer);
-    let index =
-        Index::open_existing(fs_directory(dir.path()), schema(), registry()).expect("reopen");
-    let current = index.snapshot();
-    assert_eq!(current.generation(), Some(5));
-    assert_eq!(current.segment_count(), 1);
-    let current_guards = guards(&current);
-    let preparation = prepare_city(&current, &current_guards);
-    let map = ready_map(&preparation);
-    assert_eq!(map.term_count(), 13);
-    let expected_terms: Vec<String> = vec![
-        "", "\0", "Austin", "Boston", "Chicago", "Dallas", "Seattle", "Z", "a", "aa", "e\u{301}",
-        "é", "😀",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
-    let segments = segment_ordinals(&current, &current_guards, map);
-    let terms: Vec<String> = segments[0]
-        .terms
-        .iter()
-        .map(|term| String::from_utf8(term.clone()).expect("utf8"))
-        .collect();
-    assert_eq!(terms, expected_terms);
-    assert_eq!(shared_city_rank(&current_guards, map, "d0"), Some(4));
-    assert_eq!(shared_city_rank(&current_guards, map, "d1"), Some(6));
-    assert_eq!(shared_city_rank(&current_guards, map, "a3"), Some(2));
+    let index = reopen(dir.path());
+    assert_eq!(index.generation(), Some(5));
+    let g5_snapshot = index.snapshot();
+    assert_eq!(g5_snapshot.segment_count(), 1);
+    assert_eq!(g5_snapshot.document_count(), 20);
+    let g5_values = assert_city_view(&g5_snapshot, &corpus_rows(&APPENDED), &HISTORICAL_TERMS_20);
+    assert_eq!(g5_values, corpus_values(&APPENDED));
+    assert_aggregates(
+        &g5_snapshot,
+        &[("type-a", 6), ("type-b", 6), ("type-c", 6), ("type-d", 2)],
+        190,
+        20,
+        20,
+    );
+    {
+        let guard = g5_snapshot.open_segment_reader(0).expect("guard");
+        let columns = guard
+            .reader()
+            .open_columns()
+            .expect("columns")
+            .expect("section");
+        let handle = columns
+            .bind_keyword_ordinals(CATEGORY)
+            .expect("bind")
+            .expect("ordinal");
+        assert_eq!(handle.dictionary_len(), 4);
+    }
 
-    // The retained mixed view keeps every value it had before compaction.
-    assert_eq!(city_values_of(&mixed_guards), mixed_values);
-    assert_eq!(mixed_values.len(), 20);
+    // Every recorded g3/g4 immutable object still exists byte-identically on
+    // disk after compaction (content-addressed files are never rewritten).
+    for (path, bytes) in g3_objects.iter().chain(g4_objects.iter()) {
+        let on_disk = std::fs::read(dir.path().join(path))
+            .unwrap_or_else(|error| panic!("immutable object {path} disappeared: {error}"));
+        assert_eq!(
+            on_disk.as_slice(),
+            bytes.as_slice(),
+            "immutable object {path} changed"
+        );
+    }
+    // The compacted generation publishes its own smaller closure.
+    let g5_objects = reachable_immutable(dir.path());
+    assert_eq!(g5_objects.len(), 3, "manifest + 1 segment + state");
 
-    // Compaction wrote exactly the 20 documents it was given.
-    assert_eq!(city_values_of(&current_guards).len(), 20);
+    // Both held PITs keep complete original views (values, orders, projections
+    // and their sticky legacy map outcome).
+    assert_legacy_city_view(&g3_snapshot, &corpus_rows(&[]));
+    assert_legacy_city_view(&g4_snapshot, &corpus_rows(&APPENDED));
+    assert_eq!(g3_snapshot.document_count(), 18);
+    assert_eq!(g4_snapshot.document_count(), 20);
+    assert_eq!(g3_snapshot.generation(), Some(3));
+    assert_eq!(g4_snapshot.generation(), Some(4));
+    drop(g3_pit);
+    drop(g4_pit);
+    drop(g3_snapshot);
+    drop(g4_snapshot);
+    drop(index);
+
+    // --- child process: complete g5 validation after a fresh cold local open ---
+    let status = std::process::Command::new(std::env::current_exe().expect("current exe"))
+        .args(["--ignored", "--exact", "b1_i04_child_body"])
+        .env("PERF06_B1_I04_DIR", dir.path())
+        .env("PERF06_B1_I04_MODE", "g5")
+        .status()
+        .expect("spawn child");
+    assert!(status.success(), "child process failed: {status:?}");
 }
 
-fn city_values_of(guards: &[GuardedSegmentReader]) -> BTreeMap<String, FieldValues> {
-    let mut values = BTreeMap::new();
-    for guard in guards {
-        let reader = guard.reader();
-        let keys = reader.doc_keys().expect("keys");
-        let columns = reader.open_columns().expect("columns");
-        for doc_id in 0..reader.doc_count() {
-            let key = keys[doc_id as usize].as_str().to_owned();
-            if let Some(columns) = &columns {
-                let value = columns.value(CITY, doc_id).expect("value");
-                values.insert(key, value.unwrap_or(FieldValues::Absent));
-            }
-        }
-    }
-    values
+#[test]
+#[ignore = "invoked only by b1_i04_historical_fixture_append_compact_and_reopen"]
+fn b1_i04_child_body() {
+    let dir =
+        std::env::var("PERF06_B1_I04_DIR").expect("PERF06_B1_I04_DIR must be set by the parent");
+    let mode =
+        std::env::var("PERF06_B1_I04_MODE").expect("PERF06_B1_I04_MODE must be set by the parent");
+    assert_eq!(mode, "g5", "unsupported child mode");
+    let index = Index::open_existing(
+        fs_directory(std::path::Path::new(&dir)),
+        schema(),
+        registry(),
+    )
+    .expect("child open");
+    assert_eq!(index.generation(), Some(5));
+    let snapshot = index.snapshot();
+    assert_eq!(snapshot.document_count(), 20);
+    assert_eq!(snapshot.segment_count(), 1);
+    let values = assert_city_view(&snapshot, &corpus_rows(&APPENDED), &HISTORICAL_TERMS_20);
+    assert_eq!(values.len(), 20);
+    assert_aggregates(
+        &snapshot,
+        &[("type-a", 6), ("type-b", 6), ("type-c", 6), ("type-d", 2)],
+        190,
+        20,
+        20,
+    );
+    println!("PERF06_B1_I04_CHILD_PASS");
 }
 
 fn verify_fixture_package(source: &std::path::Path) {
@@ -1303,6 +1968,26 @@ fn b1_i07_container_wrapped_column_corruption_is_rejected() {
     {
         Err(error) => error,
         Ok(_) => panic!("a corrupt dictionary count must be rejected"),
+    };
+    assert!(
+        matches!(
+            error,
+            SegmentError::InvalidColumnGeometry {
+                detail: "keyword dictionary count exceeds document count"
+            }
+        ),
+        "unexpected error: {error:?}"
+    );
+
+    // A hostile dictionary count behind a valid outer envelope is rejected by the
+    // real `SegmentReader` without unwinding (F1-03 regression).
+    let mut hostile = original.clone();
+    hostile[data_base..data_base + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+    let corrupt = rebuild(hostile);
+    let error = match quervant_core::segment::SegmentReader::open(corrupt, SegmentLimits::default())
+    {
+        Err(error) => error,
+        Ok(_) => panic!("a hostile dictionary count must be rejected"),
     };
     assert!(
         matches!(

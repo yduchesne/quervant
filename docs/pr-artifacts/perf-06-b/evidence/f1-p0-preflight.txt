@@ -1,0 +1,14 @@
+# F1 P0 preflight
+date: 2026-11-25T01:14:16Z
+start_sha: 63638d5b59441b9a075ac28d7ec90314ce72a456
+reviewed_sha: 8e11484af49e38243a97d765ef21662f7e3060a3
+origin_main: 480a77e78c6897e05cb7ceb76b01434974b82ec6
+merge_base: 480a77e78c6897e05cb7ceb76b01434974b82ec6
+worktree: clean
+fast_forward: already up to date
+diff_since_reviewed:
+  M	docs/pr-artifacts/perf-06-b/PERF06B1_EXECUTION_REPORT.md
+  A	docs/pr-artifacts/perf-06-b/evidence/ci-status.txt
+fixup_plan_sha256: 1a536f5e96cc0b00e615d89367ed9994d69ed9f2e67a1f05d01a73e329091e8e
+b1_plan_sha256: fe5ef98d100f8e1160e19c5d88663abde580d201d806c04721f94cb4a429f951
+decision_rows: D01 (clean branch, review-only intervening commits), D02 (documentation-only intervening head)

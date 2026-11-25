@@ -691,6 +691,30 @@ fn ordinal_data_len(plan: &OrdinalPlan<'_>, block_docs: u32) -> SegmentResult<us
     Ok(total)
 }
 
+/// Check every retained ordinary-column backing individually, then return the
+/// checked sum of the same measured capacities.
+///
+/// The sum is charged to the operation budget by the caller; it is never a
+/// substitute for the per-backing single-allocation checks.
+fn check_ordinary_retained(
+    blocks: &[BlockPlan],
+    outer_capacity: usize,
+    limits: &SegmentLimits,
+) -> SegmentResult<u64> {
+    let outer = capacity_bytes::<BlockPlan>(outer_capacity)?;
+    limits.check_allocation_bytes(outer)?;
+    let mut retained = outer;
+    for block in blocks {
+        let state = capacity_bytes::<u8>(block.state.capacity())?;
+        limits.check_allocation_bytes(state)?;
+        let values = capacity_bytes::<u8>(block.values.capacity())?;
+        limits.check_allocation_bytes(values)?;
+        retained = accumulate(retained, state)?;
+        retained = accumulate(retained, values)?;
+    }
+    Ok(retained)
+}
+
 fn plan_data_len(plan: &OrdinalColumnPlan<'_>) -> SegmentResult<usize> {
     match &plan.kind {
         PlanKind::Ordinary(blocks) => {
@@ -838,14 +862,12 @@ pub(crate) fn encode_columns_with_ordinals(
             )?)
         } else {
             let blocks = plan_ordinary_column(field, &docs, block_docs)?;
-            // Charge the retained ordinary block buffers once before the final
-            // output is admitted. The inherited temporary construction buffers
-            // inside `plan_ordinary_column` are the documented B1 exception.
-            let mut retained = capacity_bytes::<BlockPlan>(blocks.capacity())?;
-            for block in &blocks {
-                retained = accumulate(retained, capacity_bytes::<u8>(block.state.capacity())?)?;
-                retained = accumulate(retained, capacity_bytes::<u8>(block.values.capacity())?)?;
-            }
+            // Every retained ordinary backing is checked individually against
+            // the single-allocation ceiling, then the measured sum is charged to
+            // the cumulative budget. The inherited temporary construction
+            // buffers inside `plan_ordinary_column` remain the documented B1
+            // exception and are not newly pre-admitted here.
+            let retained = check_ordinary_retained(&blocks, blocks.capacity(), limits)?;
             budget.reserve_bytes(retained)?;
             PlanKind::Ordinary(blocks)
         };
@@ -1769,7 +1791,13 @@ impl<'a> ColumnReader<'a> {
                     .ok_or_else(|| invalid_geometry("state range out of bounds"))?;
                 for state in state_bytes {
                     if !valid_state(*state, meta.layout) {
-                        return Err(invalid_geometry("invalid state tag"));
+                        // Layout-3 has its own frozen label; v1/other layouts
+                        // keep the historical one.
+                        return Err(if meta.layout == LAYOUT_KEYWORD_ORDINAL_SINGLE {
+                            invalid_geometry("invalid keyword ordinal state")
+                        } else {
+                            invalid_geometry("invalid state tag")
+                        });
                     }
                 }
                 match meta.layout {
@@ -2001,9 +2029,8 @@ impl<'a> ColumnReader<'a> {
                     STATE_SINGLE => {
                         let mut budget = DecodeBudget::new(&self.limits);
                         budget.reserve_string(keyword.len() as u64)?;
-                        Ok(Some(FieldValues::Single(FieldValue::Keyword(
-                            keyword.to_owned(),
-                        ))))
+                        let owned = fallible_owned_keyword(keyword, &self.limits)?;
+                        Ok(Some(FieldValues::Single(FieldValue::Keyword(owned))))
                     }
                     STATE_MULTI => {
                         // Preserve the original logical admission sequence:
@@ -2019,7 +2046,8 @@ impl<'a> ColumnReader<'a> {
                             })?;
                         let mut budget = DecodeBudget::new(&self.limits);
                         budget.reserve_string(keyword.len() as u64)?;
-                        list.push(FieldValue::Keyword(keyword.to_owned()));
+                        let owned = fallible_owned_keyword(keyword, &self.limits)?;
+                        list.push(FieldValue::Keyword(owned));
                         Ok(Some(FieldValues::Multi(list)))
                     }
                     _ => Err(SegmentError::InvalidColumnGeometry {
@@ -2268,6 +2296,23 @@ impl<'a> ColumnReader<'a> {
     }
 }
 
+/// Fallible owned copy of one already validated keyword payload.
+///
+/// Only the layout-3 ordinal branch uses this helper: the legacy scalar decoder
+/// keeps its frozen infallible behaviour. Logical string admission
+/// (`DecodeBudget::reserve_string`) has already run for the same length.
+fn fallible_owned_keyword(keyword: &str, limits: &SegmentLimits) -> SegmentResult<String> {
+    let mut owned = String::new();
+    owned
+        .try_reserve_exact(keyword.len())
+        .map_err(|_| SegmentError::LimitExceeded {
+            limit: limits.max_single_allocation(),
+            requested: keyword.len() as u64,
+        })?;
+    owned.push_str(keyword);
+    Ok(owned)
+}
+
 /// Locate one document row's shared block/state geometry.
 ///
 /// Both the ordinary span accessors and the bound ordinal handle use this one
@@ -2360,23 +2405,47 @@ struct DictionaryGeometry {
     ordinal_width: u8,
     offsets_base: usize,
     strings_base: usize,
+    strings_end: usize,
+    dictionary_end: u64,
 }
 
 /// Derive the fixed dictionary geometry from its 16-byte prefix.
 ///
 /// Nothing is retained: callers copy this small handle. The authoritative
 /// parser has already validated every referenced byte.
-fn dictionary_geometry(bytes: &[u8], data_base: usize) -> SegmentResult<DictionaryGeometry> {
+/// The checked 16-byte `(U, L)` prefix of a layout-3 dictionary.
+#[derive(Debug, Clone, Copy)]
+struct DictionaryPrefix {
+    terms: u64,
+    payload_len: u64,
+}
+
+/// Read the two `u64` prefix fields with the frozen contexts only.
+///
+/// This performs no count-dependent arithmetic, so an arbitrary hostile `U`
+/// cannot overflow before the authoritative count checks run.
+fn read_dictionary_prefix(bytes: &[u8], data_base: usize) -> SegmentResult<DictionaryPrefix> {
     let prefix = bytes
         .get(data_base..)
         .ok_or_else(|| invalid_geometry("keyword dictionary extent out of range"))?;
     let mut reader = ByteReader::new(prefix);
     let terms = reader.u64("keyword dictionary term count")?;
     let payload_len = reader.u64("keyword dictionary byte length")?;
+    Ok(DictionaryPrefix { terms, payload_len })
+}
+
+/// Derive checked geometry from already validated `(U, L)`.
+fn dictionary_geometry_from(
+    prefix: DictionaryPrefix,
+    data_base: usize,
+) -> SegmentResult<DictionaryGeometry> {
+    let terms = prefix.terms;
+    let payload_len = prefix.payload_len;
     let offset_width = packed_width(payload_len);
     let ordinal_width = packed_width(terms.saturating_sub(1));
-    let offsets_len = (terms + 1)
-        .checked_mul(u64::from(offset_width))
+    let offsets_len = terms
+        .checked_add(1)
+        .and_then(|count| count.checked_mul(u64::from(offset_width)))
         .ok_or_else(|| invalid_geometry("keyword dictionary extent overflow"))?;
     let offsets_base = data_base
         .checked_add(16)
@@ -2386,6 +2455,18 @@ fn dictionary_geometry(bytes: &[u8], data_base: usize) -> SegmentResult<Dictiona
     let strings_base = offsets_base
         .checked_add(offsets_len_usize)
         .ok_or_else(|| invalid_geometry("keyword dictionary extent overflow"))?;
+    let payload_len_usize = usize::try_from(payload_len)
+        .map_err(|_| invalid_geometry("keyword dictionary extent overflow"))?;
+    let strings_end = strings_base
+        .checked_add(payload_len_usize)
+        .ok_or_else(|| invalid_geometry("keyword dictionary extent overflow"))?;
+    let dictionary_len = 16u64
+        .checked_add(offsets_len)
+        .and_then(|value| value.checked_add(payload_len))
+        .ok_or_else(|| invalid_geometry("keyword dictionary extent overflow"))?;
+    let dictionary_end = (data_base as u64)
+        .checked_add(dictionary_len)
+        .ok_or_else(|| invalid_geometry("keyword dictionary extent overflow"))?;
     Ok(DictionaryGeometry {
         terms,
         payload_len,
@@ -2393,87 +2474,72 @@ fn dictionary_geometry(bytes: &[u8], data_base: usize) -> SegmentResult<Dictiona
         ordinal_width,
         offsets_base,
         strings_base,
+        strings_end,
+        dictionary_end,
     })
 }
 
+/// Derive geometry for an already authoritatively validated dictionary.
+fn dictionary_geometry(bytes: &[u8], data_base: usize) -> SegmentResult<DictionaryGeometry> {
+    dictionary_geometry_from(read_dictionary_prefix(bytes, data_base)?, data_base)
+}
+
 /// Validate one layout-3 dictionary and return `(end offset, U, dw)`.
+///
+/// Frozen precedence: `U > doc_count`, then `U=0 && L!=0`, configured entry
+/// limits, checked geometry/extents, then one ordered pass that validates each
+/// just-delimited term (length, UTF-8, strict raw-byte order) before reading the
+/// next offset, and finally the terminal offset.
 fn validate_keyword_dictionary(
     bytes: &[u8],
     meta: &ColumnMeta,
     limits: &SegmentLimits,
 ) -> SegmentResult<(u64, u64, usize)> {
-    let geometry = dictionary_geometry(bytes, meta.data_base)?;
-    let terms = geometry.terms;
-    let payload_len = geometry.payload_len;
-    if terms > meta.doc_count {
+    let prefix = read_dictionary_prefix(bytes, meta.data_base)?;
+    if prefix.terms > meta.doc_count {
         return Err(invalid_geometry(
             "keyword dictionary count exceeds document count",
         ));
     }
-    if terms == 0 && payload_len != 0 {
+    if prefix.terms == 0 && prefix.payload_len != 0 {
         return Err(invalid_geometry("empty keyword dictionary has payload"));
     }
-    limits.check_entries(terms)?;
-    let offsets_len = (terms + 1)
-        .checked_mul(u64::from(geometry.offset_width))
-        .ok_or_else(|| invalid_geometry("keyword dictionary extent overflow"))?;
-    let dictionary_len = 16u64
-        .checked_add(offsets_len)
-        .and_then(|value| value.checked_add(payload_len))
-        .ok_or_else(|| invalid_geometry("keyword dictionary extent overflow"))?;
-    let dictionary_end = (meta.data_base as u64)
-        .checked_add(dictionary_len)
-        .ok_or_else(|| invalid_geometry("keyword dictionary extent overflow"))?;
-    if dictionary_end > bytes.len() as u64 {
+    limits.check_entries(prefix.terms)?;
+    let geometry = dictionary_geometry_from(prefix, meta.data_base)?;
+    if geometry.dictionary_end > bytes.len() as u64 {
         return Err(invalid_geometry("keyword dictionary extent out of range"));
     }
-    if geometry.strings_base as u64 + payload_len > bytes.len() as u64 {
+    if geometry.strings_end > bytes.len() {
         return Err(invalid_geometry("keyword dictionary extent out of range"));
     }
     let width = geometry.offset_width as usize;
-    let mut previous: u64 = 0;
-    for index in 0..=terms {
-        let offset = read_packed_at(
+    let terms = geometry.terms;
+    let payload_len = geometry.payload_len;
+    let read_offset = |index: u64| {
+        read_packed_at(
             bytes,
             geometry.offsets_base + index as usize * width,
-            width as u8,
+            geometry.offset_width,
         )
-        .map_err(|_| invalid_geometry("keyword dictionary extent out of range"))?;
-        if index == 0 {
-            if offset != 0 {
-                return Err(invalid_geometry(
-                    "keyword dictionary offsets must start at zero",
-                ));
-            }
-        } else if offset < previous {
-            return Err(invalid_geometry("keyword dictionary offsets descend"));
-        }
-        if offset > payload_len {
-            return Err(invalid_geometry(
-                "keyword dictionary offset exceeds payload",
-            ));
-        }
-        previous = offset;
-    }
-    if previous != payload_len {
+        .map_err(|_| invalid_geometry("keyword dictionary extent out of range"))
+    };
+    let mut start = read_offset(0)?;
+    if start != 0 {
         return Err(invalid_geometry(
-            "keyword dictionary terminal offset mismatch",
+            "keyword dictionary offsets must start at zero",
         ));
     }
     let mut previous_term: Option<&[u8]> = None;
     for index in 0..terms {
-        let start = read_packed_at(
-            bytes,
-            geometry.offsets_base + index as usize * width,
-            width as u8,
-        )
-        .map_err(|_| invalid_geometry("keyword dictionary extent out of range"))?;
-        let end = read_packed_at(
-            bytes,
-            geometry.offsets_base + (index + 1) as usize * width,
-            width as u8,
-        )
-        .map_err(|_| invalid_geometry("keyword dictionary extent out of range"))?;
+        let end = read_offset(index + 1)?;
+        if end > payload_len {
+            return Err(invalid_geometry(
+                "keyword dictionary offset exceeds payload",
+            ));
+        }
+        if end < start {
+            return Err(invalid_geometry("keyword dictionary offsets descend"));
+        }
         let term_len = end - start;
         if term_len > u64::from(u16::MAX) {
             return Err(SegmentError::LengthMismatch {
@@ -2496,8 +2562,18 @@ fn validate_keyword_dictionary(
             }
         }
         previous_term = Some(term);
+        start = end;
     }
-    Ok((dictionary_end, terms, geometry.ordinal_width as usize))
+    if start != payload_len {
+        return Err(invalid_geometry(
+            "keyword dictionary terminal offset mismatch",
+        ));
+    }
+    Ok((
+        geometry.dictionary_end,
+        terms,
+        geometry.ordinal_width as usize,
+    ))
 }
 
 fn read_u64_at(bytes: &[u8], offset: usize) -> SegmentResult<u64> {
@@ -3814,27 +3890,16 @@ mod b1_tests {
             "keyword dictionary offsets must start at zero",
         );
 
-        // Descending offsets.
+        // Descending offsets: the terminal offset moves below its predecessor.
         let mut corrupt = body.clone();
         write_packed_at(
             &mut corrupt,
-            dictionary.offsets_base + dictionary.offset_width as usize,
+            dictionary.offsets_base + dictionary.terms as usize * dictionary.offset_width as usize,
             dictionary.offset_width,
             0,
         )
         .expect("write");
-        write_packed_at(
-            &mut corrupt,
-            dictionary.offsets_base + 2 * dictionary.offset_width as usize,
-            dictionary.offset_width,
-            0,
-        )
-        .expect("write");
-        expect_geometry(
-            &corrupt,
-            &schema,
-            "keyword dictionary terms are not strictly ascending",
-        );
+        expect_geometry(&corrupt, &schema, "keyword dictionary offsets descend");
 
         // An offset beyond the payload.
         let mut corrupt = body.clone();
@@ -3851,22 +3916,33 @@ mod b1_tests {
             "keyword dictionary offset exceeds payload",
         );
 
-        // Terminal offset mismatch.
-        let mut corrupt = body.clone();
-        let last =
-            dictionary.offsets_base + dictionary.terms as usize * dictionary.offset_width as usize;
-        write_packed_at(
-            &mut corrupt,
-            last,
-            dictionary.offset_width,
-            dictionary.payload_len - 1,
-        )
-        .expect("write");
-        expect_geometry(
-            &corrupt,
-            &schema,
-            "keyword dictionary terminal offset mismatch",
-        );
+        // Terminal offset mismatch on a single-term dictionary (no ordering
+        // violation can mask it).
+        {
+            let one = codec(vec![keyword_single("city")]);
+            let mut document = doc("k0");
+            put(&mut document, "city", single("ab"));
+            let encoded = encode_v2(&one, &[document], 16);
+            let geometry = ColumnReader::open(&one, &encoded.bytes, &SegmentLimits::default())
+                .expect("parse")
+                .into_geometry();
+            let meta = *geometry.columns.first().expect("column");
+            let dictionary = dictionary_geometry(&encoded.bytes, meta.data_base).expect("geometry");
+            assert_eq!(dictionary.terms, 1);
+            let mut corrupt = encoded.bytes.clone();
+            write_packed_at(
+                &mut corrupt,
+                dictionary.offsets_base + dictionary.offset_width as usize,
+                dictionary.offset_width,
+                dictionary.payload_len - 1,
+            )
+            .expect("write");
+            expect_geometry(
+                &corrupt,
+                &one,
+                "keyword dictionary terminal offset mismatch",
+            );
+        }
 
         // Invalid UTF-8 in a dictionary term (including unreferenced corruption
         // of an unselected row is covered by eager dict validation).
@@ -3984,6 +4060,136 @@ mod b1_tests {
         ));
     }
 
+    // F1-03 / B1-U05 — a hostile dictionary count cannot overflow: it is
+    // rejected by the frozen count check first, with a typed error.
+    #[test]
+    fn b1_u05_hostile_dictionary_count_is_typed_not_a_panic() {
+        let (_schema, body, meta, _dictionary) = ordinal_fixture();
+        // The frozen 116-byte witness is used independently as well.
+        let schema = codec(vec![keyword_single("city")]);
+        let mut docs = Vec::new();
+        for (index, values) in [
+            FieldValues::Absent,
+            FieldValues::ExplicitNull,
+            single("b"),
+            single(""),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut document = doc(&format!("k{index}"));
+            put(&mut document, "city", values);
+            docs.push(document);
+        }
+        let witness = encode_v2(&schema, &docs, 4);
+        assert_eq!(witness.bytes.len(), 116);
+        let mut hostile = witness.bytes.clone();
+        hostile[88..96].copy_from_slice(&u64::MAX.to_le_bytes());
+        expect_geometry(
+            &hostile,
+            &schema,
+            "keyword dictionary count exceeds document count",
+        );
+        // Extreme but representable counts also stay typed.
+        for count in [u64::MAX - 1, u64::MAX / 2, 5] {
+            let mut hostile = witness.bytes.clone();
+            hostile[88..96].copy_from_slice(&count.to_le_bytes());
+            expect_geometry(
+                &hostile,
+                &schema,
+                "keyword dictionary count exceeds document count",
+            );
+        }
+        let _ = meta;
+        let _ = body;
+    }
+
+    // F1-03 — the pure geometry helper is checked for every extreme `(U, L)`.
+    #[test]
+    fn b1_u05_geometry_helper_is_checked() {
+        let base = 64usize;
+        assert!(matches!(
+            dictionary_geometry_from(
+                DictionaryPrefix {
+                    terms: u64::MAX,
+                    payload_len: 0
+                },
+                base
+            ),
+            Err(SegmentError::InvalidColumnGeometry {
+                detail: "keyword dictionary extent overflow"
+            })
+        ));
+        assert!(matches!(
+            dictionary_geometry_from(
+                DictionaryPrefix {
+                    terms: u64::MAX - 1,
+                    payload_len: u64::MAX
+                },
+                base
+            ),
+            Err(SegmentError::InvalidColumnGeometry { .. })
+        ));
+        // A huge payload is representable but not addressable on this platform.
+        assert!(matches!(
+            dictionary_geometry_from(
+                DictionaryPrefix {
+                    terms: 0,
+                    payload_len: u64::MAX
+                },
+                base
+            ),
+            Err(SegmentError::InvalidColumnGeometry { .. })
+        ));
+        let geometry = dictionary_geometry_from(
+            DictionaryPrefix {
+                terms: 3,
+                payload_len: 2,
+            },
+            base,
+        )
+        .expect("small geometry");
+        assert_eq!(geometry.terms, 3);
+        assert_eq!(geometry.offsets_base, base + 16);
+        assert_eq!(geometry.strings_base, base + 16 + 4);
+        assert_eq!(geometry.strings_end, base + 16 + 4 + 2);
+        assert_eq!(geometry.dictionary_end, (base + 16 + 4 + 2) as u64);
+    }
+
+    // F1-09 — one ordered validation pass: an early invalid term wins over a
+    // later malformed offset.
+    #[test]
+    fn b1_u05_early_term_error_precedes_later_offset_error() {
+        let (schema, body, _meta, dictionary) = ordinal_fixture();
+        // dictionary is ["", "a", "b"] with L=2 and 1-byte offsets [0,0,1,2].
+        let mut corrupt = body.clone();
+        // Make the first non-empty term invalid UTF-8 (delimits 0..1).
+        corrupt[dictionary.strings_base] = 0x80;
+        // Also make a later offset descend; the earlier term error must win.
+        write_packed_at(
+            &mut corrupt,
+            dictionary.offsets_base + 3 * dictionary.offset_width as usize,
+            dictionary.offset_width,
+            0,
+        )
+        .expect("write");
+        assert!(matches!(
+            ColumnReader::open(&schema, &corrupt, &SegmentLimits::default()),
+            Err(SegmentError::InvalidUtf8 { context: "keyword" })
+        ));
+
+        // With the UTF-8 corruption removed, the offset error is reached.
+        let mut corrupt = body.clone();
+        write_packed_at(
+            &mut corrupt,
+            dictionary.offsets_base + 3 * dictionary.offset_width as usize,
+            dictionary.offset_width,
+            0,
+        )
+        .expect("write");
+        expect_geometry(&corrupt, &schema, "keyword dictionary offsets descend");
+    }
+
     // B1-U06 — row-state, ordinal and extent corruption fails at open.
     #[test]
     fn b1_u06_row_state_and_extent_corruption_is_rejected() {
@@ -4005,7 +4211,7 @@ mod b1_tests {
         let mut corrupt = body.clone();
         let (_, _, state_offset, _, _) = block_entry(&corrupt, 0);
         corrupt[meta.data_base + state_offset as usize] = STATE_EMPTY_MULTI;
-        expect_geometry(&corrupt, &schema, "invalid state tag");
+        expect_geometry(&corrupt, &schema, "invalid keyword ordinal state");
 
         // A missing row must carry a zero slot.
         let mut corrupt = body.clone();
@@ -4100,6 +4306,300 @@ mod b1_tests {
             &keyword_multi_only,
             "v2 columns require keyword ordinals",
         );
+    }
+
+    // F1-02 / B1-U09 — every retained ordinary backing obeys the single
+    // allocation ceiling even when the finished body would fit.
+    #[test]
+    fn b1_u09_ordinary_retained_backings_are_checked_individually() {
+        // A deterministic outer-vector over-capacity, independent of allocator
+        // growth policy: the reported capacity is the one requested here.
+        let mut blocks: Vec<BlockPlan> = Vec::new();
+        blocks.try_reserve_exact(1_000).expect("reserve");
+        blocks.push(BlockPlan {
+            state: vec![0u8],
+            values: vec![0u8],
+        });
+        let outer_bytes = 1_000 * std::mem::size_of::<BlockPlan>() as u64;
+        let limits = SegmentLimits::default().with_max_single_allocation(outer_bytes - 1);
+        assert!(matches!(
+            check_ordinary_retained(&blocks, blocks.capacity(), &limits),
+            Err(SegmentError::LimitExceeded { limit, requested })
+                if limit == outer_bytes - 1 && requested == outer_bytes
+        ));
+        let exact = SegmentLimits::default().with_max_single_allocation(outer_bytes);
+        assert!(check_ordinary_retained(&blocks, blocks.capacity(), &exact).is_ok());
+
+        // A single retained state buffer above the ceiling is also rejected.
+        let mut over_state: Vec<BlockPlan> = Vec::new();
+        over_state.try_reserve_exact(1).expect("reserve one");
+        let mut state: Vec<u8> = Vec::new();
+        state.try_reserve_exact(6_000).expect("reserve state");
+        state.push(0);
+        over_state.push(BlockPlan {
+            state,
+            values: Vec::new(),
+        });
+        let tight = SegmentLimits::default().with_max_single_allocation(5_500);
+        assert!(matches!(
+            check_ordinary_retained(&over_state, over_state.capacity(), &tight),
+            Err(SegmentError::LimitExceeded { limit, requested })
+                if limit == 5_500 && requested >= 6_000
+        ));
+
+        // The real encoder reaches the same checks: 65 all-missing mixed rows
+        // with one block per row fail under a one-byte ceiling.
+        let schema = codec(vec![
+            keyword_single("city"),
+            FieldDefinition::new(
+                "flag",
+                FieldType::Bool,
+                Cardinality::Single,
+                FieldOptions::new(false, true, true),
+            ),
+        ]);
+        let mut docs = Vec::new();
+        for index in 0..65usize {
+            let mut document = doc(&format!("k{index}"));
+            put(&mut document, "city", FieldValues::Absent);
+            put(&mut document, "flag", FieldValues::Absent);
+            docs.push(document);
+        }
+        let tiny = SegmentLimits::default().with_max_single_allocation(1);
+        assert!(matches!(
+            encode_columns_with_ordinals(&schema, ColumnDocuments::Documents(&docs), 1, &tiny),
+            Err(SegmentError::LimitExceeded { limit: 1, .. })
+        ));
+        // Generous limits still encode the same fixture.
+        let generous = encode_columns_with_ordinals(
+            &schema,
+            ColumnDocuments::Documents(&docs),
+            1,
+            &SegmentLimits::default(),
+        )
+        .expect("generous encode");
+        // The exact boundary of this fixture is found through the real encoder
+        // (deterministic for a fixed allocator), then one byte under must fail.
+        let mut boundary = None;
+        // Success is monotone in the single-allocation ceiling, so an ascending
+        // scan finds the exact minimum for this deterministic fixture.
+        for candidate in 2..=64u64 * 1024 {
+            let limits = SegmentLimits::default().with_max_single_allocation(candidate);
+            if encode_columns_with_ordinals(&schema, ColumnDocuments::Documents(&docs), 1, &limits)
+                .is_ok()
+            {
+                boundary = Some(candidate);
+                break;
+            }
+        }
+        let boundary = boundary.expect("some allocation cap must succeed");
+        let at = SegmentLimits::default().with_max_single_allocation(boundary);
+        let encoded =
+            encode_columns_with_ordinals(&schema, ColumnDocuments::Documents(&docs), 1, &at)
+                .expect("exact cap");
+        let under = SegmentLimits::default().with_max_single_allocation(boundary - 1);
+        match encode_columns_with_ordinals(&schema, ColumnDocuments::Documents(&docs), 1, &under) {
+            Err(SegmentError::LimitExceeded { limit, .. }) => {
+                assert_eq!(limit, boundary - 1, "boundary {boundary}");
+            }
+            Ok(_) => panic!("boundary {boundary}: encoding must fail one byte under"),
+            Err(error) => panic!("boundary {boundary}: unexpected {error:?}"),
+        }
+        // The two encodings agree byte-for-byte.
+        assert_eq!(encoded.bytes, generous.bytes);
+    }
+
+    // F1-10 / B1-U13 — the ordinal branch's owned keyword copy is fallible and
+    // the frozen logical budgets are unchanged.
+    #[test]
+    fn b1_u13_ordinal_branch_budgets_and_fallback_copy() {
+        let schema = codec(vec![keyword_single("city")]);
+        let value = "k".repeat(80);
+        let mut docs = Vec::new();
+        for (index, values) in [single(&value), multi_one(&value)].into_iter().enumerate() {
+            let mut document = doc(&format!("k{index}"));
+            put(&mut document, "city", values);
+            docs.push(document);
+        }
+        let encoded = encode_v2(&schema, &docs, 16);
+        let field = schema.field_id("city").expect("city");
+        let default = SegmentLimits::default();
+        let geometry = ColumnReader::open(&schema, &encoded.bytes, &default)
+            .expect("parse")
+            .into_geometry();
+
+        // The fallible helper copies a validated payload exactly.
+        let copied = fallible_owned_keyword(&value, &default).expect("copy");
+        assert_eq!(copied, value);
+        // The *logical admission* (not the helper) enforces the single-allocation
+        // ceiling, and reports it in bytes before the copy is attempted.
+        let tight = SegmentLimits::default().with_max_single_allocation(79);
+        let tight_reader =
+            ColumnReader::from_validated_geometry(&schema, &encoded.bytes, &tight, &geometry);
+        assert!(matches!(
+            tight_reader.value(field, 0),
+            Err(SegmentError::LimitExceeded {
+                limit: 79,
+                requested: 80
+            })
+        ));
+
+        // MultiOne keeps the frozen ordering: one-element vector check first,
+        // then the string's own logical budget.
+        let exact = SegmentLimits::default().with_max_section_decode_bytes(80);
+        let reader =
+            ColumnReader::from_validated_geometry(&schema, &encoded.bytes, &exact, &geometry);
+        assert!(matches!(
+            reader.value(field, 1).expect("multi one"),
+            Some(FieldValues::Multi(ref list)) if list.len() == 1
+        ));
+        let under = SegmentLimits::default().with_max_section_decode_bytes(79);
+        let reader =
+            ColumnReader::from_validated_geometry(&schema, &encoded.bytes, &under, &geometry);
+        assert!(matches!(
+            reader.value(field, 1),
+            Err(SegmentError::LimitExceeded {
+                limit: 79,
+                requested: 80
+            })
+        ));
+        let vector_bytes = std::mem::size_of::<FieldValue>() as u64;
+        let vector_tight = SegmentLimits::default().with_max_single_allocation(vector_bytes - 1);
+        let reader = ColumnReader::from_validated_geometry(
+            &schema,
+            &encoded.bytes,
+            &vector_tight,
+            &geometry,
+        );
+        assert!(matches!(
+            reader.value(field, 1),
+            Err(SegmentError::LimitExceeded { limit, requested })
+                if limit == vector_bytes - 1 && requested == vector_bytes
+        ));
+        // Single goes through the same fallible helper and shape.
+        let single_reader =
+            ColumnReader::from_validated_geometry(&schema, &encoded.bytes, &default, &geometry);
+        assert!(matches!(
+            single_reader.value(field, 0).expect("single"),
+            Some(FieldValues::Single(FieldValue::Keyword(ref text))) if text.len() == 80
+        ));
+    }
+
+    // F1-06 / B1-U10 — the frozen 64-case codec differential (input-only oracle).
+    #[test]
+    fn b1_u10_frozen_codec_differential_families() {
+        const ALPHABET: [&str; 10] = [
+            "", "\0", "a", "aa", "A", "Austin", "Seattle", "e\u{301}", "é", "😀",
+        ];
+        for case in 0..64u64 {
+            let segment_count = 1 + (case % 5) as usize;
+            let mut docs: Vec<SegmentDocument> = Vec::new();
+            // (key -> expected raw term or state) and per-segment dictionaries
+            let mut expected: Vec<(String, Option<&'static str>, bool)> = Vec::new();
+            // One column spans all documents, so this is one dictionary.
+            let mut all_terms: Vec<&'static str> = Vec::new();
+            for source in 0..segment_count as u64 {
+                let row_count = ((case + 3 * source) % 13) as usize;
+                for row in 0..row_count as u64 {
+                    let selector = (case + 7 * source + 5 * row) % 13;
+                    let key = format!("c{case}s{source}r{row}");
+                    let mut document = doc(&key);
+                    match selector {
+                        0 => {
+                            put(&mut document, "city", FieldValues::Absent);
+                            expected.push((key, None, false));
+                        }
+                        1 => {
+                            put(&mut document, "city", FieldValues::ExplicitNull);
+                            expected.push((key, None, true));
+                        }
+                        2 => {
+                            let term = ALPHABET[((case + row) % 10) as usize];
+                            put(&mut document, "city", multi_one(term));
+                            all_terms.push(term);
+                            expected.push((key, Some(term), false));
+                        }
+                        _ => {
+                            let term = ALPHABET[((case + source + row) % 10) as usize];
+                            put(&mut document, "city", single(term));
+                            all_terms.push(term);
+                            expected.push((key, Some(term), false));
+                        }
+                    }
+                    docs.push(document);
+                }
+            }
+            let schema = codec(vec![keyword_single("city")]);
+            let encoded = encode_v2(&schema, &docs, 3);
+            let reader = ColumnReader::open(&schema, &encoded.bytes, &SegmentLimits::default())
+                .expect("parse");
+            let field = schema.field_id("city").expect("city");
+            let handle = reader
+                .bind_keyword_ordinals(field)
+                .expect("bind")
+                .expect("ordinal column");
+            // The column dictionary is the sorted distinct input terms.
+            let mut expected_terms: Vec<Vec<u8>> = all_terms
+                .iter()
+                .map(|term| term.as_bytes().to_vec())
+                .collect();
+            expected_terms.sort();
+            expected_terms.dedup();
+            assert_eq!(handle.dictionary_len(), expected_terms.len() as u64);
+            for (ordinal, term) in expected_terms.iter().enumerate() {
+                assert_eq!(
+                    handle.dictionary_term(ordinal as u64).expect("term"),
+                    term.as_slice(),
+                    "case {case}"
+                );
+            }
+            // Every document's state, ordinal and value match the input oracle.
+            for (doc_id, (key, term, is_null)) in expected.iter().enumerate() {
+                let value = reader
+                    .value(field, doc_id as u64)
+                    .expect("value")
+                    .expect("column");
+                match (term, is_null) {
+                    (Some(term), _) => {
+                        let ordinal = expected_terms
+                            .iter()
+                            .position(|candidate| candidate.as_slice() == term.as_bytes())
+                            .expect("term") as u64;
+                        let row = handle.doc_ordinal(doc_id as u64).expect("row");
+                        let (ordinal_actual, state) = match row {
+                            KeywordOrdinalValue::Value { ordinal, state } => (ordinal, state),
+                            other => panic!("case {case} {key}: unexpected {other:?}"),
+                        };
+                        assert_eq!(ordinal_actual, ordinal, "case {case} {key}");
+                        match value {
+                            FieldValues::Single(FieldValue::Keyword(text)) => {
+                                assert_eq!(state, KeywordOrdinalState::Single);
+                                assert_eq!(text, *term);
+                            }
+                            FieldValues::Multi(ref list) => {
+                                assert_eq!(state, KeywordOrdinalState::MultiOne);
+                                assert_eq!(list.len(), 1);
+                            }
+                            other => panic!("case {case} {key}: unexpected {other:?}"),
+                        }
+                    }
+                    (None, true) => {
+                        assert_eq!(value, FieldValues::ExplicitNull);
+                        assert_eq!(
+                            handle.doc_ordinal(doc_id as u64).expect("row"),
+                            KeywordOrdinalValue::Null
+                        );
+                    }
+                    (None, false) => {
+                        assert_eq!(value, FieldValues::Absent);
+                        assert_eq!(
+                            handle.doc_ordinal(doc_id as u64).expect("row"),
+                            KeywordOrdinalValue::Missing
+                        );
+                    }
+                }
+            }
+        }
     }
 
     // B1-U11 — the referenced-document adapter emits identical bytes and the

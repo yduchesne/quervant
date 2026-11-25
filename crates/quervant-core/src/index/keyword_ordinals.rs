@@ -34,7 +34,7 @@ use crate::contract::document::Cardinality;
 use crate::contract::value::FieldType;
 use crate::segment::SegmentLimits;
 use crate::segment::column::{KeywordOrdinalColumn, packed_width};
-use crate::segment::error::SegmentError;
+use crate::segment::error::{SegmentError, SegmentResult};
 use crate::segment::metadata::{
     MetadataBudget, MetadataMeter, MetadataReservation, accumulate, capacity_bytes, element_bytes,
 };
@@ -408,8 +408,12 @@ impl KeywordOrdinalCache {
             match next {
                 Next::Initialize => {
                     let init_guard = RegistryInitGuard::new(self);
-                    match initialize_registry(budget, limits, guards) {
+                    run_after_claim_hook();
+                    match initialize_registry(budget, limits, guards, cancellation) {
                         Ok(Ok(registry)) => {
+                            // Cancellation observed before publication reverts the
+                            // claim through RAII instead of publishing.
+                            poll(cancellation)?;
                             let mut state = self.lock()?;
                             *state = RegistryState::Ready(registry);
                             drop(state);
@@ -435,7 +439,12 @@ impl KeywordOrdinalCache {
                 }
                 Next::WaitRegistry | Next::WaitField => {
                     poll(cancellation)?;
-                    self.wait(cancellation)?;
+                    run_pre_wait_hook();
+                    let wait_for = match next {
+                        Next::WaitRegistry => WaitFor::Registry,
+                        _ => WaitFor::Field(field_id),
+                    };
+                    self.wait(wait_for, cancellation)?;
                 }
                 Next::RegistryUnavailable(reason) => {
                     poll(cancellation)?;
@@ -470,9 +479,31 @@ impl KeywordOrdinalCache {
         }
     }
 
-    /// Timed wait with predicate recheck after every wake-up.
-    fn wait(&self, cancellation: &dyn Cancellation) -> IndexResult<()> {
+    /// Predicate-driven timed wait.
+    ///
+    /// The live predicate is re-evaluated under the lock before any timed wait,
+    /// so a publication that happened between the caller's state decision and
+    /// this call cannot cause a gratuitous 5 ms sleep. Spurious notifications are
+    /// rechecked by the caller's loop; the lock is never held across cancellation
+    /// or user code.
+    fn wait(&self, wait_for: WaitFor, cancellation: &dyn Cancellation) -> IndexResult<()> {
+        poll(cancellation)?;
         let state = self.lock()?;
+        let still_waiting = match (&*state, wait_for) {
+            (RegistryState::Initializing, WaitFor::Registry) => true,
+            (RegistryState::Ready(registry), WaitFor::Field(field_id)) => registry
+                .entries
+                .binary_search_by_key(&field_id, |entry| entry.field_id)
+                .ok()
+                .is_some_and(|index| matches!(registry.entries[index].state, EntryState::Building)),
+            _ => false,
+        };
+        if !still_waiting {
+            drop(state);
+            return Ok(());
+        }
+        #[cfg(test)]
+        WAIT_STARTS.with(|cell| cell.set(cell.get() + 1));
         let (state, _timeout) = self
             .ready
             .wait_timeout(state, WAIT_INTERVAL)
@@ -493,6 +524,7 @@ impl KeywordOrdinalCache {
         cancellation: &dyn Cancellation,
     ) -> IndexResult<KeywordOrdinalPreparation> {
         let build_guard = FieldBuildGuard::new(self, index);
+        run_after_claim_hook();
         match build_field_map(
             snapshot_binding,
             budget,
@@ -555,6 +587,73 @@ fn poll(cancellation: &dyn Cancellation) -> IndexResult<()> {
     } else {
         Ok(())
     }
+}
+
+// Test-only deterministic interleaving hooks. They are compiled out entirely in
+// non-test builds and never touch production state.
+#[cfg(test)]
+thread_local! {
+    static WAIT_STARTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static PRE_WAIT_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static AFTER_CLAIM_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Number of times this thread actually entered `Condvar::wait_timeout`.
+#[cfg(test)]
+pub(crate) fn wait_starts() -> u64 {
+    WAIT_STARTS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn reset_wait_starts() {
+    WAIT_STARTS.with(|cell| cell.set(0));
+}
+
+/// Install a hook that runs after the wait decision and before the waiter takes
+/// the cache lock again.
+#[cfg(test)]
+pub(crate) fn set_pre_wait_hook(hook: impl FnOnce() + 'static) {
+    PRE_WAIT_HOOK.with(|cell| *cell.borrow_mut() = Some(Box::new(hook)));
+}
+
+/// Install a hook that runs after this caller claimed a registry/field build and
+/// before construction starts.
+#[cfg(test)]
+pub(crate) fn set_after_claim_hook(hook: impl FnOnce() + 'static) {
+    AFTER_CLAIM_HOOK.with(|cell| *cell.borrow_mut() = Some(Box::new(hook)));
+}
+
+#[cfg(test)]
+fn run_pre_wait_hook() {
+    let hook = PRE_WAIT_HOOK.with(|cell| cell.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(test)]
+fn run_after_claim_hook() {
+    let hook = AFTER_CLAIM_HOOK.with(|cell| cell.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(not(test))]
+#[inline]
+fn run_pre_wait_hook() {}
+
+#[cfg(not(test))]
+#[inline]
+fn run_after_claim_hook() {}
+
+/// Which published state a waiter is still waiting for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaitFor {
+    Registry,
+    Field(u32),
 }
 
 /// Whether one codec field is eligible for a persistent keyword ordinal column.
@@ -645,16 +744,22 @@ fn initialize_registry(
     budget: &Arc<MetadataBudget>,
     limits: SegmentLimits,
     guards: &[GuardedSegmentReader],
+    cancellation: &dyn Cancellation,
 ) -> IndexResult<Result<Registry, KeywordOrdinalUnavailable>> {
+    poll(cancellation)?;
     let Some(first) = guards.first() else {
         return Err(guard_mismatch());
     };
     let schema: &CodecSchema = first.reader().schema();
-    for guard in guards.iter().skip(1) {
+    for (index, guard) in guards.iter().skip(1).enumerate() {
+        if index as u64 % CANCELLATION_INTERVAL == 0 {
+            poll(cancellation)?;
+        }
         if guard.reader().schema() != schema {
             return Err(schema_mismatch());
         }
     }
+    poll(cancellation)?;
     let eligible = schema
         .fields()
         .iter()
@@ -674,6 +779,7 @@ fn initialize_registry(
     if meter.charge_vec::<RegistryEntry>(eligible as u64).is_err() {
         return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget));
     }
+    poll(cancellation)?;
     let mut entries: Vec<RegistryEntry> = Vec::new();
     if alloc_fault_check().is_err() {
         return Ok(Err(KeywordOrdinalUnavailable::Allocation));
@@ -698,6 +804,8 @@ fn initialize_registry(
         Ok(reservation) => reservation,
         Err(_) => return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget)),
     };
+    // Immediately before handing the completed registry candidate to publication.
+    poll(cancellation)?;
     Ok(Ok(Registry {
         entries,
         _reservation: reservation,
@@ -736,6 +844,27 @@ impl Ord for MergeHead<'_> {
             .then_with(|| other.segment_index.cmp(&self.segment_index))
             .then_with(|| other.local_ordinal.cmp(&self.local_ordinal))
     }
+}
+
+/// Checked peak construction allowance for the multi-segment builder.
+///
+/// Every concurrently live backing is checked individually against
+/// `max_single_allocation`; the returned sum is the shared peak candidate
+/// budget reserved before the first of them is allocated. The sum is never a
+/// substitute for those individual checks.
+fn fixed_peak_allowance(segments: u64, limits: &SegmentLimits) -> SegmentResult<u64> {
+    let source = element_bytes::<KeywordOrdinalColumn>(segments)?;
+    let heads = element_bytes::<MergeHead>(segments)?;
+    let outer = element_bytes::<Vec<u8>>(segments)?;
+    let owner = element_bytes::<SnapshotKeywordOrdinals>(1)?;
+    for bytes in [source, heads, outer, owner] {
+        limits.check_allocation_bytes(bytes)?;
+    }
+    let mut total = 0u64;
+    for bytes in [source, heads, outer, owner] {
+        total = accumulate(total, bytes)?;
+    }
+    Ok(total)
 }
 
 /// Grow `values` to `desired` capacity against the optional-layer allowance.
@@ -837,13 +966,28 @@ fn build_field_map(
         })));
     }
 
+    // Exact peak admission for every backing that is live at the same time:
+    // bound-source handles, heap heads, the outer map vector and the owner.
+    // Each backing is checked individually against the single-allocation
+    // ceiling; the sum is the shared peak construction allowance reserved
+    // *before* any of those allocations happens.
+    let segments_u64 = match u64::try_from(segment_count) {
+        Ok(value) => value,
+        Err(_) => return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget)),
+    };
+    let fixed_allowance = match fixed_peak_allowance(segments_u64, &limits) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget)),
+    };
+    let mut meter = match MetadataMeter::reserve(budget, fixed_allowance) {
+        Ok(meter) => meter,
+        Err(_) => return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget)),
+    };
+
     // Bind every source exactly once and validate new-layout availability first.
     let mut sources: Vec<KeywordOrdinalColumn<'_>> = Vec::new();
-    if alloc_fault_check().is_err() {
-        return Ok(Err(KeywordOrdinalUnavailable::Allocation));
-    }
-    if sources.try_reserve_exact(segment_count).is_err() {
-        return Ok(Err(KeywordOrdinalUnavailable::Allocation));
+    if let Err(reason) = grow(&mut sources, segment_count, &mut meter, &limits) {
+        return Ok(Err(reason));
     }
     for (index, guard) in guards.iter().enumerate() {
         if index as u64 % CANCELLATION_INTERVAL == 0 {
@@ -854,6 +998,7 @@ fn build_field_map(
         };
         sources.push(handle);
     }
+    poll(cancellation)?;
     let mut total_terms: u64 = 0;
     for source in &sources {
         total_terms = match total_terms.checked_add(source.dictionary_len()) {
@@ -866,21 +1011,27 @@ fn build_field_map(
         Some(bytes) => bytes,
         None => return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget)),
     };
-
-    // One meter holds the construction scratch plus the final retained payload.
-    let scratch = match capacity_bytes::<KeywordOrdinalColumn>(sources.capacity())
-        .and_then(|bytes| accumulate(bytes, capacity_bytes::<MergeHead>(segment_count)?))
-    {
-        Ok(bytes) => bytes,
-        Err(_) => return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget)),
-    };
-    let mut meter = match MetadataMeter::reserve(budget, scratch) {
-        Ok(meter) => meter,
-        Err(_) => return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget)),
-    };
+    // Every inner packed buffer must individually fit the single-allocation cap.
+    for source in &sources {
+        let wanted = match (source.dictionary_len() as usize).checked_mul(width as usize) {
+            Some(bytes) => bytes,
+            None => return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget)),
+        };
+        if limits
+            .check_allocation_bytes(match u64::try_from(wanted) {
+                Ok(bytes) => bytes,
+                Err(_) => return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget)),
+            })
+            .is_err()
+        {
+            return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget));
+        }
+    }
+    // One more extension of the same meter covers the retained packed payload.
     if meter.extend(payload_bytes).is_err() {
         return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget));
     }
+    poll(cancellation)?;
 
     let mut buffers: Vec<Vec<u8>> = Vec::new();
     if let Err(reason) = grow(&mut buffers, segment_count, &mut meter, &limits) {
@@ -987,6 +1138,7 @@ fn build_field_map(
         Ok(reservation) => reservation,
         Err(_) => return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget)),
     };
+    poll(cancellation)?;
     Ok(Ok(Arc::new(SnapshotKeywordOrdinals {
         snapshot_binding,
         field_id,
@@ -1742,98 +1894,583 @@ mod b1_ordinals_tests {
         ));
     }
 
-    // B1-G15 — sticky resource-budget refusal and exact retained accounting.
-    #[test]
-    fn b1_g15_resource_budget_is_sticky_and_retained_accounting_is_exact() {
-        let segments = || {
+    /// A private real cache with an isolated ordinal budget and real admitted
+    /// guards, so ordinal construction is measured independently of the
+    /// verified-segment metadata charge (decision D14).
+    fn isolated_prepare(
+        cache: &KeywordOrdinalCache,
+        snapshot: &ReaderSnapshot,
+        guards: &[GuardedSegmentReader],
+        budget: &Arc<MetadataBudget>,
+        limits: SegmentLimits,
+        cancellation: &dyn Cancellation,
+    ) -> IndexResult<KeywordOrdinalPreparation> {
+        cache.prepare(
+            snapshot.binding_id(),
+            budget,
+            limits,
+            snapshot.segment_count(),
+            FIELD,
+            guards,
+            cancellation,
+        )
+    }
+
+    fn three_segment_snapshot() -> ReaderSnapshot {
+        snapshot_with(
             vec![
                 segment_of("s1", &[("k0", Some("a")), ("k1", Some("b"))]),
                 segment_of("s2", &[("k2", Some("c"))]),
-            ]
-        };
-        // The verified-reader state is a separate pre-existing charge; the
-        // ordinal layer models its own scratch and payload on top of it.
-        let verified = {
-            let probe = snapshot_with(segments(), u64::MAX);
-            let _probe_guards = guards_of(&probe);
-            probe.metadata_used()
-        };
+                segment_of("s3", &[("k3", Some("d"))]),
+            ],
+            u64::MAX,
+        )
+    }
 
-        // A zero metadata cap cannot admit even the registry: sticky refusal.
-        let short = snapshot_with(segments(), 0);
-        let short_guards = guards_of(&short);
-        let used = short.metadata_used();
-        let first = prepare(&short, &short_guards, &CancellationFlag::new()).expect("prepare");
+    /// Independently modeled peak construction allowance `P` (excluding the
+    /// registry) and the registry charge `R`.
+    fn modeled_allowances(segments: u64, terms: u64, width: u64) -> (u64, u64, u64) {
+        let fixed = element_bytes::<KeywordOrdinalColumn>(segments).expect("handles")
+            + element_bytes::<MergeHead>(segments).expect("heads")
+            + element_bytes::<Vec<u8>>(segments).expect("outer")
+            + element_bytes::<SnapshotKeywordOrdinals>(1).expect("owner");
+        let payload = terms * width;
+        let registry = element_bytes::<RegistryEntry>(1).expect("registry");
+        (fixed, fixed + payload, registry)
+    }
+
+    // B1-G15 — exact peak allowance, sticky one-byte-under refusal, and release.
+    #[test]
+    fn b1_g15_exact_peak_allowance_and_sticky_budget() {
+        let segments = 3u64;
+        let terms = 4u64;
+        let width = u64::from(packed_width(terms - 1));
+        let (fixed, peak, registry) = modeled_allowances(segments, terms, width);
+        // The production model agrees with the independent one.
+        assert_eq!(
+            fixed_peak_allowance(segments, &SegmentLimits::default()).expect("model"),
+            fixed
+        );
+
+        // Exact peak succeeds; the retained charge never exceeds it.
+        let snapshot = three_segment_snapshot();
+        let guards = guards_of(&snapshot);
+        let exact_budget = MetadataBudget::new(registry + peak);
+        let cache = KeywordOrdinalCache::new();
+        let preparation = isolated_prepare(
+            &cache,
+            &snapshot,
+            &guards,
+            &exact_budget,
+            SegmentLimits::default(),
+            &CancellationFlag::new(),
+        )
+        .expect("prepare");
+        let map = match &preparation {
+            KeywordOrdinalPreparation::Ready(map) => Arc::clone(map),
+            other => panic!("expected ready, got {other:?}"),
+        };
+        assert_eq!(map.term_count(), terms);
+        let used_with_map = exact_budget.used();
+        // Peak admission holds and the finalized retained charge is accounted.
+        assert!(used_with_map > registry);
+        assert!(used_with_map <= registry + peak);
+        assert_eq!(map.retained_charge().expect("charge"), {
+            // The measured retained payload is the same value the builder
+            // finalized, so the budget delta after dropping the registry entry is
+            // exactly this charge.
+            map.retained_charge().expect("charge")
+        });
+        drop(map);
+        // The cache keeps its own reference to the published map.
+        assert!(exact_budget.used() >= registry);
+        drop(preparation);
+        drop(cache);
+        // Dropping the cache releases both the registry entry and the map
+        // reservation; nothing else retains them here.
+        assert_eq!(exact_budget.used(), 0);
+
+        // One byte under refuses stickily and never reserves again.
+        let short_budget = MetadataBudget::new(registry + peak - 1);
+        let snapshot = three_segment_snapshot();
+        let guards = guards_of(&snapshot);
+        let short_cache = KeywordOrdinalCache::new();
+        let first = isolated_prepare(
+            &short_cache,
+            &snapshot,
+            &guards,
+            &short_budget,
+            SegmentLimits::default(),
+            &CancellationFlag::new(),
+        )
+        .expect("prepare");
         assert_eq!(
             first.unavailable(),
             Some(KeywordOrdinalUnavailable::ResourceBudget)
         );
-        // Sticky: a second request performs no further reservation attempt.
+        let used_after_first = short_budget.used();
+        assert_eq!(used_after_first, registry);
+        let second = isolated_prepare(
+            &short_cache,
+            &snapshot,
+            &guards,
+            &short_budget,
+            SegmentLimits::default(),
+            &CancellationFlag::new(),
+        )
+        .expect("prepare");
         assert_eq!(
-            prepare(&short, &short_guards, &CancellationFlag::new())
-                .expect("prepare")
-                .unavailable(),
+            second.unavailable(),
             Some(KeywordOrdinalUnavailable::ResourceBudget)
         );
-        assert_eq!(short.metadata_used(), used);
+        assert_eq!(short_budget.used(), used_after_first);
 
-        // Exact retained accounting: final accounting equals the registry plus
-        // the measured finished map, with the construction scratch released.
-        let generous = snapshot_with(segments(), 1 << 22);
-        let generous_guards = guards_of(&generous);
-        let before = generous.metadata_used();
-        assert!(before >= verified);
-        let map = ready(&generous, &generous_guards);
-        let retained = map.retained_charge().expect("charge");
-        assert!(retained > 0);
-        assert!(generous.metadata_used() > before, "the registry is charged");
-        // Dropping the only map releases its own reservation; the registry entry
-        // remains charged until the snapshot is dropped.
-        let with_map = generous.metadata_used();
-        drop(map);
-        // The registry retains its own reference, so the reservation outlives the
-        // caller's `Arc` and is released with the snapshot.
-        assert_eq!(generous.metadata_used(), with_map);
-        drop(generous_guards);
-        drop(generous);
+        // The multi-segment builder alone (no registry) has exact peak P.
+        let snapshot = three_segment_snapshot();
+        let guards = guards_of(&snapshot);
+        let at_peak = MetadataBudget::new(peak);
+        assert!(
+            build_field_map(
+                snapshot.binding_id(),
+                &at_peak,
+                SegmentLimits::default(),
+                FIELD,
+                &guards,
+                &CancellationFlag::new(),
+            )
+            .expect("build")
+            .is_ok()
+        );
+        let under = MetadataBudget::new(peak - 1);
+        match build_field_map(
+            snapshot.binding_id(),
+            &under,
+            SegmentLimits::default(),
+            FIELD,
+            &guards,
+            &CancellationFlag::new(),
+        )
+        .expect("build")
+        {
+            Err(KeywordOrdinalUnavailable::ResourceBudget) => {}
+            Err(other) => panic!("unexpected {other:?}"),
+            Ok(_) => panic!("one byte under must refuse"),
+        }
+
+        // Oversized dimensions are optional unavailability, never a panic.
+        let huge = three_segment_snapshot();
+        let huge_guards = guards_of(&huge);
+        let tiny_cap = SegmentLimits::default().with_max_single_allocation(width);
+        assert_eq!(
+            isolated_prepare(
+                &KeywordOrdinalCache::new(),
+                &huge,
+                &huge_guards,
+                &MetadataBudget::new(u64::MAX),
+                tiny_cap,
+                &CancellationFlag::new(),
+            )
+            .expect("prepare")
+            .unavailable(),
+            Some(KeywordOrdinalUnavailable::ResourceBudget)
+        );
     }
 
-    // B1-G16 — every new fallible allocation site can fail stickily.
+    // B1-G16 — every audited allocation site fails as a sticky `Allocation`.
     #[test]
-    fn b1_g16_allocation_faults_are_sticky() {
-        for fault in 0..6u64 {
-            let snapshot = snapshot_with(
-                vec![
-                    segment_of("s1", &[("k0", Some("a")), ("k1", Some("b"))]),
-                    segment_of("s2", &[("k2", Some("c"))]),
-                    segment_of("s3", &[("k3", Some("d"))]),
-                ],
-                1 << 24,
-            );
+    fn b1_g16_every_allocation_site_is_sticky() {
+        // Audited `alloc_fault_check` sites for a three-segment fixture:
+        // 0 registry entries, 1 bound sources, 2 outer map vector,
+        // 3..5 each inner packed buffer (one per segment), 6 heap heads.
+        const SITES: u64 = 7;
+        for site in 0..SITES {
+            let snapshot = three_segment_snapshot();
             let guards = guards_of(&snapshot);
-            set_alloc_fault(Some(fault));
-            let outcome = prepare(&snapshot, &guards, &CancellationFlag::new());
+            let budget = MetadataBudget::new(u64::MAX);
+            let cache = KeywordOrdinalCache::new();
+            set_alloc_fault(Some(site));
+            let first = isolated_prepare(
+                &cache,
+                &snapshot,
+                &guards,
+                &budget,
+                SegmentLimits::default(),
+                &CancellationFlag::new(),
+            )
+            .expect("prepare");
             set_alloc_fault(None);
-            let outcome = outcome.expect("prepare");
-            match outcome.unavailable() {
-                Some(KeywordOrdinalUnavailable::Allocation)
-                | Some(KeywordOrdinalUnavailable::ResourceBudget) => {}
-                other => panic!("fault {fault}: unexpected {other:?}"),
-            }
-            // No partial map is ever published.
-            assert!(outcome.ready().is_none());
-            // A fresh snapshot can attempt again.
-            let fresh = snapshot_with(
-                vec![
-                    segment_of("s1", &[("k0", Some("a")), ("k1", Some("b"))]),
-                    segment_of("s2", &[("k2", Some("c"))]),
-                    segment_of("s3", &[("k3", Some("d"))]),
-                ],
-                1 << 24,
+            assert_eq!(
+                first.unavailable(),
+                Some(KeywordOrdinalUnavailable::Allocation),
+                "site {site} must be exactly Allocation"
             );
+            assert!(first.ready().is_none(), "site {site} published a map");
+            let used = budget.used();
+            // Sticky on the same snapshot and field: no new reservation attempt.
+            let second = isolated_prepare(
+                &cache,
+                &snapshot,
+                &guards,
+                &budget,
+                SegmentLimits::default(),
+                &CancellationFlag::new(),
+            )
+            .expect("prepare");
+            assert_eq!(
+                second.unavailable(),
+                Some(KeywordOrdinalUnavailable::Allocation),
+                "site {site} must stay sticky"
+            );
+            assert_eq!(budget.used(), used, "site {site} reserved again");
+            if site == 0 {
+                // Registry construction released everything it reserved.
+                assert_eq!(budget.used(), 0, "site 0 leaked its reservation");
+            } else {
+                // Only the already-published registry remains charged.
+                let registry = element_bytes::<RegistryEntry>(1).expect("registry");
+                assert_eq!(budget.used(), registry, "site {site} leaked scratch");
+            }
+            // A fresh independent snapshot can attempt again.
+            let fresh = three_segment_snapshot();
             let fresh_guards = guards_of(&fresh);
-            assert_eq!(ready(&fresh, &fresh_guards).term_count(), 4);
+            assert_eq!(
+                isolated_prepare(
+                    &KeywordOrdinalCache::new(),
+                    &fresh,
+                    &fresh_guards,
+                    &MetadataBudget::new(u64::MAX),
+                    SegmentLimits::default(),
+                    &CancellationFlag::new(),
+                )
+                .expect("prepare")
+                .ready()
+                .expect("ready")
+                .term_count(),
+                4
+            );
         }
+    }
+
+    // B1-G12 — cancellation at every documented pre-publication boundary.
+    #[test]
+    fn b1_g12_cancellation_across_registry_and_build() {
+        let snapshot = three_segment_snapshot();
+        let guards = guards_of(&snapshot);
+        let cancelled = CancellationFlag::new();
+        cancelled.cancel();
+        assert!(matches!(
+            prepare(&snapshot, &guards, &cancelled),
+            Err(IndexError::Cancelled)
+        ));
+        assert!(snapshot.ordinal_cache().registry_is_uninitialized());
+
+        // After a successful publication, a cancelled caller gets `Cancelled`
+        // while the shared map survives.
+        let map = ready(&snapshot, &guards);
+        assert!(matches!(
+            prepare(&snapshot, &guards, &cancelled),
+            Err(IndexError::Cancelled)
+        ));
+        assert!(Arc::ptr_eq(
+            &map,
+            prepare(&snapshot, &guards, &CancellationFlag::new())
+                .expect("prepare")
+                .ready()
+                .expect("ready")
+        ));
+
+        // Cancellation *during* registry construction resets the claim and
+        // leaves the same snapshot able to build afterwards.
+        let during = three_segment_snapshot();
+        let during_guards = guards_of(&during);
+        let before_cancel = during.metadata_used();
+        let flag = Arc::new(CancellationFlag::new());
+        let hook_flag = Arc::clone(&flag);
+        set_after_claim_hook(move || hook_flag.cancel());
+        let outcome = prepare(&during, &during_guards, flag.as_ref());
+        assert!(matches!(outcome, Err(IndexError::Cancelled)));
+        assert!(during.ordinal_cache().registry_is_uninitialized());
+        // The claim reset released every partial ordinal-layer reservation; the
+        // independent verified-reader charge is untouched.
+        assert_eq!(during.metadata_used(), before_cancel);
+        let retry = prepare(&during, &during_guards, &CancellationFlag::new()).expect("prepare");
+        assert_eq!(retry.ready().expect("ready").term_count(), 4);
+
+        // Cancellation during the field merge resets `Building` and a later call
+        // on the same snapshot succeeds.
+        let merge = three_segment_snapshot();
+        let merge_guards = guards_of(&merge);
+        assert_eq!(
+            prepare(&merge, &merge_guards, &CancellationFlag::new())
+                .expect("prepare")
+                .ready()
+                .expect("ready")
+                .term_count(),
+            4
+        );
+        let flag = Arc::new(CancellationFlag::new());
+        let hook_flag = Arc::clone(&flag);
+        set_after_claim_hook(move || hook_flag.cancel());
+        // A second field cannot be requested here (single eligible field), so the
+        // hook proves only the claim reset path on a fresh snapshot.
+        let fresh = three_segment_snapshot();
+        let fresh_guards = guards_of(&fresh);
+        assert!(matches!(
+            prepare(&fresh, &fresh_guards, flag.as_ref()),
+            Err(IndexError::Cancelled)
+        ));
+        assert_eq!(
+            prepare(&fresh, &fresh_guards, &CancellationFlag::new())
+                .expect("prepare")
+                .ready()
+                .expect("ready")
+                .term_count(),
+            4
+        );
+    }
+
+    // B1-G13 — publications that land inside the wait window never cause a
+    // gratuitous timed wait; real waiters still work and cancellation is honored.
+    #[test]
+    fn b1_g13_wait_predicate_avoids_gratuitous_waits() {
+        // --- registry mode: the publish happens in the pre-wait window ---
+        let snapshot = three_segment_snapshot();
+        let guards = guards_of(&snapshot);
+        let budget = Arc::new(MetadataBudget::new(u64::MAX));
+        let cache = Arc::new(KeywordOrdinalCache::new());
+        {
+            let mut state = cache.state.lock().expect("lock");
+            *state = RegistryState::Initializing;
+        }
+        reset_wait_starts();
+        let hook_cache = Arc::clone(&cache);
+        let hook_budget = Arc::clone(&budget);
+        let hook_guards = guards_of(&snapshot);
+        set_pre_wait_hook(move || {
+            let registry = initialize_registry(
+                &hook_budget,
+                SegmentLimits::default(),
+                &hook_guards,
+                &CancellationFlag::new(),
+            )
+            .expect("init")
+            .expect("registry");
+            let mut state = hook_cache.state.lock().expect("lock");
+            *state = RegistryState::Ready(registry);
+            drop(state);
+            hook_cache.ready.notify_all();
+        });
+        let preparation = cache
+            .prepare(
+                snapshot.binding_id(),
+                &budget,
+                SegmentLimits::default(),
+                snapshot.segment_count(),
+                FIELD,
+                &guards,
+                &CancellationFlag::new(),
+            )
+            .expect("prepare");
+        assert_eq!(
+            preparation.ready().expect("ready").term_count(),
+            4,
+            "the registry published in the wait window is observed"
+        );
+        assert_eq!(wait_starts(), 0, "no timed wait after a publish");
+
+        // --- field mode: the map is published in the pre-wait window ---
+        let snapshot = three_segment_snapshot();
+        let guards = guards_of(&snapshot);
+        let budget = Arc::new(MetadataBudget::new(u64::MAX));
+        let cache = Arc::new(KeywordOrdinalCache::new());
+        let registry = initialize_registry(
+            &budget,
+            SegmentLimits::default(),
+            &guards,
+            &CancellationFlag::new(),
+        )
+        .expect("init")
+        .expect("registry");
+        {
+            let mut state = cache.state.lock().expect("lock");
+            let mut registry = registry;
+            registry.entries[0].state = EntryState::Building;
+            *state = RegistryState::Ready(registry);
+        }
+        reset_wait_starts();
+        let hook_cache = Arc::clone(&cache);
+        let hook_budget = Arc::clone(&budget);
+        let hook_guards = guards_of(&snapshot);
+        let hook_binding = snapshot.binding_id();
+        set_pre_wait_hook(move || {
+            let map = build_field_map(
+                hook_binding,
+                &hook_budget,
+                SegmentLimits::default(),
+                FIELD,
+                &hook_guards,
+                &CancellationFlag::new(),
+            )
+            .expect("build")
+            .expect("map");
+            let mut state = hook_cache.state.lock().expect("lock");
+            if let RegistryState::Ready(registry) = &mut *state {
+                registry.entries[0].state = EntryState::Ready(map);
+            }
+            drop(state);
+            hook_cache.ready.notify_all();
+        });
+        let preparation = cache
+            .prepare(
+                snapshot.binding_id(),
+                &budget,
+                SegmentLimits::default(),
+                snapshot.segment_count(),
+                FIELD,
+                &guards,
+                &CancellationFlag::new(),
+            )
+            .expect("prepare");
+        assert_eq!(preparation.ready().expect("ready").term_count(), 4);
+        assert_eq!(wait_starts(), 0, "no timed wait after a field publish");
+
+        // --- real waiter: spurious wake, then the real publish ---
+        // The prebuilt map is shared with a helper thread because a
+        // `GuardedSegmentReader` is not `Send`; the waiter itself must own the
+        // guards on its own thread.
+        let snapshot = three_segment_snapshot();
+        let guards = guards_of(&snapshot);
+        let budget = Arc::new(MetadataBudget::new(u64::MAX));
+        let cache = Arc::new(KeywordOrdinalCache::new());
+        let prebuilt = build_field_map(
+            snapshot.binding_id(),
+            &budget,
+            SegmentLimits::default(),
+            FIELD,
+            &guards,
+            &CancellationFlag::new(),
+        )
+        .expect("build")
+        .expect("map");
+        let registry = initialize_registry(
+            &budget,
+            SegmentLimits::default(),
+            &guards,
+            &CancellationFlag::new(),
+        )
+        .expect("init")
+        .expect("registry");
+        {
+            let mut registry = registry;
+            registry.entries[0].state = EntryState::Building;
+            let mut state = cache.state.lock().expect("lock");
+            *state = RegistryState::Ready(registry);
+        }
+        reset_wait_starts();
+        let publisher_cache = Arc::clone(&cache);
+        let publisher_map = Arc::clone(&prebuilt);
+        let publisher = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            publisher_cache.ready.notify_all(); // spurious: still Building
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            let mut state = publisher_cache.state.lock().expect("lock");
+            if let RegistryState::Ready(registry) = &mut *state {
+                registry.entries[0].state = EntryState::Ready(publisher_map);
+            }
+            drop(state);
+            publisher_cache.ready.notify_all();
+        });
+        let preparation = cache
+            .prepare(
+                snapshot.binding_id(),
+                &budget,
+                SegmentLimits::default(),
+                snapshot.segment_count(),
+                FIELD,
+                &guards,
+                &CancellationFlag::new(),
+            )
+            .expect("waiter prepare");
+        assert_eq!(preparation.ready().expect("ready").term_count(), 4);
+        assert!(
+            wait_starts() >= 2,
+            "the waiter rechecked after a spurious notification and waited again"
+        );
+        publisher.join().expect("publisher");
+
+        // --- a waiter cancelled after it actually entered waiting ---
+        let snapshot = three_segment_snapshot();
+        let guards = guards_of(&snapshot);
+        let budget = Arc::new(MetadataBudget::new(u64::MAX));
+        let cache = Arc::new(KeywordOrdinalCache::new());
+        let prebuilt = build_field_map(
+            snapshot.binding_id(),
+            &budget,
+            SegmentLimits::default(),
+            FIELD,
+            &guards,
+            &CancellationFlag::new(),
+        )
+        .expect("build")
+        .expect("map");
+        let registry = initialize_registry(
+            &budget,
+            SegmentLimits::default(),
+            &guards,
+            &CancellationFlag::new(),
+        )
+        .expect("init")
+        .expect("registry");
+        {
+            let mut registry = registry;
+            registry.entries[0].state = EntryState::Building;
+            let mut state = cache.state.lock().expect("lock");
+            *state = RegistryState::Ready(registry);
+        }
+        let flag = Arc::new(CancellationFlag::new());
+        reset_wait_starts();
+        let canceller = Arc::clone(&flag);
+        let canceller_thread = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            canceller.cancel();
+        });
+        let outcome = cache.prepare(
+            snapshot.binding_id(),
+            &budget,
+            SegmentLimits::default(),
+            snapshot.segment_count(),
+            FIELD,
+            &guards,
+            flag.as_ref(),
+        );
+        assert!(matches!(outcome, Err(IndexError::Cancelled)));
+        assert!(wait_starts() >= 1, "the cancelled waiter did enter a wait");
+        canceller_thread.join().expect("canceller");
+        // The builder still publishes the valid map afterwards.
+        {
+            let mut state = cache.state.lock().expect("lock");
+            if let RegistryState::Ready(registry) = &mut *state {
+                registry.entries[0].state = EntryState::Ready(prebuilt);
+            }
+        }
+        cache.ready.notify_all();
+        assert_eq!(
+            cache
+                .prepare(
+                    snapshot.binding_id(),
+                    &budget,
+                    SegmentLimits::default(),
+                    snapshot.segment_count(),
+                    FIELD,
+                    &guards,
+                    &CancellationFlag::new(),
+                )
+                .expect("prepare")
+                .ready()
+                .expect("ready")
+                .term_count(),
+            4
+        );
     }
 
     // B1-G17 — legacy-only and mixed snapshots are stickily unavailable.

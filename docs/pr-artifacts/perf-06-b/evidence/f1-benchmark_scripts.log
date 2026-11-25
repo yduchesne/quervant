@@ -1,0 +1,21 @@
+== A4-T11 invalid profiling arguments ==
+== A4-T10/C-T21 unavailable profilers report UNAVAILABLE ==
+  perf installed; skipping UNAVAILABLE assertion
+  heaptrack installed; skipping UNAVAILABLE assertion
+== A4-T10 fake perf tool produces a captured report ==
+== C-T14 provenance runs are preserved ==
+== C-T15 historical report ==
+== C-T01/C-T08 fixture metadata counts and dictionary throughput ==
+metadata ok
+== C-T03..C-T07 v2 builder + validator ==
+== C-T09..C-T13 contention detector (synthetic snapshots) ==
+== C-T16 aggregate consumes repeated --trial-report flags ==
+== PR14F wrapper qualification contract ==
+== PR14F SR-14F-01 oracle ordering ==
+== AR2-T01..T04 profiler-evidence validator contract (TEST FIXTURES) ==
+== AR2 counterexample gate: pre-patch parser could not qualify ==
+== AR2-T06 profiler-evidence record writer/verifier contract ==
+== AR2-T05/T06 runner -> validator evidence wiring (TEST FIXTURE) ==
+== AR2-T08 frozen tooling identity and workload invariants ==
+
+script tests: 108 passed, 0 failed
