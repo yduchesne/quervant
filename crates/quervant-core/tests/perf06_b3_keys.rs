@@ -840,19 +840,71 @@ fn b3_i08_resource_limits_and_exact_set_fallback() {
     let legacy = search(&snapshot, &request(fallback_query(), 5, sort.clone()));
     assert_scores_and_projection(&recovered, &legacy);
 
-    // Resolved ExactSet (K >= 32) keeps the owned-key path with identical output.
-    let exact = UnifiedSearcher::new(&snapshot, &schema(), &registry(), SearchLimits::default())
-        .with_topk_duplicate_config(quervant_core::search::TopKDuplicateConfig::new(
-            std::num::NonZeroUsize::new(32).expect("nonzero"),
-            quervant_core::search::TopKDuplicateStrategy::ExactSet,
-        ))
-        .search(
-            &request(body_term(), 18, sort.clone()),
-            &Budgets::new(),
-            &cancel(),
-        )
-        .expect("exact set");
-    let default = search(&snapshot, &request(body_term(), 18, sort));
-    assert_eq!(keys(&exact), keys(&default));
-    assert_eq!(score_bits(&exact), score_bits(&default));
+    // A fresh snapshot so the ExactSet request cannot benefit from a directory a
+    // previous request on another snapshot might have built.
+    let exact_snapshot = index.snapshot();
+    let rows = corpus_rows();
+    // The configured threshold stays 32 and the request TopK is 32: only then does
+    // `production_mode` resolve to ExactSet, which keeps the original owned-key
+    // path (`b3_u09` proves the resolved mode at the unit seam).
+    let exact = UnifiedSearcher::new(
+        &exact_snapshot,
+        &schema(),
+        &registry(),
+        SearchLimits::default(),
+    )
+    .with_topk_duplicate_config(quervant_core::search::TopKDuplicateConfig::new(
+        std::num::NonZeroUsize::new(32).expect("nonzero"),
+        quervant_core::search::TopKDuplicateStrategy::ExactSet,
+    ))
+    .search(
+        &request(body_term(), 32, sort.clone()),
+        &Budgets::new(),
+        &cancel(),
+    )
+    .expect("K=32 with the ExactSet threshold must succeed");
+    assert_eq!(exact.total_hits, 18);
+    assert_eq!(
+        exact.hits.len(),
+        18,
+        "the frozen corpus has exactly 18 rows"
+    );
+    assert!(exact.next_cursor.is_none());
+    let expected: Vec<String> = order_for(&rows, SortDirection::Asc, MissingValuePosition::Last);
+    assert_eq!(
+        keys(&exact),
+        expected,
+        "literal input-derived 18-key oracle, not another engine response"
+    );
+    for hit in &exact.hits {
+        assert_eq!(
+            hit.fields,
+            expected_projected_fields(hit.key.as_str()),
+            "complete six-field projection for {}",
+            hit.key.as_str()
+        );
+        assert!(
+            hit.score.expect("scored").is_finite(),
+            "every returned score is finite for {}",
+            hit.key.as_str()
+        );
+    }
+    // The independently executed *ineligible* reference at the same K.
+    let fallback = UnifiedSearcher::new(
+        &exact_snapshot,
+        &schema(),
+        &registry(),
+        SearchLimits::default(),
+    )
+    .search(
+        &request(fallback_query(), 32, sort.clone()),
+        &Budgets::new(),
+        &cancel(),
+    )
+    .expect("ineligible reference at K=32");
+    assert_scores_and_projection(&exact, &fallback);
+    // The default duplicate configuration at K=32 resolves to Prefilter, so this
+    // is a differential contract check, not proof of the ExactSet dispatch.
+    let default = search(&exact_snapshot, &request(body_term(), 32, sort));
+    assert_scores_and_projection(&default, &exact);
 }

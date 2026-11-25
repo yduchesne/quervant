@@ -171,6 +171,16 @@ enum KeyFingerprintState {
 struct KeyFingerprintCache {
     state: Mutex<KeyFingerprintState>,
     ready: Condvar,
+    /// PERF-06-B3-F1: test-only, **state-local** witness that a competing binder
+    /// actually parked on this cache's `Building` predicate. A process-global
+    /// counter cannot sequence one specific cache's test under parallel CI.
+    #[cfg(test)]
+    wait_entries: std::sync::atomic::AtomicU64,
+    /// PERF-06-B3-F1: test-only witness that the RAII cleanup path reached its
+    /// `notify_all` site. It proves the site executed, never that the wake-up was
+    /// *caused* by it (the production waiter also wakes on its 5 ms cadence).
+    #[cfg(test)]
+    raii_wake_notifications: std::sync::atomic::AtomicU64,
 }
 
 impl KeyFingerprintCache {
@@ -178,6 +188,10 @@ impl KeyFingerprintCache {
         Self {
             state: Mutex::new(KeyFingerprintState::Empty),
             ready: Condvar::new(),
+            #[cfg(test)]
+            wait_entries: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            raii_wake_notifications: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -259,6 +273,10 @@ impl Drop for KeyFingerprintBuildGuard<'_> {
             *state = KeyFingerprintState::Empty;
         }
         drop(state);
+        #[cfg(test)]
+        self.cache
+            .raii_wake_notifications
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.cache.ready.notify_all();
     }
 }
@@ -1118,10 +1136,13 @@ impl VerifiedSegmentState {
                         continue;
                     }
                     #[cfg(test)]
-                    {
-                        B3_CACHE_WAIT_STARTS.with(|cell| cell.set(cell.get() + 1));
-                        B3_GLOBAL_WAIT_STARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    }
+                    B3_CACHE_WAIT_STARTS.with(|cell| cell.set(cell.get() + 1));
+                    #[cfg(test)]
+                    B3_GLOBAL_WAIT_STARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    #[cfg(test)]
+                    self.key_fingerprints
+                        .wait_entries
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let (state, _timeout) = self
                         .key_fingerprints
                         .ready
@@ -4213,6 +4234,7 @@ mod b3_key_identity_tests {
     use super::*;
     use crate::analysis::{AnalyzerRegistry, CancellationFlag, NeverCancel};
     use crate::segment::{Layout, SegmentBuilder};
+    use std::sync::atomic::Ordering;
 
     fn bytes_with(count: usize) -> Vec<u8> {
         let mut builder = SegmentBuilder::new(fixture_schema(), AnalyzerRegistry::builtin())
@@ -4636,13 +4658,15 @@ mod b3_key_identity_tests {
                 .is_some();
             (bound, b3_cache_wait_starts(), b3_directory_builds())
         });
-        // Wait until the competing binder is actually parked on the condvar. This
-        // observes the real wait entry, it does not substitute a sleep for a race.
+        // Wait until the competing binder is actually parked on *this* cache's
+        // condvar. A process-global counter could be satisfied by an unrelated
+        // parallel test, so the predicate is state-local.
+        let baseline_waits = state.key_fingerprints.wait_entries.load(Ordering::SeqCst);
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while b3_global_wait_starts() == 0 {
+        while state.key_fingerprints.wait_entries.load(Ordering::SeqCst) == baseline_waits {
             assert!(
                 std::time::Instant::now() < deadline,
-                "no competing binder observed"
+                "no wait entry in this cache"
             );
             std::thread::yield_now();
         }
@@ -4655,7 +4679,247 @@ mod b3_key_identity_tests {
         assert_eq!(attempts, 1, "exactly one builder claimed the state");
         assert_eq!(builder_builds, 1);
         assert_eq!(waiter_builds, 0, "the waiter never rescanned");
-        assert_eq!(waiter_waits, 1, "the waiter parked exactly once");
+        // The waiter's 5 ms poll cadence may legitimately re-enter the wait more
+        // than once before the release signal; requiring exactly one wait would be
+        // an invalid scheduling assumption.
+        assert!(waiter_waits >= 1, "the waiter parked at least once");
+        // The pre-existing process-global witness is retained and still increments
+        // on the production wait path, but it is deliberately *not* used for
+        // sequencing any test: another parallel test could satisfy it.
+        assert!(
+            b3_global_wait_starts() >= 1,
+            "the global wait witness still records production wait entries"
+        );
         assert_eq!(state.key_fingerprints_state_code(), 2);
+    }
+
+    /// B3-F1 / F1-I03: a builder that fails **after** real hash-vector allocation
+    /// must release its reservation, restore `Building -> Empty`, notify the
+    /// blocked waiter, and the waiter must then succeed on the same verified state.
+    #[test]
+    fn b3_f1_u02_error_wakes_actual_waiter_and_retries() {
+        clear_b3_probe();
+        let (state, budget) = super::column_geometry_tests::admitted_state(bytes_with(400));
+        let baseline_waits = state.key_fingerprints.wait_entries.load(Ordering::SeqCst);
+        let baseline_notifications = state
+            .key_fingerprints
+            .raii_wake_notifications
+            .load(Ordering::SeqCst);
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let builder_state = Arc::clone(&state);
+        let builder = std::thread::spawn(move || {
+            let holder = SegmentReader::from_shared(builder_state);
+            set_b3_probe(B3Probe::AfterHashAllocation, move || {
+                entered_tx.send(()).expect("signal");
+                release_rx.lock().expect("lock").recv().expect("release");
+                Err(SegmentError::Corrupt {
+                    context: "doc key identity",
+                    detail: "b3-f1-injected-error".to_owned(),
+                })
+            });
+            let outcome = holder.bind_key_identity(&NeverCancel);
+            clear_b3_probe();
+            // Classify inside the thread: the borrowed handle cannot escape it.
+            match outcome {
+                Ok(Some(_)) => Ok(true),
+                Ok(None) => Ok(false),
+                Err(error) => Err(error),
+            }
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("builder reached the post-allocation probe");
+
+        let waiter_state = Arc::clone(&state);
+        let waiter = std::thread::spawn(move || {
+            let reader = SegmentReader::from_shared(waiter_state);
+            match reader.bind_key_identity(&NeverCancel) {
+                Ok(Some(identity)) => identity.meta(399).map(|meta| meta.utf8_len),
+                Ok(None) => Err(SegmentError::Corrupt {
+                    context: "doc key identity",
+                    detail: "unexpected optional fallback".to_owned(),
+                }),
+                Err(error) => Err(error),
+            }
+        });
+
+        // Release only after *this* cache recorded a real wait entry.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while state.key_fingerprints.wait_entries.load(Ordering::SeqCst) == baseline_waits {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the waiter never entered this cache's Building wait"
+            );
+            std::thread::yield_now();
+        }
+        release_tx.send(()).expect("release");
+
+        let error = match builder.join().expect("builder thread") {
+            Err(error) => error,
+            Ok(_) => panic!("the injected builder error must surface, not a success"),
+        };
+        assert!(
+            matches!(
+                error,
+                SegmentError::Corrupt {
+                    context: "doc key identity",
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert_eq!(
+            waiter
+                .join()
+                .expect("waiter thread")
+                .expect("waiter recovers"),
+            7,
+            "the recovered waiter reads the real directory"
+        );
+        assert_eq!(state.key_fingerprints_state_code(), 2, "Ready after retry");
+        assert!(state.key_fingerprints_ptr().is_some());
+        assert!(
+            state
+                .key_fingerprints
+                .raii_wake_notifications
+                .load(Ordering::SeqCst)
+                > baseline_notifications,
+            "the RAII cleanup notify site must have executed"
+        );
+        // The Ready owner legitimately holds a charge until the last owner drops.
+        drop(state);
+        assert_eq!(budget.used(), 0, "no leaked retained metadata");
+    }
+
+    /// B3-F1 / F1-I04: the same recovery must hold when the builder panics after
+    /// allocation, without poisoning the fingerprint mutex.
+    #[test]
+    fn b3_f1_u03_panic_wakes_actual_waiter_and_retries() {
+        clear_b3_probe();
+        let (state, budget) = super::column_geometry_tests::admitted_state(bytes_with(400));
+        let baseline_waits = state.key_fingerprints.wait_entries.load(Ordering::SeqCst);
+        let baseline_notifications = state
+            .key_fingerprints
+            .raii_wake_notifications
+            .load(Ordering::SeqCst);
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let builder_state = Arc::clone(&state);
+        let builder = std::thread::spawn(move || {
+            let holder = SegmentReader::from_shared(builder_state);
+            set_b3_probe(B3Probe::AfterHashAllocation, move || {
+                entered_tx.send(()).expect("signal");
+                release_rx.lock().expect("lock").recv().expect("release");
+                panic!("b3-f1-injected-post-allocation-panic");
+            });
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = holder.bind_key_identity(&NeverCancel);
+            }));
+            clear_b3_probe();
+            drop(holder);
+            outcome.is_err()
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("builder reached the post-allocation probe");
+
+        let waiter_state = Arc::clone(&state);
+        let waiter = std::thread::spawn(move || {
+            let reader = SegmentReader::from_shared(waiter_state);
+            match reader.bind_key_identity(&NeverCancel) {
+                Ok(Some(identity)) => identity.meta(399).map(|meta| meta.utf8_len),
+                Ok(None) => Err(SegmentError::Corrupt {
+                    context: "doc key identity",
+                    detail: "unexpected optional fallback".to_owned(),
+                }),
+                Err(error) => Err(error),
+            }
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while state.key_fingerprints.wait_entries.load(Ordering::SeqCst) == baseline_waits {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the waiter never entered this cache's Building wait"
+            );
+            std::thread::yield_now();
+        }
+        release_tx.send(()).expect("release");
+
+        let panicked = builder.join().expect("builder thread");
+        assert!(panicked, "the injected panic was caught in the builder");
+        assert_eq!(
+            waiter
+                .join()
+                .expect("waiter thread")
+                .expect("waiter recovers"),
+            7
+        );
+        assert_eq!(state.key_fingerprints_state_code(), 2, "Ready after retry");
+        assert!(
+            !state.key_fingerprints.state.is_poisoned(),
+            "an unwind must not poison the fingerprint cache mutex"
+        );
+        assert!(
+            state
+                .key_fingerprints
+                .raii_wake_notifications
+                .load(Ordering::SeqCst)
+                > baseline_notifications,
+            "the RAII cleanup notify site must have executed on unwind"
+        );
+        drop(state);
+        assert_eq!(budget.used(), 0, "no leaked retained metadata");
+    }
+
+    /// B3-F1 / F1-I05: a deliberately poisoned fingerprint mutex is a permanent
+    /// typed failure for that cache, never optional `None` and never a caller panic.
+    #[test]
+    fn b3_f1_u04_poisoned_fingerprint_lock_is_typed() {
+        clear_b3_probe();
+        let (state, budget) = super::column_geometry_tests::admitted_state(bytes_with(8));
+        assert!(!state.key_fingerprints.state.is_poisoned());
+        let poison_state = Arc::clone(&state);
+        let poison = std::thread::spawn(move || {
+            let _held = poison_state
+                .key_fingerprints
+                .state
+                .lock()
+                .expect("initially unpoisoned");
+            panic!("b3-f1-intentionally-poison-fingerprint-cache");
+        });
+        assert!(poison.join().is_err(), "the poisoning thread must panic");
+        assert!(
+            state.key_fingerprints.state.is_poisoned(),
+            "the fingerprint mutex is poisoned"
+        );
+
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        for attempt in 0..2 {
+            match reader.bind_key_identity(&NeverCancel) {
+                Err(SegmentError::Corrupt { context, detail }) => {
+                    assert_eq!(context, "doc key identity", "attempt {attempt}");
+                    assert_eq!(
+                        detail, "fingerprint cache lock poisoned",
+                        "attempt {attempt}"
+                    );
+                }
+                Err(other) => panic!("attempt {attempt}: unexpected typed error {other:?}"),
+                Ok(_) => panic!("attempt {attempt}: expected the typed poison error, got Ok"),
+            }
+            // Read-only inspection only: the poison is never cleared.
+            assert!(
+                state.key_fingerprints.state.is_poisoned(),
+                "attempt {attempt}"
+            );
+        }
+        drop(reader);
+        drop(state);
+        assert_eq!(budget.used(), 0, "no leaked retained metadata");
     }
 }

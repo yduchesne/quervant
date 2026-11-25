@@ -10317,57 +10317,112 @@ mod b3_tests {
             City::Value("b"),
             City::Value("c"),
         ])]);
-        let snapshot = index.snapshot();
-        // Resolved ExactSet at K >= 32: no B3 bind, unchanged owned key path.
+        let single_sort = || sort_field(SortDirection::Asc, MissingValuePosition::Last);
+
+        // The resolved-mode boundary is derived from source, not inferred from a
+        // result: the configured cutoff is 32 and only K >= 32 is ExactSet.
+        assert_eq!(
+            d3c::State::production_mode_for_test(32, exact_set_config()),
+            (d3c::Kind::ExactSet, d3c::Profile::P2)
+        );
+        assert_eq!(
+            d3c::State::production_mode_for_test(31, exact_set_config()),
+            (d3c::Kind::Linear, d3c::Profile::P0)
+        );
+
+        // K=32 ExactSet as the *first* request on a fresh snapshot, so a cached
+        // directory could not mask a missing-build observation.
+        let exact_snapshot = index.snapshot();
         reset_b3_counters();
-        run_with(
-            &snapshot,
-            &request(
-                term(),
-                100,
-                sort_field(SortDirection::Asc, MissingValuePosition::Last),
-            ),
+        let exact = run_with(
+            &exact_snapshot,
+            &request(term(), 32, single_sort()),
             SearchLimits::default(),
             exact_set_config(),
         )
-        .expect("exact set");
+        .expect("resolved ExactSet at K=32");
+        assert_eq!(exact.total_hits, 3);
+        assert_eq!(
+            keys(&exact),
+            vec!["k00000", "k00001", "k00002"],
+            "literal expected order"
+        );
+        assert_eq!(
+            b3_build_attempts(),
+            0,
+            "resolved ExactSet never binds a key directory"
+        );
+        assert_eq!(b3_directory_builds(), 0);
+
+        // K=100 ExactSet remains an additional positive behavioural check.
+        let snapshot = index.snapshot();
+        reset_b3_counters();
+        run_with(
+            &snapshot,
+            &request(term(), 100, single_sort()),
+            SearchLimits::default(),
+            exact_set_config(),
+        )
+        .expect("resolved ExactSet at K=100");
         assert_eq!(b3_build_attempts(), 0);
         assert_eq!(b3_directory_builds(), 0);
+
         // Configured ExactSet below the cutoff resolves to Linear and stays
         // B3-eligible with the unchanged Linear semantics.
         reset_b3_counters();
         let response = run_with(
             &snapshot,
-            &request(
-                term(),
-                10,
-                sort_field(SortDirection::Asc, MissingValuePosition::Last),
-            ),
+            &request(term(), 10, single_sort()),
             SearchLimits::default(),
             exact_set_config(),
         )
         .expect("linear resolution");
         assert_eq!(keys(&response), vec!["k00000", "k00001", "k00002"]);
         assert_eq!(b3_directory_builds(), 1);
-        // Multi-sort and cursors never initialize the key directory.
+
+        // A valid two-column sort is ineligible for B3: exact output, no
+        // preparation. Fresh snapshot so no cached directory can mask the check.
+        let multi_snapshot = index.snapshot();
         reset_b3_counters();
-        let mut multi_sort = request(
-            term(),
-            10,
-            sort_field(SortDirection::Asc, MissingValuePosition::Last),
-        );
+        let mut multi_sort = request(term(), 10, single_sort());
         multi_sort
             .sort
             .fields
             .push(SortField::new("n", SortDirection::Asc));
-        let error = run_with(
-            &snapshot,
+        let multi = run_with(
+            &multi_snapshot,
             &multi_sort,
             SearchLimits::default(),
             TopKDuplicateConfig::default(),
+        )
+        .expect("a valid two-column sort must succeed");
+        assert_eq!(multi.total_hits, 3);
+        assert_eq!(keys(&multi), vec!["k00000", "k00001", "k00002"]);
+        assert_eq!(multi.hits.len(), 3);
+        assert!(multi.next_cursor.is_none());
+        assert_eq!(
+            b3_build_attempts(),
+            0,
+            "a two-field sort never binds a key directory"
         );
-        assert!(error.is_ok() || error.is_err());
-        assert_eq!(b3_build_attempts(), 0);
+        assert_eq!(b3_directory_builds(), 0);
+
+        // The semantically equivalent ineligible legacy query agrees exactly.
+        let mut legacy_multi = multi_sort;
+        legacy_multi.query = legacy_term();
+        let legacy = run_with(
+            &multi_snapshot,
+            &legacy_multi,
+            SearchLimits::default(),
+            TopKDuplicateConfig::default(),
+        )
+        .expect("legacy two-column sort");
+        assert_eq!(keys(&legacy), keys(&multi));
+        assert_eq!(legacy.total_hits, multi.total_hits);
+        assert_eq!(bits(&legacy), bits(&multi));
+        for (left, right) in legacy.hits.iter().zip(multi.hits.iter()) {
+            assert_eq!(left.fields, right.fields);
+        }
     }
 
     #[test]
@@ -10481,6 +10536,273 @@ mod b3_tests {
         let again = search(&snapshot, &req);
         assert_eq!(keys(&again), keys(&response));
         assert_eq!(bits(&again), bits(&response));
+    }
+
+    /// B3-F1 / F1-I01+I02: a *real* `UnifiedSearcher` query against a
+    /// checksum-valid snapshot whose `DOC_KEYS` body holds one corrupt
+    /// **unselected** key.
+    ///
+    /// Zero-match queries must succeed without key resolution; a matched query
+    /// must surface the authoritative typed DOC_KEYS error through the collector
+    /// (B3 binding refuses the optional offsets directory, then the owned-key
+    /// fallback performs the full authoritative decode).
+    #[test]
+    fn b3_f1_u01_matching_query_rejects_corrupt_unselected_doc_key() {
+        use crate::segment::{
+            ContainerBuilder, ContainerKind, SectionKind, SegmentLimits, SegmentReader,
+        };
+        use quervant_objectstore::ContentDescriptor;
+
+        let limits = SegmentLimits::default();
+        let sort = sort_field(SortDirection::Asc, MissingValuePosition::Last);
+
+        // --- pristine two-document, single-segment corpus -------------------
+        let dir = directory();
+        {
+            let index = Index::create_with_limits(
+                Arc::clone(&dir),
+                schema(),
+                AnalyzerRegistry::builtin(),
+                large_limits(),
+            )
+            .expect("create");
+            let mut writer = index.writer().expect("writer");
+            writer.insert(document("k0", City::Value("a"))).expect("k0");
+            let mut nonmatching = document("k1", City::Value("b"));
+            nonmatching
+                .insert(
+                    "grp",
+                    FieldValues::Single(FieldValue::Keyword("other".to_owned())),
+                )
+                .expect("grp");
+            writer.insert(nonmatching).expect("k1");
+            writer.commit().expect("commit");
+        }
+        let index =
+            Index::open_existing(dir, schema(), AnalyzerRegistry::builtin()).expect("reopen");
+        let snapshot = index.snapshot();
+        assert_eq!(snapshot.segment_count(), 1, "one real v2 segment");
+        {
+            let guard = snapshot.open_segment_reader(0).expect("guard");
+            let physical: Vec<String> = guard
+                .reader()
+                .doc_keys()
+                .expect("keys")
+                .iter()
+                .map(|key| key.as_str().to_owned())
+                .collect();
+            assert_eq!(
+                physical,
+                vec!["k0".to_owned(), "k1".to_owned()],
+                "physical doc-id order"
+            );
+        }
+        let pristine = snapshot.segments()[0].bytes().to_vec();
+        let pristine_match = run_with(
+            &snapshot,
+            &request(term(), 1, sort.clone()),
+            SearchLimits::default(),
+            TopKDuplicateConfig::default(),
+        )
+        .expect("pristine matched query");
+        assert_eq!(pristine_match.total_hits, 1);
+        assert_eq!(keys(&pristine_match), vec!["k0".to_owned()]);
+        assert_eq!(
+            pristine_match.hits[0].fields,
+            vec![(
+                "doc_id".to_owned(),
+                FieldValues::Single(FieldValue::Keyword("a".to_owned())),
+            )],
+            "literal projection oracle"
+        );
+
+        // --- rebuild a checksum-valid container with one corrupt unselected key
+        let view = crate::segment::parse_container(&pristine, &limits).expect("container");
+        let doc_count = view.doc_count();
+        let required: Vec<(u16, u16)> = view.required_features().to_vec();
+        let optional: Vec<(u16, u16)> = view.optional_features().to_vec();
+        let sections: Vec<(SectionKind, u16, u64, Vec<u8>)> = view
+            .sections()
+            .iter()
+            .map(|entry| {
+                (
+                    entry.kind,
+                    entry.flags,
+                    entry.aux,
+                    view.body(entry.kind).expect("body").to_vec(),
+                )
+            })
+            .collect();
+        let keys_body = view.body(SectionKind::DocKeys).expect("doc keys").to_vec();
+        // DOC_KEYS is `u16 version + u64 count + (u16 len + UTF-8 bytes)*`.
+        // `k1` must appear exactly once, and only as the second record's payload.
+        let hits: Vec<usize> = keys_body
+            .windows(2)
+            .enumerate()
+            .filter(|(_, window)| *window == b"k1")
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(hits.len(), 1, "exactly one literal k1 payload");
+        let corrupt_at = hits[0];
+        assert!(
+            corrupt_at > 12,
+            "k1 must be the second payload, not the header"
+        );
+        let mut corrupt_keys = keys_body.clone();
+        corrupt_keys[corrupt_at] = 0xFF;
+        assert_ne!(corrupt_keys, keys_body, "payload byte actually changed");
+
+        let mut builder = ContainerBuilder::new(ContainerKind::Segment, doc_count);
+        for (id, version) in &required {
+            builder.require_feature(*id, *version);
+        }
+        for (id, version) in &optional {
+            builder.optional_feature(*id, *version);
+        }
+        for (kind, flags, aux, body) in &sections {
+            let body = if *kind == SectionKind::DocKeys {
+                corrupt_keys.clone()
+            } else {
+                body.clone()
+            };
+            builder.section(*kind, *flags, *aux, body);
+        }
+        let rebuilt = builder.build().expect("rebuilt checksum-valid container");
+        assert_ne!(rebuilt, pristine, "the rebuilt bytes are different");
+
+        // The rebuilt container validates lazily, yet the full key decoder rejects
+        // the *unselected* corrupt record.
+        let probe = SegmentReader::open(rebuilt.clone(), limits).expect("lazy open");
+        let probe_error = probe.doc_key(0).expect_err("corrupt unselected key");
+        assert!(
+            matches!(
+                probe_error,
+                crate::segment::SegmentError::InvalidUtf8 { context: "doc key" }
+            ),
+            "{probe_error:?}"
+        );
+        assert_eq!(
+            pristine.as_slice(),
+            snapshot.segments()[0].bytes(),
+            "the original immutable bytes are untouched"
+        );
+
+        // --- wrap the rebuilt segment in a real in-memory snapshot ----------
+        let corrupt_snapshot = ReaderSnapshot::for_test(
+            vec![crate::index::SegmentSnapshot::new(
+                crate::index::SegmentMeta::new(
+                    "b3-f1-corrupt",
+                    "test/b3-f1-corrupt",
+                    ContentDescriptor::of(&rebuilt),
+                    required,
+                    optional,
+                    None,
+                ),
+                Arc::new(rebuilt),
+                doc_count,
+            )],
+            limits,
+            256 * 1024 * 1024,
+            256 * 1024 * 1024,
+        );
+
+        // (1) A zero-match query must succeed *before* any matched query, proving
+        // that no eager key resolution happens for zero hits.
+        reset_b3_counters();
+        let zero = run_with(
+            &corrupt_snapshot,
+            &request(
+                Query::Term {
+                    field: "grp".to_owned(),
+                    value: FieldValue::Keyword("no-such-group".to_owned()),
+                },
+                1,
+                sort.clone(),
+            ),
+            SearchLimits::default(),
+            TopKDuplicateConfig::default(),
+        )
+        .expect("a zero-match query must succeed without key resolution");
+        assert_eq!(zero.total_hits, 0);
+        assert!(zero.hits.is_empty());
+        assert!(zero.next_cursor.is_none());
+        assert_eq!(
+            b3_build_attempts(),
+            0,
+            "no key preparation for zero matches"
+        );
+
+        // (2) The matched query must surface the exact authoritative typed error.
+        let matched = run_with(
+            &corrupt_snapshot,
+            &request(term(), 1, sort.clone()),
+            SearchLimits::default(),
+            TopKDuplicateConfig::default(),
+        )
+        .expect_err("a matched query must reject the corrupt unselected key");
+        assert!(
+            matches!(
+                matched,
+                SearchError::Segment(crate::segment::SegmentError::InvalidUtf8 {
+                    context: "doc key"
+                })
+            ),
+            "{matched:?}"
+        );
+
+        // (3) Repeating it must not become a sticky success.
+        let repeated = run_with(
+            &corrupt_snapshot,
+            &request(term(), 1, sort.clone()),
+            SearchLimits::default(),
+            TopKDuplicateConfig::default(),
+        )
+        .expect_err("repeat must report the same typed error");
+        assert!(
+            matches!(
+                repeated,
+                SearchError::Segment(crate::segment::SegmentError::InvalidUtf8 {
+                    context: "doc key"
+                })
+            ),
+            "{repeated:?}"
+        );
+
+        // (4) The ineligible legacy path has the same authoritative outcome.
+        let legacy = run_with(
+            &corrupt_snapshot,
+            &request(legacy_term(), 1, sort.clone()),
+            SearchLimits::default(),
+            TopKDuplicateConfig::default(),
+        )
+        .expect_err("the ineligible owned path must also reject the corruption");
+        assert!(
+            matches!(
+                legacy,
+                SearchError::Segment(crate::segment::SegmentError::InvalidUtf8 {
+                    context: "doc key"
+                })
+            ),
+            "{legacy:?}"
+        );
+
+        // (5) The pristine index is unaffected.
+        let healthy = run_with(
+            &snapshot,
+            &request(term(), 1, sort),
+            SearchLimits::default(),
+            TopKDuplicateConfig::default(),
+        )
+        .expect("the pristine snapshot still answers");
+        assert_eq!(healthy.total_hits, 1);
+        assert_eq!(keys(&healthy), vec!["k0".to_owned()]);
+        assert_eq!(
+            healthy.hits[0].fields,
+            vec![(
+                "doc_id".to_owned(),
+                FieldValues::Single(FieldValue::Keyword("a".to_owned())),
+            )]
+        );
     }
 
     #[test]

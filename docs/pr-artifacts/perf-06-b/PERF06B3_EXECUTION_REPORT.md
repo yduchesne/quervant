@@ -375,3 +375,69 @@ change), D46–D48, D50 (verified key offsets present).
   state; it is never persisted and never compared across snapshots.
 * G10 — independent review, acceptance and merge — remains **OPEN**; the agent
   cannot close it and makes no merge or release claim.
+
+---
+
+# B3-F1 independent-review fixup
+
+Scope: close the four acceptance-evidence gaps identified by independent review of
+PR #128 without changing the accepted B3 runtime behavior. Plan:
+`docs/pr-artifacts/perf-06-b/PERF06B3_F1_DETAILED_FIXUP_PLAN.md` (committed verbatim).
+Everything above this heading is the original B3 report and is preserved unchanged.
+
+## F1-0. Identity at fixup start
+
+| Item | Value |
+|---|---|
+| Repository / branch / PR | `yduchesne/quervant`, `dev/perf06-b3`, PR [#128](https://github.com/yduchesne/quervant/pull/128) `OPEN` / `isDraft: true` / `baseRefName: main` |
+| Accepted `main` (post-B2 baseline) | `ce7dea12c0f8f84fdc3a80306083e38c8df30ce2` (`git merge-base --is-ancestor` → 0) |
+| Prior B3 implementation/test SHA | `aa5c4497bb2a1fcc99a6ab9d9731db86ef7a4479` |
+| Prior terminal PR head | `76609e8348e4502b4e835d13d7a7facea13bffc1` |
+| `aa5c449..76609e8` diff | docs/evidence only; `crates/`, `.github/`, `benchmarks/`, `Cargo.toml`, `Cargo.lock` empty |
+| START (F1 working tree) | `76609e8348e4502b4e835d13d7a7facea13bffc1` |
+| Foreign untracked file | `docs/pr-artifacts/perf-06-b/evidence/f2-ci-status.txt` — recorded and left untouched (R04) |
+
+## F1-1. Pre-implementation correctness worksheet (G1)
+
+Written **before** any F1 production or test edit.
+
+| Invariant | Required observable behavior | Plausible incorrect result | New proof | Source anchor | Gate | Existed before F1 |
+|---|---|---|---|---|---|---|
+| **F1-I01** | A checksum/version/section-valid envelope with invalid **unselected** `DOC_KEYS` UTF-8 produces the authoritative typed error on a query with a match | `bind_key_identity` returns optional `None`, then search silently succeeds or returns partial hits | `b3_tests::b3_f1_u01_matching_query_rejects_corrupt_unselected_doc_key` | `reader.rs::bind_key_identity` (optional `Ok(None)` on refused offsets) + `search/unified.rs::collect_mixed` ordinal branch (`doc_key` fallback) | G2/F1-I01 | **No** — only direct `reader.doc_key` and pristine-query tests existed |
+| **F1-I02** | A zero-match query against the same snapshot succeeds without key resolution; a later match still reports the corruption | eager key work makes zero-hit fail, or the failure poisons unrelated queries | same U01 test: zero-match first, then matched failure twice, then ineligible matched failure, then pristine success | `collect_mixed` loop (binder attempted only on the first **matched, scored** candidate) | G2/F1-I02 | **No** |
+| **F1-I03** | A builder returning a typed error **after allocating** releases its reservation, restores `Building→Empty`, notifies a **known blocked waiter**, and that waiter succeeds on the same verified state | error resets without notification and strands the waiter or the budget | `b3_key_identity_tests::b3_f1_u02_error_wakes_actual_waiter_and_retries` | `KeyFingerprintBuildGuard::drop` + `ensure_key_fingerprints` `Next::Wait` | G3/F1-I03 | **No** — only a single-thread error/retry test |
+| **F1-I04** | A builder panicking after allocation has the same RAII cleanup/waiter recovery without poisoning the cache mutex | panic strands `Building`, deadlocks the waiter or leaks metadata | `b3_f1_u03_panic_wakes_actual_waiter_and_retries` | same RAII guard (unwind path) | G3/F1-I04 | **No** — panic was only observed single-threaded |
+| **F1-I05** | A deliberately poisoned fingerprint mutex returns the exact typed `Corrupt`; it never becomes optional `Unavailable` and never unwinds at the caller | `.unwrap()` panic, ignored poison, silent owned fallback | `b3_f1_u04_poisoned_fingerprint_lock_is_typed` | `fingerprint_lock_poisoned()` via `KeyFingerprintCache::lock` | G3/F1-I05 | **No** |
+| **F1-I06** | The wait-entry witness belongs to the **specific cache** under test, not a process-global counter | an unrelated parallel test's wait releases the builder early | updated `b3_u21` + new U02/U03 (per-cache `wait_entries`) | `KeyFingerprintCache` (new `#[cfg(test)]` atomics) | G3/F1-I06 | **No** — `b3_global_wait_starts()` was process-global |
+| **F1-I07** | `TopK=32` with the ExactSet threshold of 32 selects **resolved** ExactSet, uses the original owned B2 path and returns all 18 correct rows | K=18 accidentally exercises Linear and still passes | corrected `b3_i08_resource_limits_and_exact_set_fallback` + `d3c::State::production_mode_for_test` assertions in `b3_u09` | `d3c::State::production_mode`, `supports_compact_key` | G4/G5/F1-I07 | **No** — I08 used K=18 with threshold 32 |
+| **F1-I08** | A two-field sort is ineligible for B3 and returns exact expected keys/score bits/projection, not an always-true assertion | a genuine sort failure hidden by `is_ok() \|\| is_err()` | corrected `b3_u09_mode_gating_and_ineligible_shapes` | `keyword_ordinal_eligible` (single sort field required) | G4/F1-I08 | **No** — assertion was tautological |
+| **F1-I09** | No change to persisted data, cache transitions, key hashing, B2 ranking, duplicate policy or cursor; only the specified `#[cfg(test)]` witnesses | new cache, altered policy, new index bytes, extra production metric | whole-workspace default/all-feature QA + protected-path inventory + unchanged B1/B2/B3 suites | allowlist §3 of the plan | G1–G9/F1-I09 | n/a (invariant) |
+
+### F1-1.1 Required challenge (answered from source before coding)
+
+1. **How is the corrupt body rebuilt under a valid envelope?** `ContainerBuilder::new(ContainerKind::Segment, doc_count)` +
+   `require_feature` / `optional_feature` for every original `(id, version)` + `section(kind, flags, aux, body)` for every
+   original section, substituting only the mutated `DOC_KEYS` body, then `build()`. This recomputes the outer container
+   framing and every section digest, so the result is checksum-valid; a raw byte flip in the committed file is not used
+   because the committed length/descriptor check rejects it (`CorruptCommittedState { length mismatch … }`, previously
+   observed while writing B3-I07).
+2. **Why can the malformed key remain unselected yet validated?** `DOC_KEYS` is a flat record list, and the authoritative
+   decoder (`decode_doc_keys` / `decode_doc_key_selected` / `validate_doc_keys_and_capture_offsets`) validates **every**
+   record it scans. `k1` (physical doc 1) is never a query match, so the B3 binder claims the offsets directory only after
+   the first matched candidate; `try_build_key_directory` then fails on the corrupt `k1` payload, `bind_key_identity`
+   returns `Ok(None)`, and the collector's immediate owned fallback `reader.doc_key(0)` decodes the whole section and
+   raises `InvalidUtf8 { context: "doc key" }`.
+3. **Why can a test-only snapshot open the segment without mutating a committed index?** `ReaderSnapshot::for_test` is a
+   `#[cfg(test)]` `pub(crate)` constructor over plain `SegmentSnapshot` values (meta + `Arc<Vec<u8>>` + doc count). It
+   never touches `CURRENT`, the manifest or the directory, and every byte still passes the normal
+   `VerifiedSegmentState` container/feature/section validation. `ContentDescriptor::of(&rebuilt)` supplies the matching
+   descriptor for the new bytes.
+4. **Why can the waiter not be released before its state-local wait-entry observation?** The waiter increments
+   `wait_entries` **while holding the cache mutex** and only then calls `wait_timeout`, which atomically releases the
+   mutex. The builder thread is parked outside the mutex (inside the `AfterHashAllocation` probe) until the main thread
+   sends `release`, and the main thread sends it only after observing the incremented counter. Therefore the reset and the
+   `notify_all` cannot complete before the waiter has parked.
+5. **How does budget-zero-after-drop prove no leaked reservations?** `MetadataMeter` releases the whole unused allowance on
+   drop and `MetadataReservation` releases the measured charge when the last owner drops. The ready-state charge may only
+   be observed non-zero while a `Ready` owner (state or bound handle) is alive; after all threads exit and the last
+   `Arc<VerifiedSegmentState>` is dropped, `MetadataBudget::used()` must be `0`. A non-zero value proves a leaked charge.
