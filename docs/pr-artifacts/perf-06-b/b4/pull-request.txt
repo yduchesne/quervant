@@ -1,0 +1,28 @@
+PERF-06-B4 draft pull request (P9/G9)
+=====================================
+number: 129
+url: https://github.com/yduchesne/quervant/pull/129
+state: OPEN
+is_draft: True
+base: main
+head: dev/perf06-b4
+
+Exact artifact paths
+--------------------
+plan:        docs/pr-artifacts/perf-06-b/PERF06B4_DETAILED_PLAN.md
+report:      docs/pr-artifacts/perf-06-b/PERF06B4_EXECUTION_REPORT.md
+config:      benchmarks/studies/perf-06/warm/configurations/quervant-perf06b4-paired-warm-2026-11-25.json
+config_id:   4608c79a-c5a3-4d24-bec9-4ad61cd7bd94
+result:      benchmarks/studies/perf-06/warm/results/quervant-perf06b4-paired-warm-2026-11-25-001.json
+run_id:      86fe9601-2574-4335-a673-63de7d0dcc26
+A_SHA:       480a77e78c6897e05cb7ceb76b01434974b82ec6
+B_SHA:       d660ca9f487d5c54363d790a240abb7da30af245
+terminal:    PERF06_B4_QUALIFIED_TARGETS_MET_REVIEW_REQUIRED
+
+Notes
+-----
+- No test/lint/coverage/CI gate was run or required (explicit user override).
+- Any hosted CI on this PR is informational only; it was not awaited as an
+  acquisition prerequisite and no workflow was added or changed.
+- G10 remains maintainer-owned: this agent did not merge, did not promote the
+  B-series baseline and did not start PERF-06-C1.
