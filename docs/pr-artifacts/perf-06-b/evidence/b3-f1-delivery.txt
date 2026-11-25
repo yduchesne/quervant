@@ -1,0 +1,48 @@
+# PERF-06-B3-F1 delivery identity
+
+START (F1)                  : 76609e8348e4502b4e835d13d7a7facea13bffc1
+TESTED (executable/tests)   : 52d7e69f40759f27be79434118c47171b06702b7
+REMOTE_VERIFIED             : b7753c5e6bccd443faf64b65c7b0f3d65fc2d083 (run 45705309080, five jobs PASS)
+FINAL                       : the head of the final documentation commit on dev/perf06-b3
+                              (remote-verified above; a self-referential SHA cannot be embedded)
+PR                          : https://github.com/yduchesne/quervant/pull/128 (OPEN, draft)
+
+## executable/test/config blobs at TESTED
+37af8cc4091b9eef7d963c6ae4e154ad6d93e8ea
+f3a2862f9038ebb941f0b3dbca4fffdf9467cd43
+3bfece7014d0ee0837a23d9e752dca2bccf534b9
+
+## TESTED..b7753c5 restricted to executable/test/config/CI (must be empty)
+(empty above == docs/evidence-only delta)
+
+## protected production paths TESTED..b7753c5 (must be empty)
+(empty above == no protected path changed)
+
+## files added/modified after TESTED
+M	docs/pr-artifacts/perf-06-b/PERF06B3_EXECUTION_REPORT.md
+A	docs/pr-artifacts/perf-06-b/PERF06B3_F1_DETAILED_FIXUP_PLAN.md
+M	docs/pr-artifacts/perf-06-b/evidence/b3-ci-rustfs-extract.txt
+M	docs/pr-artifacts/perf-06-b/evidence/b3-ci-rustfs-job.log
+M	docs/pr-artifacts/perf-06-b/evidence/b3-ci-status.txt
+A	docs/pr-artifacts/perf-06-b/evidence/b3-f1-bench_no-run.log
+A	docs/pr-artifacts/perf-06-b/evidence/b3-f1-benchmark_scripts.log
+A	docs/pr-artifacts/perf-06-b/evidence/b3-f1-clippy_1.85.0_all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b3-f1-clippy_1.98.1_all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b3-f1-clippy_1.98.1_default.log
+A	docs/pr-artifacts/perf-06-b/evidence/b3-f1-coverage-all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b3-f1-coverage-default.log
+A	docs/pr-artifacts/perf-06-b/evidence/b3-f1-doc_all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b3-f1-doc_default.log
+A	docs/pr-artifacts/perf-06-b/evidence/b3-f1-fmt_1.85.0.log
+A	docs/pr-artifacts/perf-06-b/evidence/b3-f1-fmt_1.98.1.log
+A	docs/pr-artifacts/perf-06-b/evidence/b3-f1-focused-tests.log
+A	docs/pr-artifacts/perf-06-b/evidence/b3-f1-preflight.txt
+A	docs/pr-artifacts/perf-06-b/evidence/b3-f1-test_1.85.0_all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b3-f1-test_1.98.1_all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b3-f1-test_1.98.1_default.log
+M	docs/pr-artifacts/perf-06-b/evidence/b3-test_1.85.0_all-features.log
+M	docs/pr-artifacts/perf-06-b/evidence/b3-test_1.98.1_all-features.log
+M	docs/pr-artifacts/perf-06-b/evidence/b3-test_1.98.1_default.log
+
+## foreign untracked file (R04: recorded, untouched, never staged)
+docs/pr-artifacts/perf-06-b/evidence/f2-ci-status.txt

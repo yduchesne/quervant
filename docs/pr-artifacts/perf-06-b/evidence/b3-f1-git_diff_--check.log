@@ -1,0 +1,21 @@
+git diff --check origin/main...HEAD   (final head b7753c5)
+exit_code=0 (no whitespace errors)
+
+git diff --check 76609e8..HEAD   (F1 delta only; must also be clean)
+exit_code=0
+
+git diff -w --stat 76609e8..HEAD -- <the six sanitized verbatim logs>
+ docs/pr-artifacts/perf-06-b/evidence/b3-test_1.85.0_all-features.log | 1 -
+ docs/pr-artifacts/perf-06-b/evidence/b3-test_1.98.1_all-features.log | 1 -
+ docs/pr-artifacts/perf-06-b/evidence/b3-test_1.98.1_default.log      | 1 -
+ 3 files changed, 3 deletions(-)
+(only three single blank-EOF deletions; every other file is content-identical
+ under -w, i.e. the sanitization removed trailing spaces only)
+
+non-blank line counts (unchanged by sanitization):
+  docs/pr-artifacts/perf-06-b/evidence/b3-ci-rustfs-extract.txt            8
+  docs/pr-artifacts/perf-06-b/evidence/b3-ci-rustfs-job.log                1380
+  docs/pr-artifacts/perf-06-b/evidence/b3-ci-status.txt                    22
+  docs/pr-artifacts/perf-06-b/evidence/b3-test_1.85.0_all-features.log     3430
+  docs/pr-artifacts/perf-06-b/evidence/b3-test_1.98.1_all-features.log     3430
+  docs/pr-artifacts/perf-06-b/evidence/b3-test_1.98.1_default.log          3301

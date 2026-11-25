@@ -638,3 +638,115 @@ does not invalidate the TESTED source QA (R39). It is isolated in its own commit
 and is trivially revertible if the maintainer prefers the unsanitized logs.
 
 New `b3-f1-*` evidence was sanitized on creation for the same reason.
+
+## F1-6. Hosted CI and real RustFS (G6/G8)
+
+Ordinary `.github/workflows/ci.yml` is unchanged (no workflow, trigger or job edit
+exists in this change set; PR changes run on `pull_request` only, so no duplicate
+run was introduced).
+
+| Item | Value |
+|---|---|
+| Run | `45705309080` (`event: pull_request`, `workflow: Rust CI`) |
+| Head | `b7753c5e6bccd443faf64b65c7b0f3d65fc2d083` |
+| TESTED source | `52d7e69f40759f27be79434118c47171b06702b7` |
+| Source equivalence | `git diff --name-status 52d7e69..b7753c5 -- crates/ benchmarks/ .github/ Cargo.toml Cargo.lock` is **empty** |
+| Result | `rust` PASS 16m45s · `msrv` PASS 10m35s · `rustfs` PASS 2m36s · `benchmark-adapter-contract` PASS 1m26s · `python-benchmark-framework` PASS 4m0s |
+
+**G6 real-boundary evidence (not a green job alone).** The hosted `rustfs` job
+(`139525642745`) actually ran the pinned real-RustFS test
+(`b3-f1-ci-rustfs-extract.txt`):
+
+```
+Running tests/perf06_b1_rustfs.rs (...)
+running 1 test
+test b1_r01_cold_shared_ordinals_and_pit ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.36s
+```
+
+No local RustFS service, no mock substitution, no extra dispatch, no cancelled job
+and no benchmark acquisition. The F1 unit/probe tests are **not** presented as
+RustFS evidence, and the historic B3 RustFS PASS is not reused: the quoted log is
+from this run on this head.
+
+## F1-7. Decision-matrix ledger
+
+| Rule | Trigger as observed | Action taken |
+|---|---|---|
+| R01 | PR #128 `OPEN`, still based on accepted post-B2 `main`; branch `dev/perf06-b3` | Continued the existing branch with fast-forward pushes only; no new PR, no merge, no reset |
+| R02 | `aa5c449..76609e8` was docs/evidence only; remote head reconciled | Carried the same source anchors forward; recorded blob identities |
+| R04 | Foreign untracked `evidence/f2-ci-status.txt` (pre-existing B1-F2 evidence) | Recorded, left untouched, never staged or committed |
+| R06 | B3 fingerprint/ordinal implementation present and matching frozen behavior | Preserved production source; only two `#[cfg(test)]` witnesses added |
+| R07/R09/R10/R12 | `ReaderSnapshot::for_test`/`SegmentSnapshot::new`/`SegmentMeta::new`/`ContentDescriptor::of` available; container features/sections copied; lazy open + the typed unselected-key error observed; matched search returned the exact typed error | Used them for the single synthetic checksum-valid corrupt snapshot; asserted `SearchError::Segment(InvalidUtf8 { context: "doc key" })` |
+| R08 | Unique literal `k1` payload inside the two-row `DOC_KEYS` body | Mutated only its first payload byte and rebuilt the outer envelope |
+| R11 | Zero-hit strict-term query on the corrupt snapshot succeeded first | Recorded before the matched arms; no key directory was initialized |
+| R17 | `B3Probe::AfterHashAllocation` exists and runs outside the cache mutex | Used it for U02/U03 with `mpsc` channels |
+| R18 | Per-cache `#[cfg(test)]` atomics can be added | Added exactly `wait_entries` + `raii_wake_notifications` with init/increments |
+| R19/R22/R23 | Waiter parked in *this* cache's `Building` predicate; RAII notify site executed; cadence re-entered the wait | Required a state-local `wait_entries` delta before release, a notify-witness delta, and `waiter_waits >= 1` |
+| R20 | Injected typed error after allocation | Builder error surfaced, RAII restored `Empty`, same-cache retry reached Ready |
+| R21 | Injected panic after allocation, mutex unlocked | Caught with `catch_unwind` in the builder thread; RAII restored; waiter recovered; mutex not poisoned |
+| R24 | Builder failed, waiter retried, one Ready owner | `budget.used() == 0` only after the last state owner dropped |
+| R25 | Two intermediate test-seam compile faults (`Debug` bound on `expect_err`, non-`Send` handle escaping a thread) | Fixed mechanically inside the new test-only code (`match` instead of `expect_err`, classify inside the thread); no production API change, no assertion weakened |
+| R28 | Deliberately poisoned fingerprint mutex | Exact typed `Corrupt` on two binds, poison retained, no budget leak |
+| R30 | ExactSet cutoff 32 with request K=32 and 18 live rows | Executed the real I08 ExactSet on a fresh snapshot with the literal 18-hit oracle |
+| R32 | Existing U09 valid two-column sort returns exact expected output | Replaced the tautology with `expect(...)`, literal oracle, cursor absence and a legacy comparison |
+| R35 (not triggered) | No protected production path, public API, format, dependency, benchmark or CI topology change was required | Allowlist respected |
+| R38/R39 | FINAL head differs from TESTED only by documentation/evidence | Recorded the empty protected diff and `git diff --check`; reused the TESTED source QA and verified the final-head CI |
+| R40 (not triggered for design) | The only unlisted condition was the whitespace gate interacting with immutable verbatim logs | Handled as documented in F1-5.1: mechanical, disclosed, content-preserving sanitization accepted because §3 explicitly sanctions *sanitized* logs/evidence; the alternative (editing no evidence) would leave a mandatory gate failing. Isolated in its own revertible commit |
+
+**Red/green discipline.** No production RED was claimed or fabricated. Per §7.1 the
+new assertions close *evidence* gaps, and all four new tests plus the two corrected
+ones passed against the **existing** production source once written. The only
+failing states observed were genuine test-seam compilation intermediates (R25),
+which are recorded as such and are not a correctness defect. No flakiness was
+claimed; 20/20 repeated runs of the concurrency tests passed (R37 not triggered).
+
+## F1-8. Residuals
+
+* No *public* committed corrupt-file injection exists: the matched-corruption proof
+  is a crate unit test over a test-only snapshot, because a committed segment
+  cannot be rewritten behind its recorded length/committed-state check. B3-I07
+  remains the public **reader**-level boundary proof and is not relabelled.
+* No *public* metadata-capacity-only fallback fixture exists; it remains proved
+  privately (`b3_u12_*`, `b3_u16`), as before this fixup.
+* Cache-wake causality is bounded by the production 5 ms timed polling: the tests
+  prove actual same-cache wait entry, execution of the RAII notify site, successful
+  same-state recovery and zero final leakage — deliberately **not** "notification
+  was the unique cause".
+* The historical 15H-C and 15I-D1-F performance rejections are unchanged and still
+  not reclassified. No warm, cold, RSS, index-size or latency claim is made.
+* B3 runtime behavior is unchanged: hash formula, cache state machine, duplicate
+  policy, ranking, cursor, PIT, budgets and metadata accounting are identical.
+
+## F1-9. Adversarial self-review (explicit answers)
+
+| Question | Answer |
+|---|---|
+| Can a corrupted non-matching key escape a matched search? | No — `b3_f1_u01` drives a real `UnifiedSearcher` and gets the exact typed DOC_KEYS error. |
+| Is the snapshot checksum valid and the descriptor recomputed? | Yes — rebuilt through `ContainerBuilder` (all features/sections) and `ContentDescriptor::of(&rebuilt)`. |
+| Can a zero-hit query avoid key resolution? | Yes — asserted first, with `b3_build_attempts() == 0`. |
+| Did any waiter really reach its own cache's `Building` wait? | Yes — state-local `wait_entries` delta gates the release; a global counter is no longer used for sequencing. |
+| Could an unrelated test satisfy a global counter? | No longer — U21/U02/U03 sequence on the per-`VerifiedSegmentState` atomic (the global counter is only a post-hoc sanity check). |
+| Does the RAII notify site execute on both error and panic? | Yes — `raii_wake_notifications` strictly increases in U02 and U03. |
+| Does the final budget drop to zero when no owner remains? | Yes — asserted after the last state drop in U02/U03/U04. |
+| Does deliberate poison return the right error without clearing the poison? | Yes — exact typed `Corrupt` twice, `is_poisoned()` still true. |
+| Is ExactSet actually selected for K=32, not merely configured? | Yes — `production_mode_for_test(32, …) == (ExactSet, P2)` plus zero B3 binds/builds on a fresh snapshot, and the 18-row literal oracle. |
+| Does the multi-sort test demand valid output instead of accepting either result? | Yes — exact keys/count/cursor plus a full legacy comparison; the tautology is gone. |
+| Is release/benchmark source still unchanged? | Yes — production deltas are `#[cfg(test)]`-only; `cargo bench --no-run` and clippy on both toolchains pass. |
+
+## F1-10. Delivery identities and handoff
+
+| Identity | Value |
+|---|---|
+| START (F1) | `76609e8348e4502b4e835d13d7a7facea13bffc1` |
+| TESTED (F1 executable/test source) | `52d7e69f40759f27be79434118c47171b06702b7` |
+| REMOTE_VERIFIED (exact source-equivalent head run) | `b7753c5e6bccd443faf64b65c7b0f3d65fc2d083`, run `45705309080`, all five jobs PASS |
+| FINAL (terminal docs/evidence head) | the head of the final documentation commit on `dev/perf06-b3` (self-referential SHAs cannot be embedded); identities and diffs are recorded in `b3-f1-delivery.txt` |
+| Protected diff TESTED→FINAL | `crates/`, `benchmarks/`, `.github/`, `Cargo.toml`, `Cargo.lock` **empty** |
+
+Final disposition: **`PERF06_B3_F1_READY_FOR_INDEPENDENT_REVIEW`** for G0–G9 on the
+identities above. **G10 (independent review, acceptance, merge) remains
+maintainer-owned and OPEN.** PR #128 stays a draft and unmerged (it was observed
+briefly in "ready" state during the push window and was immediately returned to
+draft, as the plan requires); no history was rewritten, no gate was waived, no
+limit or threshold was changed, no benchmark was run and B4 was not started.
