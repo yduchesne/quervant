@@ -1172,8 +1172,45 @@ impl<'a> KeywordOrdinalColumn<'a> {
     }
 }
 
-/// A borrowed, fully validated view of one single-valued Keyword column value.
+/// PERF-06-B2: one query-local, logically admitted ordinal sort accessor.
 ///
+/// This wraps the B1 validated [`KeywordOrdinalColumn`] for an already bound
+/// field id and copies only the segment limits. It adds no geometry cache, no
+/// decoded-value cache and no string owner. `read_sort_row` applies exactly the
+/// per-value logical decode admission the existing borrowed
+/// [`ColumnReader::keyword_sort_view`] applies to a `Single` ordinal row, so a
+/// losing `Single` candidate still reports the frozen decode-limit error.
+/// `MultiOne` is returned unchanged: the collector must run the full legacy
+/// decoder (vector check first, then string admission) for that shape.
+pub(crate) struct KeywordSortOrdinalColumn<'a> {
+    column: KeywordOrdinalColumn<'a>,
+    limits: SegmentLimits,
+}
+
+impl KeywordSortOrdinalColumn<'_> {
+    /// Read one document row and apply the legacy logical string admission for
+    /// a `Single` value. `Missing`/`Null` never allocate or decode a term.
+    pub(crate) fn read_sort_row(&self, doc_id: u64) -> SegmentResult<KeywordOrdinalValue> {
+        let row = self.column.doc_ordinal(doc_id)?;
+        if let KeywordOrdinalValue::Value {
+            ordinal,
+            state: KeywordOrdinalState::Single,
+        } = row
+        {
+            let term_len = self.column.dictionary_term(ordinal)?.len() as u64;
+            let mut budget = DecodeBudget::new(&self.limits);
+            budget.reserve_string(term_len)?;
+        }
+        Ok(row)
+    }
+
+    /// Borrow one already validated raw dictionary term without allocating.
+    pub(crate) fn dictionary_term(&self, local_ordinal: u64) -> SegmentResult<&[u8]> {
+        self.column.dictionary_term(local_ordinal)
+    }
+}
+
+/// A borrowed, fully validated view of one single-valued Keyword column value.///
 /// `Missing`/`Null` mirror the two stateless sort ranks; `Value` borrows the
 /// encoded UTF-8 payload from the immutable segment bytes. `LegacyDecode` means
 /// the candidate must use the original decoding path (unexpected layout/state).
@@ -2278,6 +2315,23 @@ impl<'a> ColumnReader<'a> {
             return Ok(None);
         }
         Ok(Some(self.bind_keyword_ordinal_meta(meta)?))
+    }
+
+    /// PERF-06-B2: bind the query-local ordinal sort accessor once per segment.
+    ///
+    /// Only wraps [`Self::bind_keyword_ordinals`] and copies `self.limits`; the
+    /// caller resolves the numeric field id before the candidate loop and never
+    /// repeats a field-name or schema search per document.
+    pub(crate) fn bind_keyword_sort_ordinal(
+        &self,
+        field_id: u32,
+    ) -> SegmentResult<Option<KeywordSortOrdinalColumn<'a>>> {
+        Ok(self
+            .bind_keyword_ordinals(field_id)?
+            .map(|column| KeywordSortOrdinalColumn {
+                column,
+                limits: self.limits,
+            }))
     }
 
     /// The shared private constructor: copies only the small validated geometry.
@@ -4733,5 +4787,189 @@ mod b1_tests {
         }
         // Binding a non-ordinal field returns None rather than an error.
         assert!(reader.bind_keyword_ordinals(99).expect("bind").is_none());
+    }
+}
+
+/// PERF-06-B2 — query-local ordinal sort accessor tests.
+#[cfg(test)]
+mod b2_accessor_tests {
+    use super::*;
+    use crate::analysis::{AnalyzerRegistry, SchemaAnalyzerBindings};
+    use crate::contract::document::{Cardinality, DocumentKey};
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+
+    const LONG: &str =
+        "01234567890123456789012345678901234567890123456789012345678901234567890123456789";
+
+    fn codec() -> CodecSchema {
+        let schema = Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "city",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, true),
+                )
+                .with_normalizer("keyword"),
+            ],
+            None,
+        )
+        .expect("schema");
+        let bindings = SchemaAnalyzerBindings::resolve(&schema, &AnalyzerRegistry::builtin())
+            .expect("bindings");
+        CodecSchema::from_contract(&schema, &bindings).expect("codec")
+    }
+
+    fn document(key: &str, values: Option<FieldValues>) -> SegmentDocument {
+        let mut doc = SegmentDocument::new(DocumentKey::new(key).expect("key"));
+        if let Some(values) = values {
+            doc.insert("city", values).expect("insert");
+        }
+        doc
+    }
+
+    fn single(value: &str) -> FieldValues {
+        FieldValues::Single(FieldValue::Keyword(value.to_owned()))
+    }
+
+    fn multi_one(value: &str) -> FieldValues {
+        FieldValues::Multi(vec![FieldValue::Keyword(value.to_owned())])
+    }
+
+    fn fixture() -> (CodecSchema, Vec<u8>, u64) {
+        assert_eq!(LONG.len(), 80);
+        let schema = codec();
+        let docs = vec![
+            document("k0", Some(single("Austin"))),
+            document("k1", Some(FieldValues::ExplicitNull)),
+            document("k2", None),
+            document("k3", Some(multi_one("Boston"))),
+            document("k4", Some(single(LONG))),
+        ];
+        let encoded = encode_columns_with_ordinals(
+            &schema,
+            ColumnDocuments::Documents(&docs),
+            2,
+            &SegmentLimits::default(),
+        )
+        .expect("columns");
+        assert!(encoded.has_keyword_ordinals);
+        (schema, encoded.bytes, 3)
+    }
+
+    fn bound<'a>(reader: &ColumnReader<'a>, schema: &CodecSchema) -> KeywordSortOrdinalColumn<'a> {
+        reader
+            .bind_keyword_sort_ordinal(schema.field_id("city").expect("city"))
+            .expect("bind")
+            .expect("ordinal accessor")
+    }
+
+    /// B2-U21: one row read per document, no allocation for missing/null, and
+    /// the shared rank comes from the validated dictionary.
+    #[test]
+    fn b2_u21_bound_row_reads_preserve_single_missing_null_and_multi_one() {
+        let (schema, body, _) = fixture();
+        let limits = SegmentLimits::default();
+        let reader = ColumnReader::open(&schema, &body, &limits).expect("parse");
+        let handle = bound(&reader, &schema);
+        // Binding performs no row read and the wrapper never touches the
+        // ordinary `ColumnReader` block counter.
+        assert_eq!(handle.column.blocks_read(), 0);
+        assert_eq!(reader.blocks_read(), 0);
+        let row = handle.read_sort_row(0).expect("row");
+        let KeywordOrdinalValue::Value {
+            ordinal,
+            state: KeywordOrdinalState::Single,
+        } = row
+        else {
+            panic!("expected a single row, got {row:?}");
+        };
+        assert_eq!(handle.dictionary_term(ordinal).expect("term"), b"Austin");
+        // The dictionary is in raw byte order: "0..." < "Austin" < "Boston".
+        assert_eq!(handle.dictionary_term(0).expect("sorted"), LONG.as_bytes());
+        assert_eq!(
+            handle.read_sort_row(1).expect("row"),
+            KeywordOrdinalValue::Null
+        );
+        assert_eq!(
+            handle.read_sort_row(2).expect("row"),
+            KeywordOrdinalValue::Missing
+        );
+        assert_eq!(
+            handle.read_sort_row(3).expect("row"),
+            KeywordOrdinalValue::Value {
+                ordinal: 2,
+                state: KeywordOrdinalState::MultiOne,
+            }
+        );
+        // Exactly one block-row lookup per document read.
+        assert_eq!(handle.column.blocks_read(), 4);
+        assert_eq!(reader.blocks_read(), 0);
+        // An out-of-range document is an authoritative segment error.
+        assert!(handle.read_sort_row(99).is_err());
+        assert_eq!(handle.column.blocks_read(), 4);
+        // A non-ordinal field id yields no accessor rather than an error.
+        assert!(
+            reader
+                .bind_keyword_sort_ordinal(99)
+                .expect("bind")
+                .is_none()
+        );
+    }
+
+    /// B2-U07: a matched `Single` row performs the frozen logical string budget
+    /// admission on every read, including a losing candidate; `MultiOne` keeps
+    /// the legacy vector-first admission in the full decoder.
+    #[test]
+    fn b2_u07_decode_budget_79_rejects_the_80_byte_single_before_discard() {
+        let (schema, body, _) = fixture();
+        let default = SegmentLimits::default();
+        let geometry = ColumnReader::open(&schema, &body, &default)
+            .expect("parse")
+            .into_geometry();
+        let field = schema.field_id("city").expect("city");
+
+        let allowed = SegmentLimits::default().with_max_section_decode_bytes(80);
+        let reader = ColumnReader::from_validated_geometry(&schema, &body, &allowed, &geometry);
+        let handle = bound(&reader, &schema);
+        assert!(handle.read_sort_row(0).is_ok());
+        // MultiOne performs no string admission at row-read time.
+        assert!(matches!(
+            handle.read_sort_row(3).expect("multi"),
+            KeywordOrdinalValue::Value {
+                state: KeywordOrdinalState::MultiOne,
+                ..
+            }
+        ));
+        assert!(handle.read_sort_row(4).is_ok());
+        assert!(reader.value(field, 3).expect("multi value").is_some());
+
+        let strict = SegmentLimits::default().with_max_section_decode_bytes(79);
+        let reader = ColumnReader::from_validated_geometry(&schema, &body, &strict, &geometry);
+        let handle = bound(&reader, &schema);
+        assert!(handle.read_sort_row(0).is_ok());
+        assert!(handle.read_sort_row(1).is_ok());
+        assert!(handle.read_sort_row(2).is_ok());
+        assert!(matches!(
+            handle.read_sort_row(4),
+            Err(SegmentError::LimitExceeded {
+                limit: 79,
+                requested: 80
+            })
+        ));
+
+        // MultiOne pays the one-element `FieldValue` vector admission first.
+        let vector_cap = (std::mem::size_of::<FieldValue>() - 1) as u64;
+        let vector_limits = SegmentLimits::default()
+            .with_max_single_allocation(vector_cap)
+            .with_max_section_decode_bytes(1 << 20);
+        let reader =
+            ColumnReader::from_validated_geometry(&schema, &body, &vector_limits, &geometry);
+        assert!(matches!(
+            reader.value(field, 3),
+            Err(SegmentError::LimitExceeded { limit, requested })
+                if limit == vector_cap
+                    && requested == std::mem::size_of::<FieldValue>() as u64
+        ));
     }
 }
