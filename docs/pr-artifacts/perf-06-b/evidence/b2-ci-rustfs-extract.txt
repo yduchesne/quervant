@@ -1,0 +1,6 @@
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.8765688Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.22s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.2065582Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.22s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.5484166Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.24s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.8809663Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.23s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.2174405Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.23s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.5528730Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.23s

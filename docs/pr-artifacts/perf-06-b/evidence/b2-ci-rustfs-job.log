@@ -1,0 +1,1380 @@
+rustfs	Set up job	﻿2026-11-25T05:56:24.7384024Z Current runner version: '2.338.2'
+rustfs	Set up job	2026-11-25T05:56:24.7406416Z ##[group]Runner Image Provisioner
+rustfs	Set up job	2026-11-25T05:56:24.7407058Z Hosted Compute Agent
+rustfs	Set up job	2026-11-25T05:56:24.7407410Z Version: 20261111.635
+rustfs	Set up job	2026-11-25T05:56:24.7407887Z Commit: b8a594ea514ff44cadb5342986c68b1eac6e22ed
+rustfs	Set up job	2026-11-25T05:56:24.7408326Z Build Date: 2026-11-11T01:49:01Z
+rustfs	Set up job	2026-11-25T05:56:24.7408753Z Worker ID: {2f64b95d-1a16-44d9-9988-5b164479f5b9}
+rustfs	Set up job	2026-11-25T05:56:24.7409182Z Region: centralus
+rustfs	Set up job	2026-11-25T05:56:24.7409523Z Cloud: Azure
+rustfs	Set up job	2026-11-25T05:56:24.7409889Z ##[endgroup]
+rustfs	Set up job	2026-11-25T05:56:24.7410818Z ##[group]Operating System
+rustfs	Set up job	2026-11-25T05:56:24.7411228Z Ubuntu
+rustfs	Set up job	2026-11-25T05:56:24.7411565Z 26.04.1
+rustfs	Set up job	2026-11-25T05:56:24.7411879Z LTS
+rustfs	Set up job	2026-11-25T05:56:24.7412288Z ##[endgroup]
+rustfs	Set up job	2026-11-25T05:56:24.7412641Z ##[group]Runner Image
+rustfs	Set up job	2026-11-25T05:56:24.7413025Z Image: ubuntu-26.04
+rustfs	Set up job	2026-11-25T05:56:24.7413418Z Version: 20261116.202.1
+rustfs	Set up job	2026-11-25T05:56:24.7414040Z Included Software: https://github.com/actions/runner-images/blob/ubuntu26/20261116.202/images/ubuntu/Ubuntu2604-Readme.md
+rustfs	Set up job	2026-11-25T05:56:24.7415520Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu26%2F20261116.202
+rustfs	Set up job	2026-11-25T05:56:24.7416085Z ##[endgroup]
+rustfs	Set up job	2026-11-25T05:56:24.7416843Z ##[group]GITHUB_TOKEN Permissions
+rustfs	Set up job	2026-11-25T05:56:24.7418275Z Contents: read
+rustfs	Set up job	2026-11-25T05:56:24.7418736Z Metadata: read
+rustfs	Set up job	2026-11-25T05:56:24.7419084Z ##[endgroup]
+rustfs	Set up job	2026-11-25T05:56:24.7420744Z Secret source: Actions
+rustfs	Set up job	2026-11-25T05:56:24.7421330Z Cache mode: write
+rustfs	Set up job	2026-11-25T05:56:24.7421835Z Prepare workflow directory
+rustfs	Set up job	2026-11-25T05:56:24.7757694Z Prepare all required actions
+rustfs	Set up job	2026-11-25T05:56:24.7805763Z Getting action download info
+rustfs	Set up job	2026-11-25T05:56:24.9974108Z Download action repository 'actions/checkout@v4' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+rustfs	Set up job	2026-11-25T05:56:25.0812260Z Download action repository 'dtolnay/rust-toolchain@master' (SHA:df2a88e9fe4098bad09cb42c3dec7187f15861fc)
+rustfs	Set up job	2026-11-25T05:56:25.4776926Z Complete job name: rustfs
+rustfs	Initialize containers	﻿2026-11-25T05:56:25.5196497Z ##[group]Checking docker version
+rustfs	Initialize containers	2026-11-25T05:56:25.5205056Z ##[command]/usr/bin/docker version --format '{{.Server.APIVersion}}'
+rustfs	Initialize containers	2026-11-25T05:56:25.6128346Z '1.54'
+rustfs	Initialize containers	2026-11-25T05:56:25.6145259Z Docker daemon API version: '1.54'
+rustfs	Initialize containers	2026-11-25T05:56:25.6145763Z ##[command]/usr/bin/docker version --format '{{.Client.APIVersion}}'
+rustfs	Initialize containers	2026-11-25T05:56:25.6296419Z '1.54'
+rustfs	Initialize containers	2026-11-25T05:56:25.6311358Z Docker client API version: '1.54'
+rustfs	Initialize containers	2026-11-25T05:56:25.6317240Z ##[endgroup]
+rustfs	Initialize containers	2026-11-25T05:56:25.6318645Z ##[group]Clean up resources from previous jobs
+rustfs	Initialize containers	2026-11-25T05:56:25.6322587Z ##[command]/usr/bin/docker ps --all --quiet --no-trunc --filter "label=ee06d7"
+rustfs	Initialize containers	2026-11-25T05:56:25.6461723Z ##[command]/usr/bin/docker network prune --force --filter "label=ee06d7"
+rustfs	Initialize containers	2026-11-25T05:56:25.6593744Z ##[endgroup]
+rustfs	Initialize containers	2026-11-25T05:56:25.6594278Z ##[group]Create local container network
+rustfs	Initialize containers	2026-11-25T05:56:25.6602281Z ##[command]/usr/bin/docker network create --label ee06d7 github_network_75e5522e77de43e389a050f26c0ebed4
+rustfs	Initialize containers	2026-11-25T05:56:25.6985706Z 9d7f4c0da369c59a7bccc69ee58f0c74f1c3bd59726f962110a6bf8c5126c2f8
+rustfs	Initialize containers	2026-11-25T05:56:25.7002620Z ##[endgroup]
+rustfs	Initialize containers	2026-11-25T05:56:25.7022266Z ##[group]Starting rustfs service container
+rustfs	Initialize containers	2026-11-25T05:56:25.7037270Z ##[command]/usr/bin/docker pull rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
+rustfs	Initialize containers	2026-11-25T05:56:26.1925653Z docker.io/rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c: Pulling from rustfs/rustfs
+rustfs	Initialize containers	2026-11-25T05:56:26.4121009Z 90809b25f4af: Pulling fs layer
+rustfs	Initialize containers	2026-11-25T05:56:26.4122235Z 461e0906c3e9: Pulling fs layer
+rustfs	Initialize containers	2026-11-25T05:56:26.4122778Z e69fdf0542e2: Pulling fs layer
+rustfs	Initialize containers	2026-11-25T05:56:26.4123274Z a1a81861a10c: Pulling fs layer
+rustfs	Initialize containers	2026-11-25T05:56:26.4123773Z 6a4ac81fe189: Pulling fs layer
+rustfs	Initialize containers	2026-11-25T05:56:26.4124267Z 55afa1ecc21d: Pulling fs layer
+rustfs	Initialize containers	2026-11-25T05:56:26.4124947Z 4f4fb700ef54: Pulling fs layer
+rustfs	Initialize containers	2026-11-25T05:56:26.4180172Z 4f4fb700ef54: Already exists
+rustfs	Initialize containers	2026-11-25T05:56:26.5174351Z 90809b25f4af: Download complete
+rustfs	Initialize containers	2026-11-25T05:56:26.5176039Z e69fdf0542e2: Download complete
+rustfs	Initialize containers	2026-11-25T05:56:26.6179950Z 44136fa355b3: Already exists
+rustfs	Initialize containers	2026-11-25T05:56:26.6182371Z 461e0906c3e9: Download complete
+rustfs	Initialize containers	2026-11-25T05:56:26.7194028Z 55afa1ecc21d: Download complete
+rustfs	Initialize containers	2026-11-25T05:56:26.7198138Z c724148e5434: Download complete
+rustfs	Initialize containers	2026-11-25T05:56:26.7201315Z 6a4ac81fe189: Download complete
+rustfs	Initialize containers	2026-11-25T05:56:26.7202803Z a5ed5d75e57c: Download complete
+rustfs	Initialize containers	2026-11-25T05:56:26.8302734Z 55afa1ecc21d: Pull complete
+rustfs	Initialize containers	2026-11-25T05:56:27.3204339Z 6a4ac81fe189: Pull complete
+rustfs	Initialize containers	2026-11-25T05:56:27.4173606Z a1a81861a10c: Download complete
+rustfs	Initialize containers	2026-11-25T05:56:27.4203430Z 461e0906c3e9: Pull complete
+rustfs	Initialize containers	2026-11-25T05:56:28.2986888Z 4f4fb700ef54: Pull complete
+rustfs	Initialize containers	2026-11-25T05:56:28.2995502Z 90809b25f4af: Pull complete
+rustfs	Initialize containers	2026-11-25T05:56:28.3003811Z e69fdf0542e2: Pull complete
+rustfs	Initialize containers	2026-11-25T05:56:28.3013824Z a1a81861a10c: Pull complete
+rustfs	Initialize containers	2026-11-25T05:56:28.3014690Z Digest: sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
+rustfs	Initialize containers	2026-11-25T05:56:28.3015528Z Status: Downloaded newer image for rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
+rustfs	Initialize containers	2026-11-25T05:56:28.3042074Z docker.io/rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
+rustfs	Initialize containers	2026-11-25T05:56:28.3112339Z ##[command]/usr/bin/docker create --name 4260c4c52b744235aa3535d7d2e44b3b_rustfsrustfssha2561803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c_ef07e1 --label ee06d7 --network github_network_75e5522e77de43e389a050f26c0ebed4 --network-alias rustfs -p 9000:9000 --health-cmd "curl -fsS http://localhost:9000/health || exit 1" --health-interval 5s --health-timeout 5s --health-retries 30 -e "RUSTFS_ACCESS_KEY=quervanttest" -e "RUSTFS_SECRET_KEY=quervantsecret" -e GITHUB_ACTIONS=true -e CI=true rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
+rustfs	Initialize containers	2026-11-25T05:56:29.9346689Z 32f71715c5e13609336f9a9bf060727284f42b3fa5a5e05faf0631d7a3af6ba7
+rustfs	Initialize containers	2026-11-25T05:56:29.9389278Z ##[command]/usr/bin/docker start 32f71715c5e13609336f9a9bf060727284f42b3fa5a5e05faf0631d7a3af6ba7
+rustfs	Initialize containers	2026-11-25T05:56:30.1224082Z 32f71715c5e13609336f9a9bf060727284f42b3fa5a5e05faf0631d7a3af6ba7
+rustfs	Initialize containers	2026-11-25T05:56:30.1247452Z ##[command]/usr/bin/docker ps --all --filter id=32f71715c5e13609336f9a9bf060727284f42b3fa5a5e05faf0631d7a3af6ba7 --filter status=running --no-trunc --format "{{.ID}} {{.Status}}"
+rustfs	Initialize containers	2026-11-25T05:56:30.1474531Z 32f71715c5e13609336f9a9bf060727284f42b3fa5a5e05faf0631d7a3af6ba7 Up Less than a second (health: starting)
+rustfs	Initialize containers	2026-11-25T05:56:30.1505785Z ##[command]/usr/bin/docker port 32f71715c5e13609336f9a9bf060727284f42b3fa5a5e05faf0631d7a3af6ba7
+rustfs	Initialize containers	2026-11-25T05:56:30.1649471Z 9000/tcp -> 0.0.0.0:9000
+rustfs	Initialize containers	2026-11-25T05:56:30.1650262Z 9000/tcp -> [::]:9000
+rustfs	Initialize containers	2026-11-25T05:56:30.1697405Z ##[endgroup]
+rustfs	Initialize containers	2026-11-25T05:56:30.1705893Z ##[group]Waiting for all services to be ready
+rustfs	Initialize containers	2026-11-25T05:56:30.1718073Z ##[command]/usr/bin/docker inspect --format="{{if .Config.Healthcheck}}{{print .State.Health.Status}}{{end}}" 32f71715c5e13609336f9a9bf060727284f42b3fa5a5e05faf0631d7a3af6ba7
+rustfs	Initialize containers	2026-11-25T05:56:30.1858856Z starting
+rustfs	Initialize containers	2026-11-25T05:56:30.1885387Z rustfs service is starting, waiting 2 seconds before checking again.
+rustfs	Initialize containers	2026-11-25T05:56:32.1888300Z ##[command]/usr/bin/docker inspect --format="{{if .Config.Healthcheck}}{{print .State.Health.Status}}{{end}}" 32f71715c5e13609336f9a9bf060727284f42b3fa5a5e05faf0631d7a3af6ba7
+rustfs	Initialize containers	2026-11-25T05:56:32.1994439Z starting
+rustfs	Initialize containers	2026-11-25T05:56:32.2009342Z rustfs service is starting, waiting 3 seconds before checking again.
+rustfs	Initialize containers	2026-11-25T05:56:36.0087560Z ##[command]/usr/bin/docker inspect --format="{{if .Config.Healthcheck}}{{print .State.Health.Status}}{{end}}" 32f71715c5e13609336f9a9bf060727284f42b3fa5a5e05faf0631d7a3af6ba7
+rustfs	Initialize containers	2026-11-25T05:56:36.0201489Z healthy
+rustfs	Initialize containers	2026-11-25T05:56:36.0222227Z rustfs service is healthy.
+rustfs	Initialize containers	2026-11-25T05:56:36.0222675Z ##[endgroup]
+rustfs	Run actions/checkout@v4	﻿2026-11-25T05:56:36.0478635Z ##[group]Run actions/checkout@v4
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0478931Z with:
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0479059Z   repository: yduchesne/quervant
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0480631Z   token: ***
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0480951Z   ssh-strict: true
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0481069Z   ssh-user: git
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0481197Z   persist-credentials: true
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0481346Z   clean: true
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0481475Z   sparse-checkout-cone-mode: true
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0481620Z   fetch-depth: 1
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0481739Z   fetch-tags: false
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0481858Z   show-progress: true
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0481993Z   lfs: false
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0482102Z   submodules: false
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0482223Z   set-safe-directory: true
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0482365Z   allow-unsafe-pr-checkout: false
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0482589Z env:
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0482734Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0482922Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0483084Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0483294Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0483460Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.0483628Z ##[endgroup]
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2692887Z Syncing repository: yduchesne/quervant
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2694345Z ##[group]Getting Git version info
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2694659Z Working directory is '/home/runner/work/quervant/quervant'
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2695296Z [command]/usr/bin/git version
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2722199Z git version 2.56.1
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2735751Z ##[endgroup]
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2746349Z Temporarily overriding HOME='/home/runner/work/_temp/eca3ff79-3c6a-42de-be55-08e364cff084' before making global git config changes
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2747136Z Adding repository directory to the temporary git global config as a safe directory
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2750402Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/quervant/quervant
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2811440Z Deleting the contents of '/home/runner/work/quervant/quervant'
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2820920Z ##[group]Initializing the repository
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2821448Z [command]/usr/bin/git init /home/runner/work/quervant/quervant
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2920418Z hint: Using 'master' as the name for the initial branch. This default branch name
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2920969Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2921398Z hint: to use in all of your new repositories, which will suppress this warning,
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2921728Z hint: call:
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2921900Z hint:
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2922175Z hint: 	git config --global init.defaultBranch <name>
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2922457Z hint:
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2922711Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2923157Z hint: 'development'. The just-created branch can be renamed via this command:
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2923492Z hint:
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2923679Z hint: 	git branch -m <name>
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2923913Z hint:
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2924182Z hint: Disable this message with "git config set advice.defaultBranchName false"
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2930390Z Initialized empty Git repository in /home/runner/work/quervant/quervant/.git/
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2940823Z [command]/usr/bin/git remote add origin https://github.com/yduchesne/quervant
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2988087Z ##[endgroup]
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2988479Z ##[group]Disabling automatic garbage collection
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.2992127Z [command]/usr/bin/git config --local gc.auto 0
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.3024210Z ##[endgroup]
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.3024682Z ##[group]Setting up auth
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.3030738Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.3068778Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.3465522Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.3495740Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.3728435Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.3759330Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.3992161Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.4029208Z ##[endgroup]
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.4029555Z ##[group]Fetching the repository
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:36.4037374Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +d71da18784d25800e62fae853e25635f685e9325:refs/remotes/pull/127/merge
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.7526008Z From https://github.com/yduchesne/quervant
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.7526451Z  * [new ref]         d71da18784d25800e62fae853e25635f685e9325 -> pull/127/merge
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.7530593Z ##[endgroup]
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.7530940Z ##[group]Determining the checkout info
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.7532665Z ##[endgroup]
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.7537172Z [command]/usr/bin/git sparse-checkout disable
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.7586612Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.7615499Z ##[group]Checking out the ref
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.7619528Z [command]/usr/bin/git checkout --progress --force refs/remotes/pull/127/merge
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9008876Z Note: switching to 'refs/remotes/pull/127/merge'.
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9009201Z 
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9009361Z You are in 'detached HEAD' state. You can look around, make experimental
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9009635Z changes and commit them, and you can discard any commits you make in this
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9009897Z state without impacting any branches by switching back to a branch.
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9010084Z 
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9010344Z If you want to create a new branch to retain commits you create, you may
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9010709Z do so (now or later) by using -c with the switch command. Example:
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9010910Z 
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9010999Z   git switch -c <new-branch-name>
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9011141Z 
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9011226Z Or undo this operation with:
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9011364Z 
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9011440Z   git switch -
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9011544Z 
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9011739Z Turn off this advice by setting config variable advice.detachedHead to false
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9011977Z 
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9012262Z HEAD is now at d71da18 Merge e396177eb0a29a087228cf841bde18ddecf49947 into 3cb1cbdff4c3bc7bbc1cae1c4e92c5cb44ca95cc
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9026019Z ##[endgroup]
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9073014Z [command]/usr/bin/git log -1 --format=%H
+rustfs	Run actions/checkout@v4	2026-11-25T05:56:37.9095943Z d71da18784d25800e62fae853e25635f685e9325
+rustfs	Run dtolnay/rust-toolchain@master	﻿2026-11-25T05:56:37.9349598Z ##[group]Run dtolnay/rust-toolchain@master
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9349789Z with:
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9349903Z   toolchain: 1.98.1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9350039Z env:
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9350178Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9350364Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9350524Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9350695Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9350857Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9351012Z ##[endgroup]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9393323Z ##[start-action display=Parse toolchain version;id=__dtolnay_rust-toolchain.parse]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9432936Z ##[group]Run if [[ -z $toolchain ]]; then
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9433229Z ^[[36;1mif [[ -z $toolchain ]]; then^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9433546Z ^[[36;1m  # GitHub does not enforce `required: true` inputs itself. https://github.com/actions/runner/issues/1070^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9433864Z ^[[36;1m  echo "'toolchain' is a required input" >&2^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9434077Z ^[[36;1m  exit 1^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9434268Z ^[[36;1melif [[ $toolchain =~ ^stable' '[0-9]+' '(year|month|week|day)s?' 'ago$ ]]; then^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9434668Z ^[[36;1m  if [[ Linux == macOS ]]; then^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9435174Z ^[[36;1m    echo "toolchain=1.$((($(date -v-$(sed 's/stable \([0-9]*\) \(.\).*/\1\2/' <<< $toolchain) +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9435460Z ^[[36;1m  else^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9435687Z ^[[36;1m    echo "toolchain=1.$((($(date --date "${toolchain#stable }" +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9435936Z ^[[36;1m  fi^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9436111Z ^[[36;1melif [[ $toolchain =~ ^stable' 'minus' '[0-9]+' 'releases?$ ]]; then^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9436408Z ^[[36;1m  echo "toolchain=1.$((($(date +%s)/60/60/24-16569)/7/6-${toolchain//[^0-9]/}))" >> $GITHUB_OUTPUT^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9436660Z ^[[36;1melif [[ $toolchain =~ ^1\.[0-9]+$ ]]; then^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9436950Z ^[[36;1m  echo "toolchain=1.$((i=${toolchain#1.}, c=($(date +%s)/60/60/24-16569)/7/6, i+9*i*(10*i<=c)+90*i*(100*i<=c)))" >> $GITHUB_OUTPUT^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9437225Z ^[[36;1melse^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9437368Z ^[[36;1m  delimiter=EOF^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9437544Z ^[[36;1m  while [[ $toolchain == *$delimiter* ]]; do delimiter+=_; done^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9437828Z ^[[36;1m  printf 'toolchain<<%s\n%s\n%s\n' "$delimiter" "$toolchain" "$delimiter" >> $GITHUB_OUTPUT^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9438056Z ^[[36;1mfi^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9469246Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9469448Z env:
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9469603Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9469787Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9469956Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9470121Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9470286Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9470453Z   toolchain: 1.98.1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9470578Z ##[endgroup]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9560419Z ##[end-action id=__dtolnay_rust-toolchain.parse;outcome=success;conclusion=success;duration_ms=16]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9562333Z ##[start-action display=Set $CARGO_HOME;id=__dtolnay_rust-toolchain.__run]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9588233Z ##[group]Run echo CARGO_HOME=${CARGO_HOME:-"$HOME/.cargo"} >> $GITHUB_ENV
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9588529Z ^[[36;1mecho CARGO_HOME=${CARGO_HOME:-"$HOME/.cargo"} >> $GITHUB_ENV^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9614454Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9614644Z env:
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9614987Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9615254Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9615438Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9615603Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9615771Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9616105Z ##[endgroup]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9666764Z ##[end-action id=__dtolnay_rust-toolchain.__run;outcome=success;conclusion=success;duration_ms=10]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9668328Z ##[start-action display=Install rustup if needed;id=__dtolnay_rust-toolchain.__run_2]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9688149Z ##[group]Run if ! command -v rustup &>/dev/null; then
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9688366Z ^[[36;1mif ! command -v rustup &>/dev/null; then^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9709616Z ^[[36;1m  curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location --silent --show-error --fail https://sh.rustup.rs | sh -s -- --default-toolchain none -y^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9710035Z ^[[36;1m  echo "$CARGO_HOME/bin" >> $GITHUB_PATH^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9710205Z ^[[36;1mfi^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9736810Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9737005Z env:
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9737151Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9737340Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9737522Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9737693Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9737992Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9738159Z   CARGO_HOME: /home/runner/.cargo
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9738302Z ##[endgroup]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9786440Z ##[end-action id=__dtolnay_rust-toolchain.__run_2;outcome=success;conclusion=success;duration_ms=11]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9788149Z ##[start-action display=Install rustup if needed on windows;id=__dtolnay_rust-toolchain.__run_3]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9793978Z ##[end-action id=__dtolnay_rust-toolchain.__run_3;outcome=skipped;conclusion=skipped;duration_ms=0]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9804510Z ##[start-action display=rustup toolchain install 1.98.1;id=__dtolnay_rust-toolchain.__run_4]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9820266Z ##[group]Run set -f  # split targets and components on commas and whitespace, without glob expansion
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9820647Z ^[[36;1mset -f  # split targets and components on commas and whitespace, without glob expansion^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9820900Z ^[[36;1mflags=()^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9821063Z ^[[36;1mfor t in ${targets//,/ }; do flags+=(--target "$t"); done^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9821290Z ^[[36;1mfor c in ${components//,/ }; do flags+=(--component "$c"); done^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9821570Z ^[[36;1mif [[ $toolchain == nightly && -n $components ]]; then flags+=(--allow-downgrade); fi^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9821799Z ^[[36;1mlog=$(mktemp)^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9821935Z ^[[36;1mtrap 'rm -f "$log"' EXIT^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9822086Z ^[[36;1mfor attempt in 1 2 3 4 5; do^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9822398Z ^[[36;1m  if rustup toolchain install "$toolchain" "${flags[@]}" --profile minimal --no-self-update --force-non-host 2>&1 | tee "$log"; then^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9822703Z ^[[36;1m    break^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9822820Z ^[[36;1m  else^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9822936Z ^[[36;1m    status=$?^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9823058Z ^[[36;1m  fi^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9823236Z ^[[36;1m  if [[ $attempt == 5 ]] || ! grep -Fq 'checksum failed for ' "$log" \^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9823541Z ^[[36;1m      || ! grep -Fq 'this is likely due to an ongoing update of the official release server' "$log"; then^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9823799Z ^[[36;1m    exit "$status"^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9823929Z ^[[36;1m  fi^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9824128Z ^[[36;1m  echo "Retrying rustup toolchain install in 30 seconds (retry $attempt of 4)" >&2^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9824356Z ^[[36;1m  sleep 30^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9824473Z ^[[36;1mdone^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9848814Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9848999Z env:
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9849139Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9849320Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9849486Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9849653Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9849814Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9850115Z   CARGO_HOME: /home/runner/.cargo
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9850256Z   toolchain: 1.98.1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9850375Z   targets: 
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9850480Z   components: 
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9850603Z   RUSTUP_PERMIT_COPY_RENAME: 1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:37.9850739Z ##[endgroup]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:38.0316425Z info: syncing channel updates for 1.98.1-x86_64-unknown-linux-gnu
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:38.2103435Z info: latest update on 2026-09-03 for version 1.98.1 (48a229cea 2026-09-01)
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:38.2103932Z info: downloading 3 components
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6043267Z 
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6109762Z   1.98.1-x86_64-unknown-linux-gnu installed - rustc 1.98.1 (48a229cea 2026-09-01)
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6110132Z 
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6303921Z ##[end-action id=__dtolnay_rust-toolchain.__run_4;outcome=success;conclusion=success;duration_ms=6649]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6310601Z ##[start-action display=rustup default 1.98.1;id=__dtolnay_rust-toolchain.__run_5]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6326152Z ##[group]Run rustup default "$toolchain" --force-non-host
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6326413Z ^[[36;1mrustup default "$toolchain" --force-non-host^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6354686Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6355042Z env:
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6355192Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6355372Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6355537Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6355704Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6355871Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6356034Z   CARGO_HOME: /home/runner/.cargo
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6356173Z   toolchain: 1.98.1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6356298Z ##[endgroup]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6441102Z info: using existing install for 1.98.1-x86_64-unknown-linux-gnu
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6447498Z info: default toolchain set to 1.98.1-x86_64-unknown-linux-gnu
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6447695Z 
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6505734Z   1.98.1-x86_64-unknown-linux-gnu unchanged - rustc 1.98.1 (48a229cea 2026-09-01)
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6506028Z 
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6508479Z info: note that the toolchain 'stable-x86_64-unknown-linux-gnu' is currently in use (overridden by '/home/runner/work/quervant/quervant/rust-toolchain.toml')
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6522614Z ##[end-action id=__dtolnay_rust-toolchain.__run_5;outcome=success;conclusion=success;duration_ms=21]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6526200Z ##[start-action display=Create cachekey;id=__dtolnay_rust-toolchain.rustc-version]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6586576Z ##[group]Run DATE=$(rustc +"$toolchain" --version --verbose | sed -ne 's/^commit-date: \(20[0-9][0-9]\)-\([01][0-9]\)-\([0-3][0-9]\)$/\1\2\3/p')
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6587107Z ^[[36;1mDATE=$(rustc +"$toolchain" --version --verbose | sed -ne 's/^commit-date: \(20[0-9][0-9]\)-\([01][0-9]\)-\([0-3][0-9]\)$/\1\2\3/p')^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6587483Z ^[[36;1mHASH=$(rustc +"$toolchain" --version --verbose | sed -ne 's/^commit-hash: //p')^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6587788Z ^[[36;1mecho "cachekey=$(echo $DATE$HASH | head -c12)" >> $GITHUB_OUTPUT^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6616017Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6616232Z env:
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6616388Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6616568Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6616755Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6616924Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6617086Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6617250Z   CARGO_HOME: /home/runner/.cargo
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6617392Z   toolchain: 1.98.1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6617525Z ##[endgroup]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6921170Z ##[end-action id=__dtolnay_rust-toolchain.rustc-version;outcome=success;conclusion=success;duration_ms=39]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6923210Z ##[start-action display=Disable incremental compilation;id=__dtolnay_rust-toolchain.__run_6]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6939311Z ##[group]Run if [ -z "${CARGO_INCREMENTAL+set}" ]; then
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6939707Z ^[[36;1mif [ -z "${CARGO_INCREMENTAL+set}" ]; then^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6939907Z ^[[36;1m  echo CARGO_INCREMENTAL=0 >> $GITHUB_ENV^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6940073Z ^[[36;1mfi^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6967814Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6968011Z env:
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6968164Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6968345Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6968507Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6968673Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6968836Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6968998Z   CARGO_HOME: /home/runner/.cargo
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.6969142Z ##[endgroup]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7020469Z ##[end-action id=__dtolnay_rust-toolchain.__run_6;outcome=success;conclusion=success;duration_ms=9]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7022166Z ##[start-action display=Enable colors in Cargo output;id=__dtolnay_rust-toolchain.__run_7]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7036710Z ##[group]Run if [ -z "${CARGO_TERM_COLOR+set}" ]; then
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7037061Z ^[[36;1mif [ -z "${CARGO_TERM_COLOR+set}" ]; then^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7037249Z ^[[36;1m  echo CARGO_TERM_COLOR=always >> $GITHUB_ENV^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7037417Z ^[[36;1mfi^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7065037Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7065290Z env:
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7065441Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7065622Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7065785Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7065958Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7066131Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7066296Z   CARGO_HOME: /home/runner/.cargo
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7066438Z   CARGO_INCREMENTAL: 0
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7066571Z ##[endgroup]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7117174Z ##[end-action id=__dtolnay_rust-toolchain.__run_7;outcome=success;conclusion=success;duration_ms=9]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7120043Z ##[start-action display=Enable Cargo sparse registry;id=__dtolnay_rust-toolchain.__run_8]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7135150Z ##[group]Run # implemented in 1.66, stabilized in 1.68, made default in 1.70
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7135462Z ^[[36;1m# implemented in 1.66, stabilized in 1.68, made default in 1.70^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7135852Z ^[[36;1mif [ -z "${CARGO_REGISTRIES_CRATES_IO_PROTOCOL+set}" -o -f "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol ]; then^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7136266Z ^[[36;1m  if rustc +"$toolchain" --version --verbose | grep -q '^release: 1\.6[89]\.'; then^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7136592Z ^[[36;1m    touch "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol || true^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7136887Z ^[[36;1m    echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse >> $GITHUB_ENV^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7137173Z ^[[36;1m  elif rustc +"$toolchain" --version --verbose | grep -q '^release: 1\.6[67]\.'; then^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7137504Z ^[[36;1m    touch "/home/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol || true^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7137790Z ^[[36;1m    echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=git >> $GITHUB_ENV^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7137981Z ^[[36;1m  fi^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7138093Z ^[[36;1mfi^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7165225Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7165414Z env:
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7165562Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7165746Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7165908Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7166079Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7166243Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7166405Z   CARGO_HOME: /home/runner/.cargo
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7166548Z   CARGO_INCREMENTAL: 0
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7166831Z   CARGO_TERM_COLOR: always
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7166960Z   toolchain: 1.98.1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7167081Z ##[endgroup]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7423705Z ##[end-action id=__dtolnay_rust-toolchain.__run_8;outcome=success;conclusion=success;duration_ms=30]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7427429Z ##[start-action display=Work around spurious network errors in curl 8.0;id=__dtolnay_rust-toolchain.__run_9]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7442459Z ##[group]Run # https://rust-lang.zulipchat.com/#narrow/stream/246057-t-cargo/topic/timeout.20investigation
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7442902Z ^[[36;1m# https://rust-lang.zulipchat.com/#narrow/stream/246057-t-cargo/topic/timeout.20investigation^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7443253Z ^[[36;1mif rustc +"$toolchain" --version --verbose | grep -q '^release: 1\.7[01]\.'; then^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7443516Z ^[[36;1m  echo CARGO_HTTP_MULTIPLEXING=false >> $GITHUB_ENV^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7443690Z ^[[36;1mfi^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7472593Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7472802Z env:
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7472947Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7473434Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7473669Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7473905Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7474310Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7474541Z   CARGO_HOME: /home/runner/.cargo
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7474933Z   CARGO_INCREMENTAL: 0
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7475180Z   CARGO_TERM_COLOR: always
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7475373Z   toolchain: 1.98.1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7475587Z ##[endgroup]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7654488Z ##[end-action id=__dtolnay_rust-toolchain.__run_9;outcome=success;conclusion=success;duration_ms=22]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7659298Z ##[start-action display=rustc +1.98.1 --version --verbose;id=__dtolnay_rust-toolchain.__run_10]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7674131Z ##[group]Run rustc +"$toolchain" --version --verbose
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7674378Z ^[[36;1mrustc +"$toolchain" --version --verbose^[[0m
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7703218Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7703435Z env:
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7703594Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7703770Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7703927Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7704093Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7704254Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7704415Z   CARGO_HOME: /home/runner/.cargo
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7704559Z   CARGO_INCREMENTAL: 0
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7704687Z   CARGO_TERM_COLOR: always
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7705018Z   toolchain: 1.98.1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7705137Z ##[endgroup]
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7844676Z rustc 1.98.1 (48a229cea 2026-09-01)
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7845182Z binary: rustc
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7845425Z commit-hash: 48a229ceaefd4985c50990b14116b6d856af0985
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7845718Z commit-date: 2026-09-01
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7845980Z host: x86_64-unknown-linux-gnu
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7846203Z release: 1.98.1
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7846606Z LLVM version: 22.1.8
+rustfs	Run dtolnay/rust-toolchain@master	2026-11-25T05:56:44.7860135Z ##[end-action id=__dtolnay_rust-toolchain.__run_10;outcome=success;conclusion=success;duration_ms=20]
+rustfs	S3 adapter acceptance (real RustFS)	﻿2026-11-25T05:56:44.7902631Z ##[group]Run cargo test -p quervant-objectstore --features s3 --test pr13_s3_rustfs -- --ignored --test-threads=1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:44.7903112Z ^[[36;1mcargo test -p quervant-objectstore --features s3 --test pr13_s3_rustfs -- --ignored --test-threads=1^[[0m
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:44.7903498Z ^[[36;1mcargo test -p quervant-objectstore --features s3 --test pr13_proxy_rustfs -- --ignored --test-threads=1^[[0m
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:44.7933489Z shell: /usr/bin/bash -e {0}
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:44.7933649Z env:
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:44.7933801Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:44.7933988Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:44.7934156Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:44.7934328Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:44.7934494Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:44.7934674Z   CARGO_HOME: /home/runner/.cargo
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:44.7935113Z   CARGO_INCREMENTAL: 0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:44.7935249Z   CARGO_TERM_COLOR: always
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:44.7935421Z ##[endgroup]
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.0983523Z ^[[1m^[[92m    Updating^[[0m crates.io index
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.4879440Z ^[[1m^[[92m Downloading^[[0m crates ...
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5438223Z ^[[1m^[[92m  Downloaded^[[0m autocfg v1.5.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5603737Z ^[[1m^[[92m  Downloaded^[[0m rustc_version v0.4.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5615324Z ^[[1m^[[92m  Downloaded^[[0m base64-simd v0.8.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5676368Z ^[[1m^[[92m  Downloaded^[[0m aws-smithy-observability v0.1.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5689222Z ^[[1m^[[92m  Downloaded^[[0m rustls-pki-types v1.15.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5709036Z ^[[1m^[[92m  Downloaded^[[0m rand_chacha v0.9.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5719383Z ^[[1m^[[92m  Downloaded^[[0m block-buffer v0.10.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5727176Z ^[[1m^[[92m  Downloaded^[[0m block-buffer v0.12.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5737320Z ^[[1m^[[92m  Downloaded^[[0m cfg-if v1.0.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5746841Z ^[[1m^[[92m  Downloaded^[[0m cpufeatures v0.2.17
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5756401Z ^[[1m^[[92m  Downloaded^[[0m cpufeatures v0.3.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5785781Z ^[[1m^[[92m  Downloaded^[[0m atomic-waker v1.1.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5795824Z ^[[1m^[[92m  Downloaded^[[0m rustls-native-certs v0.8.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5806296Z ^[[1m^[[92m  Downloaded^[[0m crypto-common v0.2.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5814827Z ^[[1m^[[92m  Downloaded^[[0m idna_adapter v1.2.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5821542Z ^[[1m^[[92m  Downloaded^[[0m crypto-common v0.1.7
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5828808Z ^[[1m^[[92m  Downloaded^[[0m generic-array v0.14.7
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5838995Z ^[[1m^[[92m  Downloaded^[[0m http-body v0.4.6
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5852458Z ^[[1m^[[92m  Downloaded^[[0m equivalent v1.0.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5860006Z ^[[1m^[[92m  Downloaded^[[0m aws-credential-types v1.2.10
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5871431Z ^[[1m^[[92m  Downloaded^[[0m aws-smithy-async v1.2.6
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5886478Z ^[[1m^[[92m  Downloaded^[[0m aws-smithy-eventstream v0.60.13
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5904389Z ^[[1m^[[92m  Downloaded^[[0m aws-smithy-http v0.62.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5920062Z ^[[1m^[[92m  Downloaded^[[0m aws-smithy-xml v0.60.12
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5930166Z ^[[1m^[[92m  Downloaded^[[0m fnv v1.0.7
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5936931Z ^[[1m^[[92m  Downloaded^[[0m form_urlencoded v1.2.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5943228Z ^[[1m^[[92m  Downloaded^[[0m futures-sink v0.3.34
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5950978Z ^[[1m^[[92m  Downloaded^[[0m hex v0.4.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5964949Z ^[[1m^[[92m  Downloaded^[[0m pin-utils v0.1.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5973771Z ^[[1m^[[92m  Downloaded^[[0m itoa v1.0.18
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5985829Z ^[[1m^[[92m  Downloaded^[[0m lru v0.12.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.5995073Z ^[[1m^[[92m  Downloaded^[[0m percent-encoding v2.3.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6001604Z ^[[1m^[[92m  Downloaded^[[0m futures-task v0.3.34
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6010898Z ^[[1m^[[92m  Downloaded^[[0m md-5 v0.10.6
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6023711Z ^[[1m^[[92m  Downloaded^[[0m futures-core v0.3.34
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6042374Z ^[[1m^[[92m  Downloaded^[[0m num-conv v0.1.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6051656Z ^[[1m^[[92m  Downloaded^[[0m openssl-probe v0.2.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6062902Z ^[[1m^[[92m  Downloaded^[[0m outref v0.5.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6076864Z ^[[1m^[[92m  Downloaded^[[0m potential_utf v0.1.6
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6086768Z ^[[1m^[[92m  Downloaded^[[0m http-body v1.1.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6093673Z ^[[1m^[[92m  Downloaded^[[0m powerfmt v0.2.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6102240Z ^[[1m^[[92m  Downloaded^[[0m try-lock v0.2.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6110033Z ^[[1m^[[92m  Downloaded^[[0m yoke-derive v0.8.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6120289Z ^[[1m^[[92m  Downloaded^[[0m bytes-utils v0.1.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6141040Z ^[[1m^[[92m  Downloaded^[[0m aws-smithy-checksums v0.63.11
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6162222Z ^[[1m^[[92m  Downloaded^[[0m crc v3.4.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6179025Z ^[[1m^[[92m  Downloaded^[[0m digest v0.11.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6222304Z ^[[1m^[[92m  Downloaded^[[0m foldhash v0.1.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6235559Z ^[[1m^[[92m  Downloaded^[[0m aws-smithy-json v0.61.7
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6256476Z ^[[1m^[[92m  Downloaded^[[0m crc-catalog v2.5.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6266494Z ^[[1m^[[92m  Downloaded^[[0m digest v0.10.7
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6295421Z ^[[1m^[[92m  Downloaded^[[0m displaydoc v0.2.7
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6309480Z ^[[1m^[[92m  Downloaded^[[0m either v1.19.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6320026Z ^[[1m^[[92m  Downloaded^[[0m fastrand v2.5.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6329580Z ^[[1m^[[92m  Downloaded^[[0m num-integer v0.1.47
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6340927Z ^[[1m^[[92m  Downloaded^[[0m ppv-lite86 v0.2.21
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6349936Z ^[[1m^[[92m  Downloaded^[[0m http-body-util v0.1.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6363623Z ^[[1m^[[92m  Downloaded^[[0m rand_core v0.9.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6372866Z ^[[1m^[[92m  Downloaded^[[0m pin-project-lite v0.2.17
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6413638Z ^[[1m^[[92m  Downloaded^[[0m litemap v0.8.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6430236Z ^[[1m^[[92m  Downloaded^[[0m allocator-api2 v0.2.21
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6447966Z ^[[1m^[[92m  Downloaded^[[0m quote v1.0.47
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6466409Z ^[[1m^[[92m  Downloaded^[[0m want v0.3.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6472706Z ^[[1m^[[92m  Downloaded^[[0m zerofrom v0.1.8
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6479010Z ^[[1m^[[92m  Downloaded^[[0m deranged v0.5.9
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6488856Z ^[[1m^[[92m  Downloaded^[[0m futures-channel v0.3.34
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6501854Z ^[[1m^[[92m  Downloaded^[[0m ipnet v2.12.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6513143Z ^[[1m^[[92m  Downloaded^[[0m once_cell v1.21.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6530222Z ^[[1m^[[92m  Downloaded^[[0m tower-service v0.3.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6535583Z ^[[1m^[[92m  Downloaded^[[0m zerofrom-derive v0.1.8
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6542112Z ^[[1m^[[92m  Downloaded^[[0m hmac v0.12.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6555328Z ^[[1m^[[92m  Downloaded^[[0m icu_provider v2.1.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6572750Z ^[[1m^[[92m  Downloaded^[[0m sha1 v0.10.7
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6583426Z ^[[1m^[[92m  Downloaded^[[0m stable_deref_trait v1.2.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6589347Z ^[[1m^[[92m  Downloaded^[[0m utf8_iter v1.0.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6596126Z ^[[1m^[[92m  Downloaded^[[0m version_check v0.9.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6604565Z ^[[1m^[[92m  Downloaded^[[0m aws-smithy-runtime-api v1.9.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6632700Z ^[[1m^[[92m  Downloaded^[[0m aws-types v1.3.10
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6644798Z ^[[1m^[[92m  Downloaded^[[0m const-oid v0.10.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6661177Z ^[[1m^[[92m  Downloaded^[[0m crc32fast v1.5.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6675391Z ^[[1m^[[92m  Downloaded^[[0m hybrid-array v0.4.15
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6690346Z ^[[1m^[[92m  Downloaded^[[0m getrandom v0.3.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6714083Z ^[[1m^[[92m  Downloaded^[[0m httparse v1.10.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6731486Z ^[[1m^[[92m  Downloaded^[[0m subtle v2.6.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6739553Z ^[[1m^[[92m  Downloaded^[[0m tower-layer v0.3.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6745921Z ^[[1m^[[92m  Downloaded^[[0m icu_locale_core v2.1.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6793368Z ^[[1m^[[92m  Downloaded^[[0m icu_normalizer v2.0.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6817097Z ^[[1m^[[92m  Downloaded^[[0m num-traits v0.2.19
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6835207Z ^[[1m^[[92m  Downloaded^[[0m proc-macro2 v1.0.107
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6855855Z ^[[1m^[[92m  Downloaded^[[0m slab v0.4.12
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6864616Z ^[[1m^[[92m  Downloaded^[[0m time-core v0.1.7
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6872491Z ^[[1m^[[92m  Downloaded^[[0m tokio-macros v2.7.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6879819Z ^[[1m^[[92m  Downloaded^[[0m aws-runtime v1.5.16
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.6904620Z ^[[1m^[[92m  Downloaded^[[0m aws-sigv4 v1.3.6
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7253256Z ^[[1m^[[92m  Downloaded^[[0m aws-smithy-http-client v1.1.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7282328Z ^[[1m^[[92m  Downloaded^[[0m aws-smithy-types v1.3.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7313842Z ^[[1m^[[92m  Downloaded^[[0m base64 v0.23.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7341823Z ^[[1m^[[92m  Downloaded^[[0m bytes v1.12.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7367064Z ^[[1m^[[92m  Downloaded^[[0m icu_normalizer_data v2.0.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7382462Z ^[[1m^[[92m  Downloaded^[[0m icu_properties v2.0.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7397073Z ^[[1m^[[92m  Downloaded^[[0m rustversion v1.0.23
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7416149Z ^[[1m^[[92m  Downloaded^[[0m icu_collections v2.0.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7460681Z ^[[1m^[[92m  Downloaded^[[0m indexmap v2.14.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7491730Z ^[[1m^[[92m  Downloaded^[[0m memchr v2.8.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7531128Z ^[[1m^[[92m  Downloaded^[[0m sha2 v0.10.9
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7552827Z ^[[1m^[[92m  Downloaded^[[0m xmlparser v0.13.6
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7575340Z ^[[1m^[[92m  Downloaded^[[0m http v0.2.12
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7607632Z ^[[1m^[[92m  Downloaded^[[0m rand v0.9.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7643520Z ^[[1m^[[92m  Downloaded^[[0m time-macros v0.2.25
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7665001Z ^[[1m^[[92m  Downloaded^[[0m writeable v0.6.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7685092Z ^[[1m^[[92m  Downloaded^[[0m zeroize v1.9.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7699978Z ^[[1m^[[92m  Downloaded^[[0m zerovec-derive v0.11.6
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7716147Z ^[[1m^[[92m  Downloaded^[[0m aho-corasick v1.1.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7769603Z ^[[1m^[[92m  Downloaded^[[0m aws-smithy-runtime v1.9.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7824078Z ^[[1m^[[92m  Downloaded^[[0m http v1.5.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7850898Z ^[[1m^[[92m  Downloaded^[[0m hyper-util v0.1.21
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7896644Z ^[[1m^[[92m  Downloaded^[[0m idna v1.1.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7922218Z ^[[1m^[[92m  Downloaded^[[0m mio v1.2.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7965179Z ^[[1m^[[92m  Downloaded^[[0m smallvec v1.16.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7974951Z ^[[1m^[[92m  Downloaded^[[0m synstructure v0.14.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7982192Z ^[[1m^[[92m  Downloaded^[[0m tinystr v0.8.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.7996906Z ^[[1m^[[92m  Downloaded^[[0m tracing-attributes v0.1.31
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8015821Z ^[[1m^[[92m  Downloaded^[[0m crc-fast v1.6.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8070357Z ^[[1m^[[92m  Downloaded^[[0m hashbrown v0.15.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8105797Z ^[[1m^[[92m  Downloaded^[[0m hashbrown v0.17.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8144207Z ^[[1m^[[92m  Downloaded^[[0m semver v1.0.28
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8160698Z ^[[1m^[[92m  Downloaded^[[0m unicode-ident v1.0.26
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8180286Z ^[[1m^[[92m  Downloaded^[[0m yoke v0.8.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8193132Z ^[[1m^[[92m  Downloaded^[[0m futures-util v0.3.34
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8286539Z ^[[1m^[[92m  Downloaded^[[0m icu_properties_data v2.0.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8356120Z ^[[1m^[[92m  Downloaded^[[0m sha2 v0.11.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8382460Z ^[[1m^[[92m  Downloaded^[[0m tracing-core v0.1.36
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8401374Z ^[[1m^[[92m  Downloaded^[[0m hyper v1.12.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8450768Z ^[[1m^[[92m  Downloaded^[[0m ryu v1.0.23
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8474069Z ^[[1m^[[92m  Downloaded^[[0m serde_derive v1.0.229
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8495762Z ^[[1m^[[92m  Downloaded^[[0m socket2 v0.6.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8508785Z ^[[1m^[[92m  Downloaded^[[0m vsimd v0.8.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8523808Z ^[[1m^[[92m  Downloaded^[[0m h2 v0.4.20
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8569833Z ^[[1m^[[92m  Downloaded^[[0m serde_core v1.0.229
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8589261Z ^[[1m^[[92m  Downloaded^[[0m uuid v1.26.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8610927Z ^[[1m^[[92m  Downloaded^[[0m zerotrie v0.2.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8639291Z ^[[1m^[[92m  Downloaded^[[0m libc v0.2.190
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.8988529Z ^[[1m^[[92m  Downloaded^[[0m regex-lite v0.1.9
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.9006375Z ^[[1m^[[92m  Downloaded^[[0m url v2.5.8
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.9024399Z ^[[1m^[[92m  Downloaded^[[0m serde v1.0.229
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.9049464Z ^[[1m^[[92m  Downloaded^[[0m typenum v1.20.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.9074556Z ^[[1m^[[92m  Downloaded^[[0m tower v0.5.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.9145730Z ^[[1m^[[92m  Downloaded^[[0m tokio-util v0.7.20
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.9201961Z ^[[1m^[[92m  Downloaded^[[0m zerovec v0.11.8
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.9245714Z ^[[1m^[[92m  Downloaded^[[0m regex v1.13.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.9284372Z ^[[1m^[[92m  Downloaded^[[0m aws-sdk-s3 v1.96.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.9946081Z ^[[1m^[[92m  Downloaded^[[0m regex-syntax v0.8.11
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:45.9996686Z ^[[1m^[[92m  Downloaded^[[0m time v0.3.45
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:46.0087306Z ^[[1m^[[92m  Downloaded^[[0m syn v3.0.8
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:46.0162803Z ^[[1m^[[92m  Downloaded^[[0m syn v2.0.119
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:46.0238910Z ^[[1m^[[92m  Downloaded^[[0m zerocopy v0.8.63
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:46.0432918Z ^[[1m^[[92m  Downloaded^[[0m tracing v0.1.44
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:46.0572366Z ^[[1m^[[92m  Downloaded^[[0m regex-automata v0.4.18
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:46.0703366Z ^[[1m^[[92m  Downloaded^[[0m tokio v1.53.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:46.2036532Z ^[[1m^[[92m   Compiling^[[0m proc-macro2 v1.0.107
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:46.2037239Z ^[[1m^[[92m   Compiling^[[0m unicode-ident v1.0.26
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:46.2037592Z ^[[1m^[[92m   Compiling^[[0m quote v1.0.47
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:46.2037921Z ^[[1m^[[92m   Compiling^[[0m libc v0.2.190
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:46.4896898Z ^[[1m^[[92m   Compiling^[[0m bytes v1.12.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:46.6837820Z ^[[1m^[[92m   Compiling^[[0m pin-project-lite v0.2.17
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:46.7211528Z ^[[1m^[[92m   Compiling^[[0m futures-core v0.3.34
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:46.8036517Z ^[[1m^[[92m   Compiling^[[0m itoa v1.0.18
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:46.9176323Z ^[[1m^[[92m   Compiling^[[0m http v1.5.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:46.9649743Z ^[[1m^[[92m   Compiling^[[0m fnv v1.0.7
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:47.0014645Z ^[[1m^[[92m   Compiling^[[0m futures-sink v0.3.34
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:47.1743151Z ^[[1m^[[92m   Compiling^[[0m syn v3.0.8
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:47.1881369Z ^[[1m^[[92m   Compiling^[[0m autocfg v1.5.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:47.4736092Z ^[[1m^[[92m   Compiling^[[0m typenum v1.20.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:47.6047318Z ^[[1m^[[92m   Compiling^[[0m mio v1.2.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:47.7466328Z ^[[1m^[[92m   Compiling^[[0m socket2 v0.6.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:47.9857471Z ^[[1m^[[92m   Compiling^[[0m num-traits v0.2.19
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:48.0816831Z ^[[1m^[[92m   Compiling^[[0m http-body v1.1.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:48.1236244Z ^[[1m^[[92m   Compiling^[[0m cfg-if v1.0.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:48.1486488Z ^[[1m^[[92m   Compiling^[[0m syn v2.0.119
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:48.1535905Z ^[[1m^[[92m   Compiling^[[0m once_cell v1.21.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:48.2156246Z ^[[1m^[[92m   Compiling^[[0m powerfmt v0.2.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:48.2826577Z ^[[1m^[[92m   Compiling^[[0m tracing-core v0.1.36
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:48.3116934Z ^[[1m^[[92m   Compiling^[[0m deranged v0.5.9
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:49.1206586Z ^[[1m^[[92m   Compiling^[[0m http v0.2.12
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:49.2426450Z ^[[1m^[[92m   Compiling^[[0m version_check v0.9.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:49.3996066Z ^[[1m^[[92m   Compiling^[[0m either v1.19.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:49.5145880Z ^[[1m^[[92m   Compiling^[[0m vsimd v0.8.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:49.8797004Z ^[[1m^[[92m   Compiling^[[0m synstructure v0.14.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:49.9796329Z ^[[1m^[[92m   Compiling^[[0m time-core v0.1.7
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:50.0576393Z ^[[1m^[[92m   Compiling^[[0m outref v0.5.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:50.1116857Z ^[[1m^[[92m   Compiling^[[0m num-conv v0.1.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:50.1858373Z ^[[1m^[[92m   Compiling^[[0m time v0.3.45
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:50.2766385Z ^[[1m^[[92m   Compiling^[[0m base64-simd v0.8.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:50.6468843Z ^[[1m^[[92m   Compiling^[[0m http-body v0.4.6
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:50.6756055Z ^[[1m^[[92m   Compiling^[[0m tokio-macros v2.7.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:50.8047654Z ^[[1m^[[92m   Compiling^[[0m zerofrom-derive v0.1.8
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:51.0420812Z ^[[1m^[[92m   Compiling^[[0m tokio v1.53.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:51.3426793Z ^[[1m^[[92m   Compiling^[[0m tracing-attributes v0.1.31
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:51.5076191Z ^[[1m^[[92m   Compiling^[[0m zerofrom v0.1.8
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:51.5115589Z ^[[1m^[[92m   Compiling^[[0m yoke-derive v0.8.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:51.5546113Z ^[[1m^[[92m   Compiling^[[0m bytes-utils v0.1.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:51.6948612Z ^[[1m^[[92m   Compiling^[[0m generic-array v0.14.7
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:51.7696141Z ^[[1m^[[92m   Compiling^[[0m num-integer v0.1.47
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:52.0066331Z ^[[1m^[[92m   Compiling^[[0m http-body-util v0.1.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:52.0476497Z ^[[1m^[[92m   Compiling^[[0m tracing v0.1.44
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:52.1616755Z ^[[1m^[[92m   Compiling^[[0m ryu v1.0.23
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:52.1787272Z ^[[1m^[[92m   Compiling^[[0m stable_deref_trait v1.2.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:52.1860422Z ^[[1m^[[92m   Compiling^[[0m pin-utils v0.1.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:52.2136669Z ^[[1m^[[92m   Compiling^[[0m futures-task v0.3.34
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:52.2175785Z ^[[1m^[[92m   Compiling^[[0m yoke v0.8.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:52.2644518Z ^[[1m^[[92m   Compiling^[[0m futures-util v0.3.34
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:52.2896153Z ^[[1m^[[92m   Compiling^[[0m zeroize v1.9.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:52.3861219Z ^[[1m^[[92m   Compiling^[[0m zerovec-derive v0.11.6
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:52.6816207Z ^[[1m^[[92m   Compiling^[[0m displaydoc v0.2.7
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:53.0150637Z ^[[1m^[[92m   Compiling^[[0m zerovec v0.11.8
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:53.1006209Z ^[[1m^[[92m   Compiling^[[0m block-buffer v0.10.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:53.1466960Z ^[[1m^[[92m   Compiling^[[0m crypto-common v0.1.7
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:53.1630643Z ^[[1m^[[92m   Compiling^[[0m percent-encoding v2.3.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:53.1952754Z ^[[1m^[[92m   Compiling^[[0m subtle v2.6.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:53.2726212Z ^[[1m^[[92m   Compiling^[[0m digest v0.10.7
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:53.2819169Z ^[[1m^[[92m   Compiling^[[0m crc32fast v1.5.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:53.3906636Z ^[[1m^[[92m   Compiling^[[0m writeable v0.6.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:53.4206787Z ^[[1m^[[92m   Compiling^[[0m getrandom v0.3.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:53.5566396Z ^[[1m^[[92m   Compiling^[[0m zerocopy v0.8.63
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:53.6216531Z ^[[1m^[[92m   Compiling^[[0m equivalent v1.0.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:53.6589783Z ^[[1m^[[92m   Compiling^[[0m tinystr v0.8.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:53.7075534Z ^[[1m^[[92m   Compiling^[[0m smallvec v1.16.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:53.7346654Z ^[[1m^[[92m   Compiling^[[0m litemap v0.8.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:53.7930855Z ^[[1m^[[92m   Compiling^[[0m potential_utf v0.1.6
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:53.8638121Z ^[[1m^[[92m   Compiling^[[0m icu_locale_core v2.1.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:53.8640322Z ^[[1m^[[92m   Compiling^[[0m zerotrie v0.2.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:54.1906901Z ^[[1m^[[92m   Compiling^[[0m tokio-util v0.7.20
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:54.3791244Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-async v1.2.6
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:54.5146423Z ^[[1m^[[92m   Compiling^[[0m icu_normalizer_data v2.0.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:54.5996451Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-types v1.3.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:54.7506332Z ^[[1m^[[92m   Compiling^[[0m icu_properties_data v2.0.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:54.8566307Z ^[[1m^[[92m   Compiling^[[0m icu_provider v2.1.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:55.0606241Z ^[[1m^[[92m   Compiling^[[0m icu_collections v2.0.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:55.2426425Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-runtime-api v1.9.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:55.4177049Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-eventstream v0.60.13
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:55.7866667Z ^[[1m^[[92m   Compiling^[[0m cpufeatures v0.2.17
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:55.8146279Z ^[[1m^[[92m   Compiling^[[0m memchr v2.8.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:55.8316357Z ^[[1m^[[92m   Compiling^[[0m semver v1.0.28
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:56.0132029Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-http v0.62.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:56.3397077Z ^[[1m^[[92m   Compiling^[[0m aho-corasick v1.1.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:56.3647178Z ^[[1m^[[92m   Compiling^[[0m rustc_version v0.4.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:56.5216259Z ^[[1m^[[92m   Compiling^[[0m rand_core v0.9.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:56.6446971Z ^[[1m^[[92m   Compiling^[[0m regex-syntax v0.8.11
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:56.7171281Z ^[[1m^[[92m   Compiling^[[0m hashbrown v0.17.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:57.1516038Z ^[[1m^[[92m   Compiling^[[0m httparse v1.10.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:57.3136879Z ^[[1m^[[92m   Compiling^[[0m rustversion v1.0.23
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:57.5086341Z ^[[1m^[[92m   Compiling^[[0m indexmap v2.14.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:57.9960925Z ^[[1m^[[92m   Compiling^[[0m regex-automata v0.4.18
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:58.0201351Z ^[[1m^[[92m   Compiling^[[0m icu_properties v2.0.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:58.4200786Z ^[[1m^[[92m   Compiling^[[0m ppv-lite86 v0.2.21
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:58.6946262Z ^[[1m^[[92m   Compiling^[[0m rand_chacha v0.9.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:58.8546309Z ^[[1m^[[92m   Compiling^[[0m icu_normalizer v2.0.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:58.9346774Z ^[[1m^[[92m   Compiling^[[0m aws-types v1.3.10
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:58.9845932Z ^[[1m^[[92m   Compiling^[[0m aws-credential-types v1.2.10
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:59.0426715Z ^[[1m^[[92m   Compiling^[[0m sha2 v0.10.9
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:59.2556276Z ^[[1m^[[92m   Compiling^[[0m form_urlencoded v1.2.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:59.3039582Z ^[[1m^[[92m   Compiling^[[0m hybrid-array v0.4.15
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:59.3522309Z ^[[1m^[[92m   Compiling^[[0m hex v0.4.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:59.3927656Z ^[[1m^[[92m   Compiling^[[0m atomic-waker v1.1.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:59.4505905Z ^[[1m^[[92m   Compiling^[[0m slab v0.4.12
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:59.5157981Z ^[[1m^[[92m   Compiling^[[0m try-lock v0.2.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:59.5387620Z ^[[1m^[[92m   Compiling^[[0m crc-catalog v2.5.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:59.5632338Z ^[[1m^[[92m   Compiling^[[0m want v0.3.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:59.5908605Z ^[[1m^[[92m   Compiling^[[0m crc v3.4.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:59.6146541Z ^[[1m^[[92m   Compiling^[[0m h2 v0.4.20
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:59.6496587Z ^[[1m^[[92m   Compiling^[[0m regex v1.13.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:59.7076290Z ^[[1m^[[92m   Compiling^[[0m idna_adapter v1.2.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:56:59.7876702Z ^[[1m^[[92m   Compiling^[[0m rand v0.9.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:00.2007319Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-observability v0.1.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:00.3526145Z ^[[1m^[[92m   Compiling^[[0m hmac v0.12.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:00.4276236Z ^[[1m^[[92m   Compiling^[[0m futures-channel v0.3.34
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:00.4956685Z ^[[1m^[[92m   Compiling^[[0m fastrand v2.5.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:00.5406292Z ^[[1m^[[92m   Compiling^[[0m utf8_iter v1.0.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:00.6030514Z ^[[1m^[[92m   Compiling^[[0m foldhash v0.1.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:00.6276765Z ^[[1m^[[92m   Compiling^[[0m allocator-api2 v0.2.21
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:00.6906561Z ^[[1m^[[92m   Compiling^[[0m tower-service v0.3.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:00.7326650Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-runtime v1.9.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:00.8426252Z ^[[1m^[[92m   Compiling^[[0m hashbrown v0.15.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:00.9911708Z ^[[1m^[[92m   Compiling^[[0m crc-fast v1.6.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:01.2496343Z ^[[1m^[[92m   Compiling^[[0m idna v1.1.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:01.7968318Z ^[[1m^[[92m   Compiling^[[0m hyper v1.12.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:02.2974272Z ^[[1m^[[92m   Compiling^[[0m aws-sigv4 v1.3.6
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:02.7896330Z ^[[1m^[[92m   Compiling^[[0m crypto-common v0.2.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:02.8621676Z ^[[1m^[[92m   Compiling^[[0m block-buffer v0.12.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:02.9393115Z ^[[1m^[[92m   Compiling^[[0m sha1 v0.10.7
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:02.9452025Z ^[[1m^[[92m   Compiling^[[0m md-5 v0.10.6
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:03.0096203Z ^[[1m^[[92m   Compiling^[[0m rustls-pki-types v1.15.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:03.0477073Z ^[[1m^[[92m   Compiling^[[0m xmlparser v0.13.6
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:03.2416823Z ^[[1m^[[92m   Compiling^[[0m openssl-probe v0.2.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:03.3026134Z ^[[1m^[[92m   Compiling^[[0m ipnet v2.12.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:03.3366881Z ^[[1m^[[92m   Compiling^[[0m uuid v1.26.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:03.3436211Z ^[[1m^[[92m   Compiling^[[0m const-oid v0.10.2
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:03.4416759Z ^[[1m^[[92m   Compiling^[[0m tower-layer v0.3.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:03.4506623Z ^[[1m^[[92m   Compiling^[[0m base64 v0.23.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:03.5247025Z ^[[1m^[[92m   Compiling^[[0m tower v0.5.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:03.5632690Z ^[[1m^[[92m   Compiling^[[0m aws-runtime v1.5.16
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:03.5675600Z ^[[1m^[[92m   Compiling^[[0m digest v0.11.3
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:03.6393969Z ^[[1m^[[92m   Compiling^[[0m hyper-util v0.1.21
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:03.6571625Z ^[[1m^[[92m   Compiling^[[0m rustls-native-certs v0.8.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:03.7256278Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-xml v0.60.12
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:03.8926292Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-checksums v0.63.11
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:03.9241597Z ^[[1m^[[92m   Compiling^[[0m url v2.5.8
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:04.3146373Z ^[[1m^[[92m   Compiling^[[0m lru v0.12.5
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:04.3966407Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-json v0.61.7
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:04.5246204Z ^[[1m^[[92m   Compiling^[[0m regex-lite v0.1.9
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:04.6506101Z ^[[1m^[[92m   Compiling^[[0m cpufeatures v0.3.1
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:04.6836346Z ^[[1m^[[92m   Compiling^[[0m sha2 v0.11.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:04.7755264Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-http-client v1.1.4
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:04.8960590Z ^[[1m^[[92m   Compiling^[[0m aws-sdk-s3 v1.96.0
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:14.5594024Z ^[[1m^[[92m   Compiling^[[0m quervant-objectstore v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-objectstore)
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:19.5851403Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 34.74s
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:19.6202467Z ^[[1m^[[92m     Running^[[0m tests/pr13_s3_rustfs.rs (target/debug/build/quervant-objectstore/fde4bf30bb52849f/out/pr13_s3_rustfs-fde4bf30bb52849f)
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:19.6219939Z 
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:19.6220394Z running 8 tests
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:19.6449854Z test s01_concurrent_if_absent_single_winner ... ok
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:19.6634656Z test s02_concurrent_if_match_single_winner ... ok
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:19.6747582Z test s03_read_after_write_exact_bytes ... ok
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:19.6846932Z test s04_exact_ranged_read ... ok
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:19.6993552Z test s08_existing_identical_and_different ... ok
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:19.7017908Z test s09_rejects_oversize_before_network ... ok
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:19.7025045Z test s10_unqualified_endpoint_fails_closed ... ok
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:19.7148093Z test s11_delete_is_idempotent ... ok
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:19.7148326Z 
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:19.7148548Z test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:19.7148813Z 
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:19.8055691Z ^[[1m^[[92m   Compiling^[[0m quervant-objectstore v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-objectstore)
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:20.5028726Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.75s
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:20.5121155Z ^[[1m^[[92m     Running^[[0m tests/pr13_proxy_rustfs.rs (target/debug/build/quervant-objectstore/2013bde81786ae9c/out/pr13_proxy_rustfs-2013bde81786ae9c)
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:20.5136836Z 
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:20.5137013Z running 5 tests
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:20.6583945Z test h01_transparent_proxy_preserves_signed_cas_and_ranges ... ok
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:20.6698298Z test h02_truncated_ranged_response_is_a_typed_failure ... ok
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:20.6793848Z test h03_ranged_request_returning_200_is_rejected ... ok
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:20.6889394Z test h04_invalid_content_range_is_rejected ... ok
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:20.7005600Z test h06_transient_503_then_success ... ok
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:20.7006084Z 
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:20.7006240Z test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+rustfs	S3 adapter acceptance (real RustFS)	2026-11-25T05:57:20.7006449Z 
+rustfs	Core remote acceptance (real RustFS)	﻿2026-11-25T05:57:20.7088444Z ##[group]Run cargo test -p quervant-core --all-features --test pr13_remote -- --ignored --test-threads=1
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7088993Z ^[[36;1mcargo test -p quervant-core --all-features --test pr13_remote -- --ignored --test-threads=1^[[0m
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7089427Z ^[[36;1mcargo test -p quervant-core --all-features --test pr13_oracle -- --ignored --test-threads=1^[[0m
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7102009Z ^[[36;1mcargo test -p quervant-core --all-features --test pr13_oracle_geo -- --ignored --test-threads=1^[[0m
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7102604Z ^[[36;1mcargo test -p quervant-core --all-features --test pr15g_a_rustfs -- --ignored --test-threads=1^[[0m
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7103163Z ^[[36;1mcargo test -p quervant-core --all-features --test pr15g_b_rustfs -- --ignored --test-threads=1^[[0m
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7103713Z ^[[36;1mcargo test -p quervant-core --all-features --test pr15g_c_rustfs -- --ignored --test-threads=1^[[0m
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7104131Z ^[[36;1mcargo test -p quervant-core --all-features --test pr15g_d_rustfs -- --ignored --test-threads=1^[[0m
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7104534Z ^[[36;1mcargo test -p quervant-core --all-features --test perf06_b1_rustfs -- --ignored --test-threads=1^[[0m
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7132256Z shell: /usr/bin/bash -e {0}
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7132402Z env:
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7132549Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7132745Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7132904Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7133070Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7133229Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7133391Z   CARGO_HOME: /home/runner/.cargo
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7133531Z   CARGO_INCREMENTAL: 0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7133657Z   CARGO_TERM_COLOR: always
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7133797Z ##[endgroup]
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.7643456Z ^[[1m^[[92m Downloading^[[0m crates ...
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8127393Z ^[[1m^[[92m  Downloaded^[[0m anes v0.1.6
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8150151Z ^[[1m^[[92m  Downloaded^[[0m ciborium-io v0.2.2
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8216404Z ^[[1m^[[92m  Downloaded^[[0m anstyle v1.0.14
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8232334Z ^[[1m^[[92m  Downloaded^[[0m cast v0.3.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8242006Z ^[[1m^[[92m  Downloaded^[[0m ciborium v0.2.2
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8259323Z ^[[1m^[[92m  Downloaded^[[0m futures-executor v0.3.34
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8298650Z ^[[1m^[[92m  Downloaded^[[0m oorandom v11.1.5
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8373221Z ^[[1m^[[92m  Downloaded^[[0m futures-io v0.3.34
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8379362Z ^[[1m^[[92m  Downloaded^[[0m psl-types v2.0.11
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8409259Z ^[[1m^[[92m  Downloaded^[[0m ciborium-ll v0.2.2
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8418308Z ^[[1m^[[92m  Downloaded^[[0m clap_lex v1.1.1
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8425937Z ^[[1m^[[92m  Downloaded^[[0m futures-macro v0.3.34
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8445518Z ^[[1m^[[92m  Downloaded^[[0m criterion-plot v0.6.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8465947Z ^[[1m^[[92m  Downloaded^[[0m icu_casemap_data v2.0.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8513520Z ^[[1m^[[92m  Downloaded^[[0m same-file v1.0.6
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8523605Z ^[[1m^[[92m  Downloaded^[[0m tinytemplate v1.2.1
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8539873Z ^[[1m^[[92m  Downloaded^[[0m zmij v1.0.23
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8552644Z ^[[1m^[[92m  Downloaded^[[0m walkdir v2.5.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8570548Z ^[[1m^[[92m  Downloaded^[[0m unicode-script v0.5.8
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8585674Z ^[[1m^[[92m  Downloaded^[[0m lz4_flex v0.11.6
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8598518Z ^[[1m^[[92m  Downloaded^[[0m futures-timer v3.0.4
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8612215Z ^[[1m^[[92m  Downloaded^[[0m twox-hash v2.1.5
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8628053Z ^[[1m^[[92m  Downloaded^[[0m tinyvec v1.13.3
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8652658Z ^[[1m^[[92m  Downloaded^[[0m futures v0.3.34
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8689307Z ^[[1m^[[92m  Downloaded^[[0m half v2.7.1
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8705493Z ^[[1m^[[92m  Downloaded^[[0m clap v4.6.7
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8778258Z ^[[1m^[[92m  Downloaded^[[0m unicode-security v0.1.2
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8795919Z ^[[1m^[[92m  Downloaded^[[0m icu_casemap v2.0.1
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8813803Z ^[[1m^[[92m  Downloaded^[[0m publicsuffix v2.3.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8831998Z ^[[1m^[[92m  Downloaded^[[0m unicode-segmentation v1.13.3
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8851076Z ^[[1m^[[92m  Downloaded^[[0m unicode-normalization v0.1.25
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8875948Z ^[[1m^[[92m  Downloaded^[[0m criterion v0.7.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8926262Z ^[[1m^[[92m  Downloaded^[[0m itertools v0.13.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.8973952Z ^[[1m^[[92m  Downloaded^[[0m zerocopy-derive v0.8.63
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.9060684Z ^[[1m^[[92m  Downloaded^[[0m serde_json v1.0.154
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.9116086Z ^[[1m^[[92m  Downloaded^[[0m clap_builder v4.6.7
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.9161501Z ^[[1m^[[92m  Downloaded^[[0m robust v1.2.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.9206215Z ^[[1m^[[92m  Downloaded^[[0m fst v0.4.7
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.9380609Z ^[[1m^[[92m  Downloaded^[[0m rust-stemmers v1.2.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.9936747Z ^[[1m^[[92m   Compiling^[[0m syn v2.0.119
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.9937306Z ^[[1m^[[92m   Compiling^[[0m memchr v2.8.3
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.9973799Z ^[[1m^[[92m   Compiling^[[0m either v1.19.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:20.9995414Z ^[[1m^[[92m   Compiling^[[0m futures-channel v0.3.34
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:21.1093988Z ^[[1m^[[92m   Compiling^[[0m futures-macro v0.3.34
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:21.1188188Z ^[[1m^[[92m   Compiling^[[0m futures-io v0.3.34
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:21.1976305Z ^[[1m^[[92m   Compiling^[[0m futures-task v0.3.34
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:21.3186436Z ^[[1m^[[92m   Compiling^[[0m bytes-utils v0.1.4
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:21.4806397Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-types v1.3.4
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:21.5002387Z ^[[1m^[[92m   Compiling^[[0m zerocopy v0.8.63
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:21.5555869Z ^[[1m^[[92m   Compiling^[[0m futures-util v0.3.34
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:21.7326624Z ^[[1m^[[92m   Compiling^[[0m potential_utf v0.1.6
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:21.8096218Z ^[[1m^[[92m   Compiling^[[0m icu_collections v2.0.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:22.3056199Z ^[[1m^[[92m   Compiling^[[0m serde_core v1.0.229
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:22.4483864Z ^[[1m^[[92m   Compiling^[[0m icu_properties v2.0.2
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:22.5249086Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-eventstream v0.60.13
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:22.7966397Z ^[[1m^[[92m   Compiling^[[0m aho-corasick v1.1.5
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:23.3436277Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-async v1.2.6
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:23.4770722Z ^[[1m^[[92m   Compiling^[[0m regex-automata v0.4.18
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:23.4847130Z ^[[1m^[[92m   Compiling^[[0m icu_normalizer v2.0.1
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:24.1457085Z ^[[1m^[[92m   Compiling^[[0m tracing-attributes v0.1.31
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:24.3374637Z ^[[1m^[[92m   Compiling^[[0m zerocopy-derive v0.8.63
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:24.9232070Z ^[[1m^[[92m   Compiling^[[0m tracing v0.1.44
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:25.0646339Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-runtime-api v1.9.2
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:25.3912523Z ^[[1m^[[92m   Compiling^[[0m serde v1.0.229
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:25.5370096Z ^[[1m^[[92m   Compiling^[[0m regex v1.13.1
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:25.8518773Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-http v0.62.5
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:26.1726258Z ^[[1m^[[92m   Compiling^[[0m aws-credential-types v1.2.10
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:26.2847265Z ^[[1m^[[92m   Compiling^[[0m idna_adapter v1.2.1
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:26.3526194Z ^[[1m^[[92m   Compiling^[[0m serde_derive v1.0.229
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:26.4115920Z ^[[1m^[[92m   Compiling^[[0m idna v1.1.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:26.4386035Z ^[[1m^[[92m   Compiling^[[0m h2 v0.4.20
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:26.9326489Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-observability v0.1.4
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:27.0826055Z ^[[1m^[[92m   Compiling^[[0m zmij v1.0.23
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:27.2216242Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-runtime v1.9.4
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:28.4346150Z ^[[1m^[[92m   Compiling^[[0m ppv-lite86 v0.2.21
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:28.6482514Z ^[[1m^[[92m   Compiling^[[0m rand_chacha v0.9.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:28.6747723Z ^[[1m^[[92m   Compiling^[[0m hyper v1.12.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:28.8606781Z ^[[1m^[[92m   Compiling^[[0m rand v0.9.5
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:29.2455189Z ^[[1m^[[92m   Compiling^[[0m aws-sigv4 v1.3.6
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:29.2965592Z ^[[1m^[[92m   Compiling^[[0m crc-fast v1.6.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:29.7088242Z ^[[1m^[[92m   Compiling^[[0m aws-types v1.3.10
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:29.8046051Z ^[[1m^[[92m   Compiling^[[0m icu_casemap_data v2.0.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:29.8876103Z ^[[1m^[[92m   Compiling^[[0m serde_json v1.0.154
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:29.8966622Z ^[[1m^[[92m   Compiling^[[0m aws-runtime v1.5.16
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:29.9826396Z ^[[1m^[[92m   Compiling^[[0m hyper-util v0.1.21
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:30.0635977Z ^[[1m^[[92m   Compiling^[[0m half v2.7.1
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:30.1757990Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-checksums v0.63.11
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:30.4606264Z ^[[1m^[[92m   Compiling^[[0m url v2.5.8
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:30.5767516Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-json v0.61.7
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:30.8466905Z ^[[1m^[[92m   Compiling^[[0m tinyvec v1.13.3
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:31.0485721Z ^[[1m^[[92m   Compiling^[[0m anstyle v1.0.14
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:31.0526292Z ^[[1m^[[92m   Compiling^[[0m ciborium-io v0.2.2
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:31.0678528Z ^[[1m^[[92m   Compiling^[[0m fst v0.4.7
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:31.0864339Z ^[[1m^[[92m   Compiling^[[0m clap_lex v1.1.1
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:31.1576446Z ^[[1m^[[92m   Compiling^[[0m clap_builder v4.6.7
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:31.1906273Z ^[[1m^[[92m   Compiling^[[0m ciborium-ll v0.2.2
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:31.2049707Z ^[[1m^[[92m   Compiling^[[0m aws-sdk-s3 v1.96.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:31.2176108Z ^[[1m^[[92m   Compiling^[[0m unicode-normalization v0.1.25
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:31.2926204Z ^[[1m^[[92m   Compiling^[[0m aws-smithy-http-client v1.1.4
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:32.3586186Z ^[[1m^[[92m   Compiling^[[0m futures-executor v0.3.34
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:32.5025351Z ^[[1m^[[92m   Compiling^[[0m itertools v0.13.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:33.4616472Z ^[[1m^[[92m   Compiling^[[0m same-file v1.0.6
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:33.5255472Z ^[[1m^[[92m   Compiling^[[0m psl-types v2.0.11
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:33.5781947Z ^[[1m^[[92m   Compiling^[[0m unicode-script v0.5.8
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:33.7786213Z ^[[1m^[[92m   Compiling^[[0m twox-hash v2.1.5
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:33.7831626Z ^[[1m^[[92m   Compiling^[[0m cast v0.3.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:33.8327909Z ^[[1m^[[92m   Compiling^[[0m lz4_flex v0.11.6
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:33.8406045Z ^[[1m^[[92m   Compiling^[[0m unicode-security v0.1.2
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:33.8834260Z ^[[1m^[[92m   Compiling^[[0m criterion-plot v0.6.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:34.0768791Z ^[[1m^[[92m   Compiling^[[0m publicsuffix v2.3.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:34.1490771Z ^[[1m^[[92m   Compiling^[[0m walkdir v2.5.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:34.1960408Z ^[[1m^[[92m   Compiling^[[0m futures v0.3.34
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:34.2269545Z ^[[1m^[[92m   Compiling^[[0m clap v4.6.7
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:34.2606210Z ^[[1m^[[92m   Compiling^[[0m icu_casemap v2.0.1
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:34.2691894Z ^[[1m^[[92m   Compiling^[[0m tinytemplate v1.2.1
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:34.3479872Z ^[[1m^[[92m   Compiling^[[0m ciborium v0.2.2
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:34.6592299Z ^[[1m^[[92m   Compiling^[[0m rust-stemmers v1.2.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:34.7576118Z ^[[1m^[[92m   Compiling^[[0m futures-timer v3.0.4
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:34.9939881Z ^[[1m^[[92m   Compiling^[[0m anes v0.1.6
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:35.0266058Z ^[[1m^[[92m   Compiling^[[0m unicode-segmentation v1.13.3
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:35.1206153Z ^[[1m^[[92m   Compiling^[[0m oorandom v11.1.5
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:35.1810148Z ^[[1m^[[92m   Compiling^[[0m robust v1.2.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:35.3133930Z ^[[1m^[[92m   Compiling^[[0m criterion v0.7.0
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:41.9834505Z ^[[1m^[[92m   Compiling^[[0m quervant-objectstore v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-objectstore)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:42.1651870Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:50.3640719Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 29.62s
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:50.3752883Z ^[[1m^[[92m     Running^[[0m tests/pr13_remote.rs (target/debug/build/quervant-core/c1379f04bae72605/out/pr13_remote-c1379f04bae72605)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:50.3771704Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:50.3771980Z running 5 tests
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:50.4712144Z test real::a3_r01_split_postings_rustfs_cold_reopen ... ok
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:50.5445359Z test real::a5_r01_adaptive_postings_rustfs_cold_reopen ... ok
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:50.6214112Z test real::rustfs_ranged_segment_transfer_matches_whole ... ok
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:50.7333223Z test real::rustfs_stale_writer_cannot_overwrite_current ... ok
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:50.7805630Z test real::rustfs_write_cold_open_query_and_restart ... ok
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:50.7805871Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:50.7806017Z test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.40s
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:50.7806449Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:50.8771655Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:51.8605417Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 1.05s
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:51.8718328Z ^[[1m^[[92m     Running^[[0m tests/pr13_oracle.rs (target/debug/build/quervant-core/ee5a0d5debd2e367/out/pr13_oracle-ee5a0d5debd2e367)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:51.8736632Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:51.8736812Z running 1 test
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:51.9483560Z test real::o01_o02_o03_o09_o10_real_rustfs ... ok
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:51.9483803Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:51.9483949Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.07s
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:51.9484137Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:52.0386534Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:53.0325355Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 1.05s
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:53.0439892Z ^[[1m^[[92m     Running^[[0m tests/pr13_oracle_geo.rs (target/debug/build/quervant-core/fe7793faec1188b0/out/pr13_oracle_geo-fe7793faec1188b0)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:53.0458184Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:53.0458522Z running 1 test
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:53.0996793Z test real::o04_o05_o06_real_rustfs ... ok
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:53.0997020Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:53.0997174Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.05s
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:53.0997378Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:53.1905060Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:54.0897493Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.96s
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:54.1013497Z ^[[1m^[[92m     Running^[[0m tests/pr15g_a_rustfs.rs (target/debug/build/quervant-core/3a7a95fa128d7c78/out/pr15g_a_rustfs-3a7a95fa128d7c78)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:54.1031879Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:54.1032111Z running 1 test
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:54.1572994Z test ga_i07_real_rustfs_cold_bootstrap_typed_sort_and_warm_reread ... ok
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:54.1573373Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:54.1573533Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:54.1573725Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:54.2475859Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:55.0730245Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.89s
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:55.0848164Z ^[[1m^[[92m     Running^[[0m tests/pr15g_b_rustfs.rs (target/debug/build/quervant-core/ebba157f0198862b/out/pr15g_b_rustfs-ebba157f0198862b)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:55.0866858Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:55.0867088Z running 1 test
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:55.6384687Z test gb_r01_real_rustfs_cold_bootstrap_selected_access ... ok
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:55.6385181Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:55.7281735Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:55.7282353Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:55.7282710Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:56.5675532Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.90s
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:56.5791709Z ^[[1m^[[92m     Running^[[0m tests/pr15g_c_rustfs.rs (target/debug/build/quervant-core/7730f03c6cdc0c8a/out/pr15g_c_rustfs-7730f03c6cdc0c8a)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:56.5810425Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:56.5810569Z running 1 test
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:57.2308743Z test gc_r01_real_rustfs_cold_bootstrap_fused_query_and_warm_reuse ... ok
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:57.2309092Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:57.2309428Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:57.2309696Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:57.3201711Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:58.1306859Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.87s
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:58.1423857Z ^[[1m^[[92m     Running^[[0m tests/pr15g_d_rustfs.rs (target/debug/build/quervant-core/59ee7c883dfba721/out/pr15g_d_rustfs-59ee7c883dfba721)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:58.1442648Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:57:58.1442762Z running 1 test
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:58:00.5489263Z test gd_r01_real_rustfs_cold_bootstrap_miss_and_present ... ok
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:58:00.5489584Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:58:00.5489798Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.40s
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:58:00.5490088Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:58:00.6388715Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:58:01.7653150Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 1.19s
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:58:01.7769289Z ^[[1m^[[92m     Running^[[0m tests/perf06_b1_rustfs.rs (target/debug/build/quervant-core/ab1751408d2681fc/out/perf06_b1_rustfs-ab1751408d2681fc)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:58:01.7788309Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:58:01.7788434Z running 1 test
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:58:02.1043732Z test b1_r01_cold_shared_ordinals_and_pit ... ok
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:58:02.1044035Z 
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:58:02.1044255Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T05:58:02.1044480Z 
+rustfs	M1 atomic batch acceptance (real RustFS)	﻿2026-11-25T05:58:02.1140812Z ##[group]Run cargo test -p quervant-core --all-features --test m1_batches -- --ignored --test-threads=1
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:02.1141509Z ^[[36;1mcargo test -p quervant-core --all-features --test m1_batches -- --ignored --test-threads=1^[[0m
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:02.1168845Z shell: /usr/bin/bash -e {0}
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:02.1169006Z env:
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:02.1169163Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:02.1169340Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:02.1169501Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:02.1169682Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:02.1169845Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:02.1170005Z   CARGO_HOME: /home/runner/.cargo
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:02.1170144Z   CARGO_INCREMENTAL: 0
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:02.1170271Z   CARGO_TERM_COLOR: always
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:02.1170401Z ##[endgroup]
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:02.2075768Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:03.2556734Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 1.11s
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:03.2669016Z ^[[1m^[[92m     Running^[[0m tests/m1_batches.rs (target/debug/build/quervant-core/fb766d5f9aa3bc3d/out/m1_batches-fb766d5f9aa3bc3d)
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:03.2687675Z 
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:03.2687823Z running 1 test
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:03.5915802Z test real_rustfs::m1_v04_real_rustfs_batch_replay_and_generation_consistency ... ok
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:03.5916199Z 
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:03.5916457Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.32s
+rustfs	M1 atomic batch acceptance (real RustFS)	2026-11-25T05:58:03.5916736Z 
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	﻿2026-11-25T05:58:03.5990911Z ##[group]Run cargo test -p quervant-core --all-features --test pr15i_a_rustfs -- --ignored --test-threads=1
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:03.5991357Z ^[[36;1mcargo test -p quervant-core --all-features --test pr15i_a_rustfs -- --ignored --test-threads=1^[[0m
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:03.5991709Z ^[[36;1mcargo test -p quervant-core --all-features --test pr15i_b_rustfs -- --ignored --test-threads=1^[[0m
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:03.6019054Z shell: /usr/bin/bash -e {0}
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:03.6019193Z env:
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:03.6019339Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:03.6019515Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:03.6019676Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:03.6019844Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:03.6020003Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:03.6020297Z   CARGO_HOME: /home/runner/.cargo
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:03.6020438Z   CARGO_INCREMENTAL: 0
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:03.6020564Z   CARGO_TERM_COLOR: always
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:03.6020732Z ##[endgroup]
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:03.6886653Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:04.8127988Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 1.18s
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:04.8245275Z ^[[1m^[[92m     Running^[[0m tests/pr15i_a_rustfs.rs (target/debug/build/quervant-core/37627a1b9cb52f95/out/pr15i_a_rustfs-37627a1b9cb52f95)
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:04.8264260Z 
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:04.8264520Z running 4 tests
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:05.4910181Z test r01_v3_cold_bootstrap_after_workspace_delete ... ok
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:05.5443726Z test r02_v3_batch_replay_after_restart ... ok
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:05.6047610Z test r03_v3_compaction_and_pit ... ok
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:05.9526539Z test r04_v3_missing_sidecar_fails_closed ... ok
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:05.9527096Z 
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:05.9527637Z test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.13s
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:05.9528095Z 
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:06.0442168Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:07.2272057Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 1.24s
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:07.2382912Z ^[[1m^[[92m     Running^[[0m tests/pr15i_b_rustfs.rs (target/debug/build/quervant-core/aaa1e6c204d6fb96/out/pr15i_b_rustfs-aaa1e6c204d6fb96)
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:07.2400836Z 
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:07.2400934Z running 6 tests
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:07.9991511Z test r01_v2_cold_bootstrap_after_workspace_delete ... ok
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:08.0614176Z test r02_v2_pit_and_compaction_across_generations ... ok
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:08.4502533Z test r03_withheld_segment_fails_closed ... ok
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:09.0486329Z test r04_failure_before_current_keeps_previous_generation ... ok
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:09.1047494Z test r05_uncached_reader_validates_remote_v2_segment ... ok
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:09.2492847Z test r06_repeated_cold_bootstrap_has_no_stale_certificate ... ok
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:09.2493142Z 
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:09.2493337Z test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.01s
+rustfs	PR 15I-A compact mutation-state acceptance (real RustFS)	2026-11-25T05:58:09.2493525Z 
+rustfs	M2 lossless patch acceptance (real RustFS)	﻿2026-11-25T05:58:09.2565819Z ##[group]Run cargo test -p quervant-core --all-features --test m2_patches -- --ignored --test-threads=1
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:09.2566221Z ^[[36;1mcargo test -p quervant-core --all-features --test m2_patches -- --ignored --test-threads=1^[[0m
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:09.2592929Z shell: /usr/bin/bash -e {0}
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:09.2593062Z env:
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:09.2593206Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:09.2593383Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:09.2593541Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:09.2593701Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:09.2593862Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:09.2594036Z   CARGO_HOME: /home/runner/.cargo
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:09.2594172Z   CARGO_INCREMENTAL: 0
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:09.2594294Z   CARGO_TERM_COLOR: always
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:09.2594415Z ##[endgroup]
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:09.3497875Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:10.4780155Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 1.19s
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:10.4893980Z ^[[1m^[[92m     Running^[[0m tests/m2_patches.rs (target/debug/build/quervant-core/bca8b3be6456e806/out/m2_patches-bca8b3be6456e806)
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:10.4914057Z 
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:10.4914489Z running 1 test
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:12.6606623Z test real_rustfs::m2_v04_real_rustfs_patch_reopen_replay ... ok
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:12.6606872Z 
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:12.6607018Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 2.17s
+rustfs	M2 lossless patch acceptance (real RustFS)	2026-11-25T05:58:12.6607207Z 
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	﻿2026-11-25T05:58:12.6686961Z ##[group]Run for i in $(seq 1 3); do
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:12.6687292Z ^[[36;1mfor i in $(seq 1 3); do^[[0m
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:12.6687708Z ^[[36;1m  cargo test -p quervant-core --all-features --test m3_delete_by_query -- --ignored --test-threads=1^[[0m
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:12.6688130Z ^[[36;1mdone^[[0m
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:12.6733413Z shell: /usr/bin/bash -e {0}
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:12.6733648Z env:
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:12.6733858Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:12.6734135Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:12.6734380Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:12.6734642Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:12.6735056Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:12.6735305Z   CARGO_HOME: /home/runner/.cargo
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:12.6735519Z   CARGO_INCREMENTAL: 0
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:12.6735714Z   CARGO_TERM_COLOR: always
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:12.6735911Z ##[endgroup]
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:12.7787711Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.0131645Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 1.30s
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.0250044Z ^[[1m^[[92m     Running^[[0m tests/m3_delete_by_query.rs (target/debug/build/quervant-core/dc91002bd0eecfba/out/m3_delete_by_query-dc91002bd0eecfba)
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.0268721Z 
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.0268968Z running 1 test
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.1293114Z test real_rustfs::m3_t24_real_rustfs_delete_by_query_reopen_and_replay ... ok
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.1293519Z 
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.1293784Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.10s
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.1294125Z 
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.2260347Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.2333763Z ^[[1m^[[92m     Running^[[0m tests/m3_delete_by_query.rs (target/debug/build/quervant-core/dc91002bd0eecfba/out/m3_delete_by_query-dc91002bd0eecfba)
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.2352012Z 
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.2352169Z running 1 test
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.3394982Z test real_rustfs::m3_t24_real_rustfs_delete_by_query_reopen_and_replay ... ok
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.3395378Z 
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.3395546Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.10s
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.3395751Z 
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.4339944Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.4409928Z ^[[1m^[[92m     Running^[[0m tests/m3_delete_by_query.rs (target/debug/build/quervant-core/dc91002bd0eecfba/out/m3_delete_by_query-dc91002bd0eecfba)
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.4429071Z 
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.4429375Z running 1 test
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.5516051Z test real_rustfs::m3_t24_real_rustfs_delete_by_query_reopen_and_replay ... ok
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.5516448Z 
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.5516694Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.11s
+rustfs	M3 delete-by-query acceptance (real RustFS, three runs)	2026-11-25T05:58:14.5517013Z 
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	﻿2026-11-25T05:58:14.5598179Z ##[group]Run for i in $(seq 1 3); do
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:14.5598413Z ^[[36;1mfor i in $(seq 1 3); do^[[0m
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:14.5598774Z ^[[36;1m  cargo test -p quervant-core --all-features --test m5_mutation_qualification -- --ignored --test-threads=1^[[0m
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:14.5599055Z ^[[36;1mdone^[[0m
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:14.5626767Z shell: /usr/bin/bash -e {0}
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:14.5626921Z env:
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:14.5627077Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:14.5627261Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:14.5627421Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:14.5627588Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:14.5627755Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:14.5627921Z   CARGO_HOME: /home/runner/.cargo
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:14.5628063Z   CARGO_INCREMENTAL: 0
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:14.5628191Z   CARGO_TERM_COLOR: always
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:14.5628322Z ##[endgroup]
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:14.6601213Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:16.3030180Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 1.71s
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:16.3145988Z ^[[1m^[[92m     Running^[[0m tests/m5_mutation_qualification.rs (target/debug/build/quervant-core/18bc3fd5f15077f9/out/m5_mutation_qualification-18bc3fd5f15077f9)
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:16.3165745Z 
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:16.3165849Z running 1 test
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:18.6768650Z test m5_t43_real_rustfs_mutation_qualification ... ok
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:18.6768950Z 
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:18.6769097Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 2.36s
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:18.6769283Z 
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:18.7687637Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:18.7757752Z ^[[1m^[[92m     Running^[[0m tests/m5_mutation_qualification.rs (target/debug/build/quervant-core/18bc3fd5f15077f9/out/m5_mutation_qualification-18bc3fd5f15077f9)
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:18.7776133Z 
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:18.7776407Z running 1 test
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:20.4800823Z test m5_t43_real_rustfs_mutation_qualification ... ok
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:20.4801150Z 
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:20.4801402Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 1.70s
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:20.4801712Z 
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:20.5735279Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:20.5811836Z ^[[1m^[[92m     Running^[[0m tests/m5_mutation_qualification.rs (target/debug/build/quervant-core/18bc3fd5f15077f9/out/m5_mutation_qualification-18bc3fd5f15077f9)
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:20.5830730Z 
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:20.5830948Z running 1 test
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:22.3066460Z test m5_t43_real_rustfs_mutation_qualification ... ok
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:22.3066799Z 
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:22.3067031Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 1.72s
+rustfs	M5 mutation qualification (real RustFS, three independent runs)	2026-11-25T05:58:22.3067333Z 
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	﻿2026-11-25T05:58:22.3147756Z ##[group]Run cargo test -p quervant-core --all-features --test pr13_remote_proxy -- --ignored --test-threads=1
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:22.3148235Z ^[[36;1mcargo test -p quervant-core --all-features --test pr13_remote_proxy -- --ignored --test-threads=1^[[0m
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:22.3148598Z ^[[36;1mcargo test -p quervant-core --all-features --test pr13_crash_rustfs k0 -- --ignored --test-threads=1^[[0m
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:22.3175548Z shell: /usr/bin/bash -e {0}
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:22.3175709Z env:
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:22.3175867Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:22.3176045Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:22.3176220Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:22.3176380Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:22.3176555Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:22.3176726Z   CARGO_HOME: /home/runner/.cargo
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:22.3176880Z   CARGO_INCREMENTAL: 0
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:22.3177004Z   CARGO_TERM_COLOR: always
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:22.3177202Z ##[endgroup]
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:22.4092076Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:23.6960174Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 1.35s
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:23.7070855Z ^[[1m^[[92m     Running^[[0m tests/pr13_remote_proxy.rs (target/debug/build/quervant-core/e47192cfe0e81694/out/pr13_remote_proxy-e47192cfe0e81694)
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:23.7089036Z 
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:23.7089124Z running 7 tests
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:24.7548442Z test h06_segment_transient_503_is_retried ... ok
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:25.4475671Z test h07_persistent_503_exhausts_attempts ... ok
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:25.8363291Z test h08_nontransient_403_is_not_retried ... ok
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:26.5963615Z test h09_cancel_during_delayed_get_publishes_nothing ... ok
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:27.0349088Z test h10_cas_applied_response_dropped_reconciles ... ok
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:29.2950552Z test h11_cas_blocked_then_timeout_requires_recovery ... ok
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:30.6668465Z test h12_concurrent_stale_writers_one_winner ... ok
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:30.6668717Z 
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:30.6668871Z test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.96s
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:30.6669062Z 
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:30.7617554Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:32.1359082Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 1.44s
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:32.1505364Z ^[[1m^[[92m     Running^[[0m tests/pr13_crash_rustfs.rs (target/debug/build/quervant-core/659657d1bbfc9d9d/out/pr13_crash_rustfs-659657d1bbfc9d9d)
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:32.1505784Z 
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:32.1506030Z running 5 tests
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:32.1585876Z test k01_crash_after_segment_before_state ... 
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:32.1586267Z running 1 test
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:32.2491840Z test child_entrypoint ... ok
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:32.2550065Z test k02_crash_after_state_before_manifest ... 
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:32.2550412Z running 1 test
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:32.3438602Z test child_entrypoint ... ok
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:32.3493004Z test k03_crash_after_manifest_before_current ... 
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:32.3493324Z running 1 test
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:32.5859929Z test child_entrypoint ... ok
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:32.5913994Z test k04_crash_after_cas_before_ack ... 
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:32.5914253Z running 1 test
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:32.9638750Z test child_entrypoint ... ok
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:33.0629691Z test k05_crash_during_partial_ranged_download ... 
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:33.0630051Z running 1 test
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:33.1935130Z test child_entrypoint ... ok
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:33.1935430Z 
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:33.1935672Z test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 1.04s
+rustfs	Deterministic fault proxy and crash acceptance (real RustFS)	2026-11-25T05:58:33.1935961Z 
+rustfs	Critical race/interrupt repetitions (10x)	﻿2026-11-25T05:58:33.2017199Z ##[group]Run for i in $(seq 1 10); do
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.2017568Z ^[[36;1mfor i in $(seq 1 10); do^[[0m
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.2017998Z ^[[36;1m  cargo test -p quervant-core --all-features --test pr13_crash_rustfs k05 -- --ignored --test-threads=1^[[0m
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.2018460Z ^[[36;1mdone^[[0m
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.2055301Z shell: /usr/bin/bash -e {0}
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.2055550Z env:
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.2055781Z   QUERVANT_RUSTFS_ENDPOINT: http://127.0.0.1:9000
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.2056076Z   QUERVANT_RUSTFS_REGION: us-east-1
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.2056338Z   QUERVANT_RUSTFS_BUCKET: quervant-pr13-ci
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.2056622Z   QUERVANT_RUSTFS_ACCESS_KEY: quervanttest
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.2056909Z   QUERVANT_RUSTFS_SECRET_KEY: quervantsecret
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.2057182Z   CARGO_HOME: /home/runner/.cargo
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.2057413Z   CARGO_INCREMENTAL: 0
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.2057619Z   CARGO_TERM_COLOR: always
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.2057830Z ##[endgroup]
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.3058322Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.3136899Z ^[[1m^[[92m     Running^[[0m tests/pr13_crash_rustfs.rs (target/debug/build/quervant-core/659657d1bbfc9d9d/out/pr13_crash_rustfs-659657d1bbfc9d9d)
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.3155597Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.3155995Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.4098070Z test k05_crash_during_partial_ranged_download ... 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.4098416Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.5407995Z test child_entrypoint ... ok
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.5408230Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.5408430Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.23s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.5408685Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.6388334Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.6464137Z ^[[1m^[[92m     Running^[[0m tests/pr13_crash_rustfs.rs (target/debug/build/quervant-core/659657d1bbfc9d9d/out/pr13_crash_rustfs-659657d1bbfc9d9d)
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.6483061Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.6483430Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.7466216Z test k05_crash_during_partial_ranged_download ... 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.7466682Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.8786811Z test child_entrypoint ... ok
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.8787373Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.8787548Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.23s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.8787768Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.9742098Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.9815270Z ^[[1m^[[92m     Running^[[0m tests/pr13_crash_rustfs.rs (target/debug/build/quervant-core/659657d1bbfc9d9d/out/pr13_crash_rustfs-659657d1bbfc9d9d)
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.9834016Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:33.9834407Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.0837706Z test k05_crash_during_partial_ranged_download ... 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.0838124Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.2158606Z test child_entrypoint ... ok
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.2158920Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.2159154Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.23s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.2159506Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.3132118Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.3207409Z ^[[1m^[[92m     Running^[[0m tests/pr13_crash_rustfs.rs (target/debug/build/quervant-core/659657d1bbfc9d9d/out/pr13_crash_rustfs-659657d1bbfc9d9d)
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.3224566Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.3224655Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.4177489Z test k05_crash_during_partial_ranged_download ... 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.4177893Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.5476541Z test child_entrypoint ... ok
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.5476761Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.5477007Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.23s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.5477209Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.6436684Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.6513018Z ^[[1m^[[92m     Running^[[0m tests/pr13_crash_rustfs.rs (target/debug/build/quervant-core/659657d1bbfc9d9d/out/pr13_crash_rustfs-659657d1bbfc9d9d)
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.6529825Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.6529968Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.7456994Z test k05_crash_during_partial_ranged_download ... 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.7457376Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.8765247Z test child_entrypoint ... ok
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.8765488Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.8765688Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.22s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.8765905Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.9734425Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.9803151Z ^[[1m^[[92m     Running^[[0m tests/pr13_crash_rustfs.rs (target/debug/build/quervant-core/659657d1bbfc9d9d/out/pr13_crash_rustfs-659657d1bbfc9d9d)
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.9820476Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:34.9820585Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.0743999Z test k05_crash_during_partial_ranged_download ... 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.0744422Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.2064980Z test child_entrypoint ... ok
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.2065310Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.2065582Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.22s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.2065905Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.3035589Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.3113817Z ^[[1m^[[92m     Running^[[0m tests/pr13_crash_rustfs.rs (target/debug/build/quervant-core/659657d1bbfc9d9d/out/pr13_crash_rustfs-659657d1bbfc9d9d)
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.3131504Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.3131591Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.4174835Z test k05_crash_during_partial_ranged_download ... 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.4175254Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.5483765Z test child_entrypoint ... ok
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.5483989Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.5484166Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.24s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.5484363Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.6455615Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.6531480Z ^[[1m^[[92m     Running^[[0m tests/pr13_crash_rustfs.rs (target/debug/build/quervant-core/659657d1bbfc9d9d/out/pr13_crash_rustfs-659657d1bbfc9d9d)
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.6550026Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.6550225Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.7501112Z test k05_crash_during_partial_ranged_download ... 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.7501456Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.8809030Z test child_entrypoint ... ok
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.8809312Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.8809663Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.23s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.8810025Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.9783705Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.9857474Z ^[[1m^[[92m     Running^[[0m tests/pr13_crash_rustfs.rs (target/debug/build/quervant-core/659657d1bbfc9d9d/out/pr13_crash_rustfs-659657d1bbfc9d9d)
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.9874985Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:35.9875306Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.0846437Z test k05_crash_during_partial_ranged_download ... 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.0846892Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.2173768Z test child_entrypoint ... ok
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.2174079Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.2174405Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.23s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.2174620Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.3126137Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.3202600Z ^[[1m^[[92m     Running^[[0m tests/pr13_crash_rustfs.rs (target/debug/build/quervant-core/659657d1bbfc9d9d/out/pr13_crash_rustfs-659657d1bbfc9d9d)
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.3220023Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.3220244Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.4175238Z test k05_crash_during_partial_ranged_download ... 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.4175625Z running 1 test
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.5528209Z test child_entrypoint ... ok
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.5528474Z 
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.5528730Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.23s
+rustfs	Critical race/interrupt repetitions (10x)	2026-11-25T05:58:36.5529328Z 
+rustfs	Post Run actions/checkout@v4	﻿2026-11-25T05:58:36.5647609Z Post job cleanup.
+rustfs	Post Run actions/checkout@v4	2026-11-25T05:58:36.6262951Z [command]/usr/bin/git version
+rustfs	Post Run actions/checkout@v4	2026-11-25T05:58:36.6299423Z git version 2.56.1
+rustfs	Post Run actions/checkout@v4	2026-11-25T05:58:36.6323811Z Temporarily overriding HOME='/home/runner/work/_temp/ef3602b5-af2a-4436-949d-a7ca6b9a059c' before making global git config changes
+rustfs	Post Run actions/checkout@v4	2026-11-25T05:58:36.6324505Z Adding repository directory to the temporary git global config as a safe directory
+rustfs	Post Run actions/checkout@v4	2026-11-25T05:58:36.6327528Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/quervant/quervant
+rustfs	Post Run actions/checkout@v4	2026-11-25T05:58:36.6365214Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+rustfs	Post Run actions/checkout@v4	2026-11-25T05:58:36.6398429Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+rustfs	Post Run actions/checkout@v4	2026-11-25T05:58:36.6688685Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+rustfs	Post Run actions/checkout@v4	2026-11-25T05:58:36.6707195Z http.https://github.com/.extraheader
+rustfs	Post Run actions/checkout@v4	2026-11-25T05:58:36.6717571Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+rustfs	Post Run actions/checkout@v4	2026-11-25T05:58:36.6755347Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+rustfs	Post Run actions/checkout@v4	2026-11-25T05:58:36.7009389Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+rustfs	Post Run actions/checkout@v4	2026-11-25T05:58:36.7039776Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+rustfs	Stop containers	﻿2026-11-25T05:58:36.7377372Z Print service container logs: 4260c4c52b744235aa3535d7d2e44b3b_rustfsrustfssha2561803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c_ef07e1
+rustfs	Stop containers	2026-11-25T05:58:36.7380558Z ##[command]/usr/bin/docker logs --details 32f71715c5e13609336f9a9bf060727284f42b3fa5a5e05faf0631d7a3af6ba7
+rustfs	Stop containers	2026-11-25T05:58:36.7502919Z  Initializing data directories: /data
+rustfs	Stop containers	2026-11-25T05:58:36.7503378Z  Initializing log directory: /logs
+rustfs	Stop containers	2026-11-25T05:58:36.7503643Z  Starting: /usr/bin/rustfs  /data
+rustfs	Stop containers	2026-11-25T05:58:36.7528461Z Stop and remove container: 4260c4c52b744235aa3535d7d2e44b3b_rustfsrustfssha2561803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c_ef07e1
+rustfs	Stop containers	2026-11-25T05:58:36.7532872Z ##[command]/usr/bin/docker rm --force 32f71715c5e13609336f9a9bf060727284f42b3fa5a5e05faf0631d7a3af6ba7
+rustfs	Stop containers	2026-11-25T05:58:43.9946233Z 32f71715c5e13609336f9a9bf060727284f42b3fa5a5e05faf0631d7a3af6ba7
+rustfs	Stop containers	2026-11-25T05:58:43.9975470Z Remove container network: github_network_75e5522e77de43e389a050f26c0ebed4
+rustfs	Stop containers	2026-11-25T05:58:43.9978634Z ##[command]/usr/bin/docker network rm github_network_75e5522e77de43e389a050f26c0ebed4
+rustfs	Stop containers	2026-11-25T05:58:44.0477584Z github_network_75e5522e77de43e389a050f26c0ebed4
+rustfs	Complete job	﻿2026-11-25T05:58:44.0540151Z Cleaning up orphan processes
+rustfs	Complete job	2026-11-25T05:58:44.0800495Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

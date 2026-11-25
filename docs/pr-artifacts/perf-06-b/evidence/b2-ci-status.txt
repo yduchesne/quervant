@@ -1,0 +1,19 @@
+# PERF-06-B2 ordinary draft-PR CI (observed 2026-11-25T06:18Z)
+run_id: 45557000136
+event: pull_request
+workflow: Rust CI
+head_sha: e396177eb0a29a087228cf841bde18ddecf49947
+tested_executable_source: 237ae6dcc01d1c179f292b05cf843df76c9f6ad4
+non_docs_diff_tested_to_head (must be empty):
+  (end)
+status: completed
+conclusion: success
+jobs:
+  rust: pass (21m58s)
+  msrv: pass (10m2s)
+  rustfs: pass (2m21s)
+  benchmark-adapter-contract: pass (1m33s)
+  python-benchmark-framework: pass (4m49s)
+real RustFS execution evidence (job 139011350716):
+  cargo test -p quervant-core --all-features --test perf06_b1_rustfs -- --ignored --test-threads=1
+  test b1_r01_cold_shared_ordinals_and_pit ... ok
