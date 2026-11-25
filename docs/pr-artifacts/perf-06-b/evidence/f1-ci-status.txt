@@ -1,0 +1,18 @@
+# F1 ordinary draft-PR CI
+run_id: 45532158829
+head_sha: 5438751e1d65a419583a252f41dfff85a1a2f5ba
+executable_source: 1b9621e2d089f7658e5749a8ad73e3153d1b2045 (final head differs only in evidence/);
+non_docs_diff_1b9621e_to_5438751:
+  (empty means identical executable source)
+status: completed
+conclusion: success
+event: pull_request
+workflow: Rust CI
+  rust: success
+  python-benchmark-framework: success
+  msrv: success
+  benchmark-adapter-contract: success
+  rustfs: success
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T02:21:09.8288936Z ^[[36;1mcargo test -p quervant-core --all-features --test perf06_b1_rustfs -- --ignored --test-threads=1^[[0m
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T02:22:08.0569204Z ^[[1m^[[92m     Running^[[0m tests/perf06_b1_rustfs.rs (target/debug/build/quervant-core/ab1751408d2681fc/out/perf06_b1_rustfs-ab1751408d2681fc)
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T02:22:10.5838737Z test b1_r01_cold_shared_ordinals_and_pit ... ok

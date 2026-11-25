@@ -476,7 +476,7 @@ default **92.84 %** lines (66485/4763), all-features **92.99 %** lines (67992/51
 | G5 | **PASS** — full I01–I08; the g5 child actually executed (`PERF06_B1_I04_CHILD_PASS`); g3/g4 immutable bytes unchanged |
 | G6 | **PASS** — R01 passed against the pinned RustFS image with five-object byte verification and two independent g4 cold opens |
 | G7 | **PASS** — every §17.1 command exit 0; both coverage floors met |
-| G8 | **PASS/PENDING** — see §F1.7 (recorded after the ordinary push) |
+| G8 | **PASS** — ordinary draft-PR run `45532158829` on head `5438751`: `rust`, `msrv`, `rustfs`, `python-benchmark-framework`, `benchmark-adapter-contract` all `success`, and the `rustfs` log shows `b1_r01_cold_shared_ordinals_and_pit ... ok` |
 | G9 | **PASS** — additive correction, source/test/CI/protected diffs recorded |
 | G10 | **OPEN — maintainer only** |
 
@@ -488,9 +488,17 @@ R01 executed on the corrected source against
 `PERF06_B1_R01_PASS` (`evidence/f1-rustfs-r01.log`). Cleanup: id-scoped `stop` +
 `rm --volumes`; container absent and port released (`evidence/f1-rustfs-cleanup.log`).
 
-Ordinary draft-PR CI results for the F1 head are recorded in
-`evidence/f1-ci-status.txt` after the single push (see that file for run id, head SHA
-and per-job conclusions). No workflow dispatch, extra job or repeated push was used.
+Ordinary draft-PR CI (`evidence/f1-ci-status.txt`):
+
+| Item | Value |
+| --- | --- |
+| Run | `45532158829`, event `pull_request`, workflow `Rust CI` |
+| Head | `5438751e1d65a419583a252f41dfff85a1a2f5ba` |
+| Executable source | `1b9621e2d089f7658e5749a8ad73e3153d1b2045` (the final head differs only in `evidence/`; the non-docs diff is empty) |
+| `rust` / `msrv` / `rustfs` / `python-benchmark-framework` / `benchmark-adapter-contract` | all `success` |
+| RustFS log | `test b1_r01_cold_shared_ordinals_and_pit ... ok` |
+
+No workflow dispatch, extra job or repeated push was used.
 
 ## F1.8 Mandatory adversarial self-review
 
