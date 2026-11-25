@@ -1,0 +1,14 @@
+{
+  "acquisition_utc": "2026-11-25T22:29:13Z",
+  "arm_source_revisions": {
+    "A": "480a77e78c6897e05cb7ceb76b01434974b82ec6",
+    "B": "d660ca9f487d5c54363d790a240abb7da30af245"
+  },
+  "authorized_timed_invocations": 1,
+  "config": "benchmarks/studies/perf-06/warm/configurations/quervant-perf06b4-paired-warm-2026-11-25.json",
+  "configuration_id": "4608c79a-c5a3-4d24-bec9-4ad61cd7bd94",
+  "invocation": "PYTHONPATH=benchmarks python3 -m quervant_bench run --config benchmarks/studies/perf-06/warm/configurations/quervant-perf06b4-paired-warm-2026-11-25.json --scratch-root target/perf06-b4",
+  "stage_preparation_key": "5c3f64949c52d6bb2c68572342b3432a10efc265e1abba6c09e52d85232d96dc",
+  "stage_preparation_state": "BUILT",
+  "tool_head_sha": "c874748a9acffb65d59f34cda88d861d7542df3e"
+}
