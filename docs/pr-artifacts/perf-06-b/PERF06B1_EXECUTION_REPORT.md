@@ -24,7 +24,7 @@ Nothing in this report is a measured performance result.
 | G5 — local lifecycle | **PASS** | B1-I01…I08 incl. genuine historical fixture, held PITs, exact compaction cap, child-process reopen |
 | G6 — real boundary | **PASS** | B1-R01 executed against the pinned RustFS image; `PERF06_B1_R01_PASS` |
 | G7 — final local QA | **PASS** | §6 ledger; line coverage default **92.75 %**, all-features **92.35 %** |
-| G8 — mandatory CI | **PENDING** | draft PR CI observed after push; results recorded in §7 (see note) |
+| G8 — mandatory CI | **PASS** | run `45516023460` on head `8e11484`: `rust`, `msrv`, `rustfs`, `python-benchmark-framework`, `benchmark-adapter-contract` all `success`; the `rustfs` log shows `perf06_b1_rustfs` and `b1_r01_cold_shared_ordinals_and_pit ... ok` (`evidence/ci-status.txt`) |
 | G9 — docs/report/review package | **PASS** | §1–§8, additive docs, this report |
 | G10 — independent acceptance | **OPEN (maintainer)** | never self-issued |
 
@@ -250,10 +250,24 @@ cargo test -p quervant-core --all-features --test perf06_b1_rustfs -- --ignored 
 ```
 
 No other job, trigger, environment, health setting or workflow was changed, so a
-single PR update still starts one run of each required job (`rust`, `msrv`,
-`rustfs`, `python-benchmark-framework`, `benchmark-adapter-contract`). Terminal
-CI results are recorded in `evidence/ci-status.txt` when observed; a pending or
-unavailable CI service is reported as pending, never as passed.
+single PR update still starts one run of each required job.
+
+Observed terminal CI (`evidence/ci-status.txt`):
+
+| Item | Value |
+| --- | --- |
+| PR | #126 (draft), base `main`, head `dev/perf06-b1` |
+| Run | `45516023460`, event `pull_request`, workflow `Rust CI` |
+| Head | `8e11484af49e38243a97d765ef21662f7e3060a3` |
+| `rust` | completed / success |
+| `msrv` | completed / success |
+| `rustfs` | completed / success — log shows `test b1_r01_cold_shared_ordinals_and_pit ... ok` |
+| `python-benchmark-framework` | completed / success |
+| `benchmark-adapter-contract` | completed / success |
+
+The final head differs from the locally tested source `87745ed` only in
+`docs/pr-artifacts/` evidence files; `git diff` over `crates`/`.github`/manifests
+between the two commits is empty (`evidence/delivery.txt`).
 
 ## 8. Decisions, deviations and residual risks
 
