@@ -1,0 +1,25 @@
+# PERF-06-B3-F1 ordinary draft-PR CI (existing PR #128, unchanged .github/workflows/ci.yml)
+run_id: 45705309080
+event: pull_request
+workflow: Rust CI
+head_sha: b7753c5e6bccd443faf64b65c7b0f3d65fc2d083
+TESTED source: 52d7e69f40759f27be79434118c47171b06702b7
+source-equivalence: git diff --name-status 52d7e69..b7753c5 -- crates/ benchmarks/ .github/ Cargo.toml Cargo.lock is empty
+status: completed
+conclusion: success
+jobs:
+  benchmark-adapter-contract	pass	1m26s	https://github.com/yduchesne/quervant/actions/runs/45705309080/job/139525643614
+  msrv	pass	10m35s	https://github.com/yduchesne/quervant/actions/runs/45705309080/job/139525643395
+  python-benchmark-framework	pass	4m0s	https://github.com/yduchesne/quervant/actions/runs/45705309080/job/139525643236
+  rust	pass	16m45s	https://github.com/yduchesne/quervant/actions/runs/45705309080/job/139525643222
+  rustfs	pass	2m36s	https://github.com/yduchesne/quervant/actions/runs/45705309080/job/139525642745
+
+rustfs job 139525642745 — the real pinned test actually executed (G6):
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T21:34:32.2971793Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T21:34:33.4651036Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 1.23s
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T21:34:33.4771963Z ^[[1m^[[92m     Running^[[0m tests/perf06_b1_rustfs.rs (target/debug/build/quervant-core/ab1751408d2681fc/out/perf06_b1_rustfs-ab1751408d2681fc)
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T21:34:33.4791805Z
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T21:34:33.4792144Z running 1 test
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T21:34:35.8440127Z test b1_r01_cold_shared_ordinals_and_pit ... ok
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T21:34:35.8440572Z
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T21:34:35.8440736Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.36s

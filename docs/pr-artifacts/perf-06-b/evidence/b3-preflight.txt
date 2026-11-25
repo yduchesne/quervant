@@ -1,0 +1,37 @@
+# PERF-06-B3 G0 source admission preflight
+date: 2026-11-25T19:35:35Z
+
+## git status --porcelain=v1 (before any B3 edit)
+?? docs/pr-artifacts/perf-06-b/evidence/f2-ci-status.txt   # untracked pre-existing B1-F2 evidence (D05: left untouched)
+
+## identities
+origin/main                  = ce7dea12c0f8f84fdc3a80306083e38c8df30ce2
+origin/dev/perf06-b2        = 8ee4b83d2320014c4f57699b6d6b031e6a1afedb
+B2 reviewed executable base = 7218d5e57c0ce1734a94ed0db93f94a3a7ecf477
+merge-base --is-ancestor 7218d5e origin/main -> rc=0
+
+## PR #127 (authenticated gh read)
+{"baseRefName":"main","headRefOid":"8ee4b83d2320014c4f57699b6d6b031e6a1afedb","mergeCommit":{"oid":"ce7dea12c0f8f84fdc3a80306083e38c8df30ce2"},"mergedAt":"2026-11-25T18:17:43Z","number":127,"state":"MERGED","title":"PERF-06-B2 — snapshot-wide ordinal ranking for strict keyword sort"}
+
+## protected B2 executable blobs: 7218d5e..origin/main
+(empty output above == byte-identical reviewed B2 executable/test source)
+
+## full 7218d5e..origin/main diff (post-B2 additions on main)
+M	docs/pr-artifacts/perf-06-b/PERF06B2_EXECUTION_REPORT.md
+A	docs/pr-artifacts/perf-06-b/PERF06B2_F1_DETAILED_FIXUP_PLAN.md
+A	docs/pr-artifacts/perf-06-b/evidence/b2-f1-ci-rustfs-extract.txt
+A	docs/pr-artifacts/perf-06-b/evidence/b2-f1-ci-status.txt
+A	docs/pr-artifacts/perf-06-b/evidence/b2-f1-coverage-all-features.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-f1-coverage-default.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-f1-focused-tests.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-f1-preflight.txt
+A	docs/pr-artifacts/perf-06-b/evidence/b2-f1-qa-clippy.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-f1-qa-doc-bench-adapter.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-f1-qa-scripts-msrv.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-f1-qa-test-msrv.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-f1-qa-tests.log
+A	docs/pr-artifacts/perf-06-b/evidence/b2-f1-red-u01.log
+
+## branch
+dev/perf06-b3 HEAD = ce7dea12c0f8f84fdc3a80306083e38c8df30ce2
+(no commits ahead of main: the B3 branch starts exactly at the accepted post-B2 main)

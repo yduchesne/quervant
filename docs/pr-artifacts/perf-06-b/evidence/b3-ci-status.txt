@@ -1,0 +1,23 @@
+# PERF-06-B3 ordinary draft-PR CI
+run_id: 45687076012
+event: pull_request
+workflow: Rust CI (unchanged .github/workflows/ci.yml)
+head_sha: aa5c4497bb2a1fcc99a6ab9d9731db86ef7a4479
+status: completed
+conclusion: success
+jobs:
+  benchmark-adapter-contract	pass	1m14s	https://github.com/yduchesne/quervant/actions/runs/45687076012/job/139462389850
+  msrv	pass	7m38s	https://github.com/yduchesne/quervant/actions/runs/45687076012/job/139462389952
+  python-benchmark-framework	pass	2m47s	https://github.com/yduchesne/quervant/actions/runs/45687076012/job/139462389923
+  rust	pass	22m18s	https://github.com/yduchesne/quervant/actions/runs/45687076012/job/139462389252
+  rustfs	pass	2m32s	https://github.com/yduchesne/quervant/actions/runs/45687076012/job/139462389977
+
+rustfs job (job 139462389977) — real pinned test actually executed (G6):
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T19:39:33.6756394Z ^[[1m^[[92m   Compiling^[[0m quervant-core v0.1.0 (/home/runner/work/quervant/quervant/crates/quervant-core)
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T19:39:34.8300318Z ^[[1m^[[92m    Finished^[[0m `test` profile [unoptimized + debuginfo] target(s) in 1.22s
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T19:39:34.8414959Z ^[[1m^[[92m     Running^[[0m tests/perf06_b1_rustfs.rs (target/debug/build/quervant-core/ab1751408d2681fc/out/perf06_b1_rustfs-ab1751408d2681fc)
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T19:39:34.8435230Z
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T19:39:34.8435677Z running 1 test
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T19:39:37.2712937Z test b1_r01_cold_shared_ordinals_and_pit ... ok
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T19:39:37.2713260Z
+  rustfs	Core remote acceptance (real RustFS)	2026-11-25T19:39:37.2713428Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.43s

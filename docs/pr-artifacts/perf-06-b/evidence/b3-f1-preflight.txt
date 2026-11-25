@@ -1,0 +1,41 @@
+# PERF-06-B3-F1 preflight (G0)
+date: 2026-11-25T21:31:15Z
+
+## branch / head at F1 start
+git branch --show-current            = dev/perf06-b3
+git rev-parse HEAD                   = 76609e8348e4502b4e835d13d7a7facea13bffc1
+git rev-parse origin/main            = ce7dea12c0f8f84fdc3a80306083e38c8df30ce2
+
+## PR #128 (authenticated gh read)
+{"baseRefName":"main","headRefName":"dev/perf06-b3","headRefOid":"76609e8348e4502b4e835d13d7a7facea13bffc1","isDraft":true,"mergedAt":null,"number":128,"state":"OPEN","url":"https://github.com/yduchesne/quervant/pull/128"}
+
+merge-base --is-ancestor ce7dea1 origin/main -> rc=0
+
+## aa5c449..76609e8 restricted to executable/test/config (must be empty)
+(empty above == docs/evidence-only delta)
+
+## foreign untracked file (R04: recorded, untouched, not committed)
+?? docs/pr-artifacts/perf-06-b/evidence/f2-ci-status.txt
+
+## required source anchors present at START
+  search/unified.rs  CompactHashAudit                       occurrences=6
+  search/unified.rs  KeyBinder                              occurrences=7
+  search/unified.rs  consider_compact_ordinal_candidate     occurrences=2
+  search/unified.rs  check_compact                          occurrences=10
+  search/unified.rs  supports_compact_key                   occurrences=5
+  search/unified.rs  production_mode_for_test               occurrences=7
+  segment/reader.rs  KeyFingerprintCache                    occurrences=6
+  segment/reader.rs  KeyFingerprintBuildGuard               occurrences=4
+  segment/reader.rs  AfterHashAllocation                    occurrences=8
+  segment/reader.rs  bind_key_identity                      occurrences=28
+  segment/reader.rs  runtime_doc_key_hash                   occurrences=3
+  index/snapshot.rs  pub(crate) fn for_test                 occurrences=1
+
+## known pre-fixup acceptance gaps confirmed in the starting source
+  - tests/perf06_b3_keys.rs b3_i08 used TopK=18 with an ExactSet threshold of 32 (resolves Linear)
+  - search/unified.rs b3_u09 contained `assert!(error.is_ok() || error.is_err())`
+  - reader.rs b3_u21 sequenced on the process-global b3_global_wait_starts()
+  - no UnifiedSearcher-level matched-query corruption test existed (reader-level only)
+
+## git diff --check at START (before any F1 edit)
+rc=0
