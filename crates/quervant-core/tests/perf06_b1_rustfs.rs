@@ -229,6 +229,16 @@ fn sorted_keys(
         &CancellationFlag::new(),
     )
     .expect("search");
+    // Every returned hit must carry the full six-field projected values from the
+    // literal corpus oracle, not merely a field count.
+    for hit in &response.hits {
+        assert_eq!(
+            hit.fields,
+            corpus::expected_projected_fields(hit.key.as_str()),
+            "full projection mismatch for {}",
+            hit.key.as_str()
+        );
+    }
     (
         response
             .hits

@@ -304,6 +304,12 @@ fn guard_mismatch() -> IndexError {
     }
 }
 
+fn publication_state_changed() -> IndexError {
+    IndexError::CorruptCommittedState {
+        detail: "keyword ordinal cache publication state changed".to_owned(),
+    }
+}
+
 fn schema_mismatch() -> IndexError {
     IndexError::SchemaMismatch {
         detail: "keyword ordinal source schemas differ".to_owned(),
@@ -411,21 +417,22 @@ impl KeywordOrdinalCache {
                     run_after_claim_hook();
                     match initialize_registry(budget, limits, guards, cancellation) {
                         Ok(Ok(registry)) => {
-                            // Cancellation observed before publication reverts the
-                            // claim through RAII instead of publishing.
+                            // F2-I01: the LAST cancellation poll happens outside the
+                            // cache mutex immediately before publication.
+                            f2_probe(F2Probe::BeforeRegistryReadyPublish)?;
                             poll(cancellation)?;
-                            let mut state = self.lock()?;
-                            *state = RegistryState::Ready(registry);
-                            drop(state);
+                            self.publish_registry(RegistryState::Ready(registry))?;
                             init_guard.disarm();
                             self.ready.notify_all();
                             // Continue to this caller's field lookup.
                             continue;
                         }
                         Ok(Err(reason)) => {
-                            let mut state = self.lock()?;
-                            *state = RegistryState::NotAvailable(reason);
-                            drop(state);
+                            // F2-I02: same pre-publication poll for the sticky
+                            // optional registry outcome.
+                            f2_probe(F2Probe::BeforeRegistryUnavailablePublish)?;
+                            poll(cancellation)?;
+                            self.publish_registry(RegistryState::NotAvailable(reason))?;
                             init_guard.disarm();
                             self.ready.notify_all();
                             poll(cancellation)?;
@@ -504,6 +511,7 @@ impl KeywordOrdinalCache {
         }
         #[cfg(test)]
         WAIT_STARTS.with(|cell| cell.set(cell.get() + 1));
+        observe_wait_entered();
         let (state, _timeout) = self
             .ready
             .wait_timeout(state, WAIT_INTERVAL)
@@ -534,22 +542,20 @@ impl KeywordOrdinalCache {
             cancellation,
         ) {
             Ok(Ok(owner)) => {
-                let mut state = self.lock()?;
-                if let RegistryState::Ready(registry) = &mut *state {
-                    registry.entries[index].state = EntryState::Ready(Arc::clone(&owner));
-                }
-                drop(state);
+                // F2-I03: LAST poll outside the mutex before publishing the map.
+                f2_probe(F2Probe::BeforeFieldReadyPublish)?;
+                poll(cancellation)?;
+                self.publish_field(index, EntryState::Ready(Arc::clone(&owner)))?;
                 build_guard.disarm();
                 self.ready.notify_all();
                 poll(cancellation)?;
                 Ok(KeywordOrdinalPreparation::Ready(owner))
             }
             Ok(Err(reason)) => {
-                let mut state = self.lock()?;
-                if let RegistryState::Ready(registry) = &mut *state {
-                    registry.entries[index].state = EntryState::NotAvailable(reason);
-                }
-                drop(state);
+                // F2-I04: same pre-publication poll for the sticky field outcome.
+                f2_probe(F2Probe::BeforeFieldUnavailablePublish)?;
+                poll(cancellation)?;
+                self.publish_field(index, EntryState::NotAvailable(reason))?;
                 build_guard.disarm();
                 self.ready.notify_all();
                 poll(cancellation)?;
@@ -561,6 +567,38 @@ impl KeywordOrdinalCache {
                 Err(error)
             }
         }
+    }
+
+    /// Publish a completed registry candidate under the cache lock.
+    ///
+    /// The claimed state must still be `Initializing`; anything else is a typed
+    /// internal-state error and leaves the caller's RAII guard armed so the claim
+    /// is cleaned up instead of silently overwriting another state.
+    fn publish_registry(&self, next: RegistryState) -> IndexResult<()> {
+        let mut state = self.lock()?;
+        if !matches!(&*state, RegistryState::Initializing) {
+            return Err(publication_state_changed());
+        }
+        *state = next;
+        drop(state);
+        Ok(())
+    }
+
+    /// Publish a completed field candidate for the entry this caller claimed.
+    fn publish_field(&self, index: usize, next: EntryState) -> IndexResult<()> {
+        let mut state = self.lock()?;
+        let RegistryState::Ready(registry) = &mut *state else {
+            return Err(publication_state_changed());
+        };
+        let Some(entry) = registry.entries.get_mut(index) else {
+            return Err(publication_state_changed());
+        };
+        if !matches!(entry.state, EntryState::Building) {
+            return Err(publication_state_changed());
+        }
+        entry.state = next;
+        drop(state);
+        Ok(())
     }
 
     /// Poison the cache lock deterministically (test-only).
@@ -588,6 +626,95 @@ fn poll(cancellation: &dyn Cancellation) -> IndexResult<()> {
         Ok(())
     }
 }
+
+/// Frozen zero-data discriminator for the scoped F2 test probes.
+///
+/// This is a private test seam: the production build only ever calls the no-op
+/// stub below, so no fault behaviour, atomic or callback exists there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum F2Probe {
+    RegistryAfterEntries,
+    FieldAfterFirstPackedBuffer,
+    BeforeRegistryReadyPublish,
+    BeforeRegistryUnavailablePublish,
+    BeforeFieldReadyPublish,
+    BeforeFieldUnavailablePublish,
+    RegistryEligibilityIndex256,
+    RegistryFillIndex256,
+}
+
+/// One registered F2 probe callback and the point it belongs to.
+#[cfg(test)]
+pub(crate) type F2ProbeCallback = Box<dyn FnOnce() -> IndexResult<()>>;
+
+#[cfg(test)]
+thread_local! {
+    static F2_PROBE: std::cell::RefCell<Option<(F2Probe, F2ProbeCallback)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install a one-shot probe callback for `point`.
+#[cfg(test)]
+pub(crate) fn set_f2_probe(point: F2Probe, callback: impl FnOnce() -> IndexResult<()> + 'static) {
+    F2_PROBE.with(|cell| *cell.borrow_mut() = Some((point, Box::new(callback))));
+}
+
+/// Clear any pending probe callback.
+#[cfg(test)]
+pub(crate) fn clear_f2_probe() {
+    F2_PROBE.with(|cell| *cell.borrow_mut() = None);
+}
+
+/// Run the registered one-shot probe when its point matches.
+///
+/// The `RefCell` borrow is released before the callback runs, so a callback may
+/// panic (caught by the test) or perform arbitrary work. A different point does
+/// not consume a pending callback.
+#[cfg(test)]
+fn f2_probe(point: F2Probe) -> IndexResult<()> {
+    let callback = F2_PROBE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        match slot.as_ref() {
+            Some((registered, _)) if *registered == point => slot.take(),
+            _ => None,
+        }
+    });
+    match callback {
+        Some((_, callback)) => callback(),
+        None => Ok(()),
+    }
+}
+
+#[cfg(not(test))]
+#[inline]
+fn f2_probe(_: F2Probe) -> IndexResult<()> {
+    Ok(())
+}
+
+// Wait-entry observer: set to `true` immediately before a real `wait_timeout`.
+#[cfg(test)]
+thread_local! {
+    static WAIT_ENTERED_OBSERVER: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicBool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_wait_entered_observer(flag: Arc<std::sync::atomic::AtomicBool>) {
+    WAIT_ENTERED_OBSERVER.with(|cell| *cell.borrow_mut() = Some(flag));
+}
+
+#[cfg(test)]
+fn observe_wait_entered() {
+    WAIT_ENTERED_OBSERVER.with(|cell| {
+        if let Some(flag) = cell.borrow().as_ref() {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+}
+
+#[cfg(not(test))]
+#[inline]
+fn observe_wait_entered() {}
 
 // Test-only deterministic interleaving hooks. They are compiled out entirely in
 // non-test builds and never touch production state.
@@ -760,12 +887,25 @@ fn initialize_registry(
         }
     }
     poll(cancellation)?;
-    let eligible = schema
-        .fields()
-        .iter()
-        .filter(|f| is_eligible_field(f))
-        .count();
-    let allowance = match element_bytes::<RegistryEntry>(eligible as u64) {
+    // F2-I06: the registry scans are cooperatively cancellable at a fixed,
+    // testable period rather than one uninterruptible pass over the schema.
+    let mut eligible: u64 = 0;
+    for (index, field) in schema.fields().iter().enumerate() {
+        if index == CANCELLATION_INTERVAL as usize {
+            f2_probe(F2Probe::RegistryEligibilityIndex256)?;
+        }
+        if index as u64 % CANCELLATION_INTERVAL == 0 {
+            poll(cancellation)?;
+        }
+        if is_eligible_field(field) {
+            eligible = match eligible.checked_add(1) {
+                Some(value) => value,
+                None => return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget)),
+            };
+        }
+    }
+    poll(cancellation)?;
+    let allowance = match element_bytes::<RegistryEntry>(eligible) {
         Ok(bytes) => bytes,
         Err(_) => return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget)),
     };
@@ -776,7 +916,7 @@ fn initialize_registry(
         Ok(meter) => meter,
         Err(_) => return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget)),
     };
-    if meter.charge_vec::<RegistryEntry>(eligible as u64).is_err() {
+    if meter.charge_vec::<RegistryEntry>(eligible).is_err() {
         return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget));
     }
     poll(cancellation)?;
@@ -784,11 +924,21 @@ fn initialize_registry(
     if alloc_fault_check().is_err() {
         return Ok(Err(KeywordOrdinalUnavailable::Allocation));
     }
-    if entries.try_reserve_exact(eligible).is_err() {
+    let eligible_count = match usize::try_from(eligible) {
+        Ok(count) => count,
+        Err(_) => return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget)),
+    };
+    if entries.try_reserve_exact(eligible_count).is_err() {
         return Ok(Err(KeywordOrdinalUnavailable::Allocation));
     }
     // Entries are already in ascending field-id order: no name strings retained.
-    for field in schema.fields() {
+    for (index, field) in schema.fields().iter().enumerate() {
+        if index == CANCELLATION_INTERVAL as usize {
+            f2_probe(F2Probe::RegistryFillIndex256)?;
+        }
+        if index as u64 % CANCELLATION_INTERVAL == 0 {
+            poll(cancellation)?;
+        }
         if is_eligible_field(field) {
             entries.push(RegistryEntry {
                 field_id: field.id,
@@ -796,6 +946,9 @@ fn initialize_registry(
             });
         }
     }
+    poll(cancellation)?;
+    // F2 probe: the entry vector and the construction allowance are both live.
+    f2_probe(F2Probe::RegistryAfterEntries)?;
     let measured = match capacity_bytes::<RegistryEntry>(entries.capacity()) {
         Ok(bytes) => bytes,
         Err(_) => return Ok(Err(KeywordOrdinalUnavailable::ResourceBudget)),
@@ -1048,6 +1201,10 @@ fn build_field_map(
             return Ok(Err(reason));
         }
         buffers.push(buffer);
+        if buffers.len() == 1 {
+            // F2 probe: a real charged packed buffer exists, no heap/output yet.
+            f2_probe(F2Probe::FieldAfterFirstPackedBuffer)?;
+        }
     }
 
     let mut heads: Vec<MergeHead<'_>> = Vec::new();
@@ -2663,5 +2820,692 @@ mod b1_ordinals_tests {
         let untouched = snapshot_with(vec![segment_of("s1", &[("k0", Some("a"))])], 1 << 22);
         assert!(untouched.ordinal_cache().registry_is_uninitialized());
         assert_eq!(untouched.metadata_used(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // F2 — pre-publication cancellation, RAII adversaries and waiters.
+    // -----------------------------------------------------------------------
+
+    /// Publish a genuine `Registry` for `snapshot` into `cache`.
+    fn install_ready_registry(
+        cache: &KeywordOrdinalCache,
+        guards: &[GuardedSegmentReader],
+        budget: &Arc<MetadataBudget>,
+    ) {
+        let registry = initialize_registry(
+            budget,
+            SegmentLimits::default(),
+            guards,
+            &CancellationFlag::new(),
+        )
+        .expect("init")
+        .expect("registry");
+        assert!(
+            matches!(registry.entries[0].state, EntryState::Empty),
+            "the claimed field must start Empty"
+        );
+        let mut state = cache.state.lock().expect("lock");
+        *state = RegistryState::Ready(registry);
+    }
+
+    fn registry_charge() -> u64 {
+        element_bytes::<RegistryEntry>(1).expect("registry")
+    }
+
+    fn entry_state(cache: &KeywordOrdinalCache) -> Option<String> {
+        let state = cache.state.lock().expect("lock");
+        let RegistryState::Ready(registry) = &*state else {
+            return None;
+        };
+        Some(match registry.entries[0].state {
+            EntryState::Empty => "empty".to_owned(),
+            EntryState::Building => "building".to_owned(),
+            EntryState::Ready(_) => "ready".to_owned(),
+            EntryState::NotAvailable(reason) => format!("unavailable:{reason:?}"),
+        })
+    }
+
+    // F2-I01 — registry Ready publication is cancelled before it happens.
+    #[test]
+    fn b1_g12_f2_registry_ready_cancel_before_publish() {
+        let snapshot = three_segment_snapshot();
+        let guards = guards_of(&snapshot);
+        let cache = KeywordOrdinalCache::new();
+        let budget = Arc::new(MetadataBudget::new(u64::MAX));
+        let flag = Arc::new(CancellationFlag::new());
+        let probe_flag = Arc::clone(&flag);
+        set_f2_probe(F2Probe::BeforeRegistryReadyPublish, move || {
+            probe_flag.cancel();
+            Ok(())
+        });
+        let outcome = isolated_prepare(
+            &cache,
+            &snapshot,
+            &guards,
+            &budget,
+            SegmentLimits::default(),
+            flag.as_ref(),
+        );
+        clear_f2_probe();
+        assert!(
+            matches!(outcome, Err(IndexError::Cancelled)),
+            "expected Cancelled, got {outcome:?}"
+        );
+        assert!(cache.registry_is_uninitialized(), "registry must reset");
+        assert_eq!(budget.used(), 0, "candidate charge must be released");
+        // The same cache and snapshot can prepare normally afterwards.
+        let retry = isolated_prepare(
+            &cache,
+            &snapshot,
+            &guards,
+            &budget,
+            SegmentLimits::default(),
+            &CancellationFlag::new(),
+        )
+        .expect("retry");
+        assert_eq!(retry.ready().expect("ready").term_count(), 4);
+    }
+
+    // F2-I02 — a sticky registry outcome is not published when cancelled.
+    #[test]
+    fn b1_g12_f2_registry_optional_cancel_before_publish() {
+        let snapshot = three_segment_snapshot();
+        let guards = guards_of(&snapshot);
+        let cache = KeywordOrdinalCache::new();
+        let budget = Arc::new(MetadataBudget::new(u64::MAX));
+        let flag = Arc::new(CancellationFlag::new());
+        let probe_flag = Arc::clone(&flag);
+        set_f2_probe(F2Probe::BeforeRegistryUnavailablePublish, move || {
+            probe_flag.cancel();
+            Ok(())
+        });
+        set_alloc_fault(Some(0));
+        let outcome = isolated_prepare(
+            &cache,
+            &snapshot,
+            &guards,
+            &budget,
+            SegmentLimits::default(),
+            flag.as_ref(),
+        );
+        set_alloc_fault(None);
+        clear_f2_probe();
+        assert!(
+            matches!(outcome, Err(IndexError::Cancelled)),
+            "expected Cancelled, got {outcome:?}"
+        );
+        assert!(cache.registry_is_uninitialized(), "no sticky state");
+        assert_eq!(budget.used(), 0);
+        let retry = isolated_prepare(
+            &cache,
+            &snapshot,
+            &guards,
+            &budget,
+            SegmentLimits::default(),
+            &CancellationFlag::new(),
+        )
+        .expect("retry");
+        assert_eq!(retry.ready().expect("ready").term_count(), 4);
+    }
+
+    // F2-I03 — field Ready publication is cancelled after the map was built.
+    #[test]
+    fn b1_g12_f2_field_ready_cancel_before_publish() {
+        let snapshot = three_segment_snapshot();
+        let guards = guards_of(&snapshot);
+        let cache = KeywordOrdinalCache::new();
+        let budget = Arc::new(MetadataBudget::new(u64::MAX));
+        install_ready_registry(&cache, &guards, &budget);
+        let registry_only = budget.used();
+        assert_eq!(registry_only, registry_charge());
+        let flag = Arc::new(CancellationFlag::new());
+        let probe_flag = Arc::clone(&flag);
+        set_f2_probe(F2Probe::BeforeFieldReadyPublish, move || {
+            probe_flag.cancel();
+            Ok(())
+        });
+        let outcome = isolated_prepare(
+            &cache,
+            &snapshot,
+            &guards,
+            &budget,
+            SegmentLimits::default(),
+            flag.as_ref(),
+        );
+        clear_f2_probe();
+        assert!(
+            matches!(outcome, Err(IndexError::Cancelled)),
+            "expected Cancelled, got {outcome:?}"
+        );
+        assert_eq!(
+            entry_state(&cache).as_deref(),
+            Some("empty"),
+            "the claimed entry must reset to Empty"
+        );
+        assert_eq!(budget.used(), registry_only, "map charge must be released");
+        // Same cache and snapshot retry succeeds.
+        let retry = isolated_prepare(
+            &cache,
+            &snapshot,
+            &guards,
+            &budget,
+            SegmentLimits::default(),
+            &CancellationFlag::new(),
+        )
+        .expect("retry");
+        assert_eq!(retry.ready().expect("ready").term_count(), 4);
+        // A later cancelled caller keeps the published map `Arc`-identical.
+        let published = retry.ready().expect("ready");
+        let published: Arc<SnapshotKeywordOrdinals> = Arc::clone(published);
+        let cancelled = CancellationFlag::new();
+        cancelled.cancel();
+        assert!(matches!(
+            isolated_prepare(
+                &cache,
+                &snapshot,
+                &guards,
+                &budget,
+                SegmentLimits::default(),
+                &cancelled,
+            ),
+            Err(IndexError::Cancelled)
+        ));
+        let again = isolated_prepare(
+            &cache,
+            &snapshot,
+            &guards,
+            &budget,
+            SegmentLimits::default(),
+            &CancellationFlag::new(),
+        )
+        .expect("again");
+        assert!(Arc::ptr_eq(&published, again.ready().expect("ready")));
+    }
+
+    // F2-I04 — a sticky field outcome is not published when cancelled.
+    #[test]
+    fn b1_g12_f2_field_optional_cancel_before_publish() {
+        let snapshot = three_segment_snapshot();
+        let guards = guards_of(&snapshot);
+        let cache = KeywordOrdinalCache::new();
+        let budget = Arc::new(MetadataBudget::new(u64::MAX));
+        install_ready_registry(&cache, &guards, &budget);
+        let registry_only = budget.used();
+        let flag = Arc::new(CancellationFlag::new());
+        let probe_flag = Arc::clone(&flag);
+        set_f2_probe(F2Probe::BeforeFieldUnavailablePublish, move || {
+            probe_flag.cancel();
+            Ok(())
+        });
+        // The first field allocation (the bound-source vector) fails.
+        set_alloc_fault(Some(0));
+        let outcome = isolated_prepare(
+            &cache,
+            &snapshot,
+            &guards,
+            &budget,
+            SegmentLimits::default(),
+            flag.as_ref(),
+        );
+        set_alloc_fault(None);
+        clear_f2_probe();
+        assert!(
+            matches!(outcome, Err(IndexError::Cancelled)),
+            "expected Cancelled, got {outcome:?}"
+        );
+        assert_eq!(
+            entry_state(&cache).as_deref(),
+            Some("empty"),
+            "no sticky NotAvailable"
+        );
+        assert_eq!(budget.used(), registry_only);
+        let retry = isolated_prepare(
+            &cache,
+            &snapshot,
+            &guards,
+            &budget,
+            SegmentLimits::default(),
+            &CancellationFlag::new(),
+        )
+        .expect("retry");
+        assert_eq!(retry.ready().expect("ready").term_count(), 4);
+    }
+
+    /// A real 257-field schema: eligible `city` at id 0 plus 256 noneligible
+    /// columnar `Bool` fields named so that `city` keeps field id 0.
+    fn wide_schema() -> Schema {
+        let mut fields = vec![
+            FieldDefinition::new(
+                "city",
+                FieldType::Keyword,
+                Cardinality::Single,
+                FieldOptions::new(true, true, true),
+            )
+            .with_normalizer("keyword"),
+        ];
+        for index in 0..256usize {
+            fields.push(FieldDefinition::new(
+                format!("z{index:03}"),
+                FieldType::Bool,
+                Cardinality::Single,
+                FieldOptions::new(false, false, true),
+            ));
+        }
+        Schema::new(fields, None).expect("257-field schema")
+    }
+
+    fn wide_snapshot() -> ReaderSnapshot {
+        let schema = wide_schema();
+        let mut segments = Vec::new();
+        for id in ["w1", "w2"] {
+            let mut builder =
+                SegmentBuilder::new(schema.clone(), AnalyzerRegistry::builtin()).expect("builder");
+            let mut doc =
+                crate::segment::SegmentDocument::new(DocumentKey::new("k0").expect("key"));
+            doc.insert(
+                "city",
+                crate::contract::document::FieldValues::Single(FieldValue::Keyword("a".to_owned())),
+            )
+            .expect("city");
+            builder.add_document(doc).expect("add");
+            let built = builder.build().expect("build");
+            let bytes = Arc::new(built.bytes);
+            let meta = SegmentMeta::new(
+                id,
+                format!("index/segments/{id}.seg"),
+                ContentDescriptor::of(&bytes),
+                Vec::new(),
+                Vec::new(),
+                None,
+            );
+            segments.push(SegmentSnapshot::new(meta, bytes, 1));
+        }
+        snapshot_with(segments, u64::MAX)
+    }
+
+    // F2-I06 — cancellation at real 256-periodic registry scan boundaries.
+    #[test]
+    fn b1_g12_f2_registry_scan_periodic_cancellation() {
+        for point in [
+            F2Probe::RegistryEligibilityIndex256,
+            F2Probe::RegistryFillIndex256,
+        ] {
+            let snapshot = wide_snapshot();
+            let guards = guards_of(&snapshot);
+            let cache = KeywordOrdinalCache::new();
+            let budget = Arc::new(MetadataBudget::new(u64::MAX));
+            let flag = Arc::new(CancellationFlag::new());
+            let probe_flag = Arc::clone(&flag);
+            set_f2_probe(point, move || {
+                probe_flag.cancel();
+                Ok(())
+            });
+            let outcome = isolated_prepare(
+                &cache,
+                &snapshot,
+                &guards,
+                &budget,
+                SegmentLimits::default(),
+                flag.as_ref(),
+            );
+            clear_f2_probe();
+            assert!(
+                matches!(outcome, Err(IndexError::Cancelled)),
+                "{point:?}: expected Cancelled, got {outcome:?}"
+            );
+            assert!(
+                cache.registry_is_uninitialized(),
+                "{point:?}: no registry publication"
+            );
+            assert_eq!(budget.used(), 0, "{point:?}: no ordinal-budget residue");
+            // Same snapshot retry succeeds and holds exactly one eligible entry.
+            let retry = isolated_prepare(
+                &cache,
+                &snapshot,
+                &guards,
+                &budget,
+                SegmentLimits::default(),
+                &CancellationFlag::new(),
+            )
+            .expect("retry");
+            assert_eq!(retry.ready().expect("ready").term_count(), 1, "{point:?}");
+            {
+                let state = cache.state.lock().expect("lock");
+                let RegistryState::Ready(registry) = &*state else {
+                    panic!("{point:?}: registry not ready");
+                };
+                assert_eq!(registry.entries.len(), 1, "{point:?}");
+                assert_eq!(registry.entries[0].field_id, 0, "{point:?}");
+            }
+        }
+    }
+
+    // F2-I07 — typed error and panic after real admitted allocations, registry.
+    #[test]
+    fn b1_g14_f2_registry_after_entries_error_and_panic() {
+        // Typed error.
+        {
+            let snapshot = three_segment_snapshot();
+            let guards = guards_of(&snapshot);
+            let cache = KeywordOrdinalCache::new();
+            let budget = Arc::new(MetadataBudget::new(u64::MAX));
+            set_f2_probe(F2Probe::RegistryAfterEntries, || {
+                Err(IndexError::CorruptCommittedState {
+                    detail: "f2 injected registry failure".to_owned(),
+                })
+            });
+            let outcome = isolated_prepare(
+                &cache,
+                &snapshot,
+                &guards,
+                &budget,
+                SegmentLimits::default(),
+                &CancellationFlag::new(),
+            );
+            clear_f2_probe();
+            match outcome.expect_err("injected error") {
+                IndexError::CorruptCommittedState { detail } => {
+                    assert_eq!(detail, "f2 injected registry failure")
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+            assert!(cache.registry_is_uninitialized());
+            assert_eq!(budget.used(), 0);
+            assert_eq!(
+                isolated_prepare(
+                    &cache,
+                    &snapshot,
+                    &guards,
+                    &budget,
+                    SegmentLimits::default(),
+                    &CancellationFlag::new(),
+                )
+                .expect("retry")
+                .ready()
+                .expect("ready")
+                .term_count(),
+                4
+            );
+        }
+        // Controlled panic.
+        {
+            let snapshot = three_segment_snapshot();
+            let guards = guards_of(&snapshot);
+            let cache = KeywordOrdinalCache::new();
+            let budget = Arc::new(MetadataBudget::new(u64::MAX));
+            set_f2_probe(F2Probe::RegistryAfterEntries, || {
+                panic!("f2 injected registry panic")
+            });
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                isolated_prepare(
+                    &cache,
+                    &snapshot,
+                    &guards,
+                    &budget,
+                    SegmentLimits::default(),
+                    &CancellationFlag::new(),
+                )
+            }));
+            clear_f2_probe();
+            assert!(result.is_err(), "the injected panic must propagate");
+            assert!(
+                cache.registry_is_uninitialized(),
+                "RAII must reset the registry claim"
+            );
+            assert_eq!(budget.used(), 0);
+            assert_eq!(
+                isolated_prepare(
+                    &cache,
+                    &snapshot,
+                    &guards,
+                    &budget,
+                    SegmentLimits::default(),
+                    &CancellationFlag::new(),
+                )
+                .expect("retry after panic")
+                .ready()
+                .expect("ready")
+                .term_count(),
+                4
+            );
+        }
+    }
+
+    // F2-I07 — typed error and panic after a real charged packed buffer, field.
+    #[test]
+    fn b1_g14_f2_field_after_buffer_error_and_panic() {
+        for inject_panic in [false, true] {
+            let snapshot = three_segment_snapshot();
+            let guards = guards_of(&snapshot);
+            let cache = KeywordOrdinalCache::new();
+            let budget = Arc::new(MetadataBudget::new(u64::MAX));
+            install_ready_registry(&cache, &guards, &budget);
+            let registry_only = budget.used();
+            if inject_panic {
+                set_f2_probe(F2Probe::FieldAfterFirstPackedBuffer, || {
+                    panic!("f2 injected field panic")
+                });
+            } else {
+                set_f2_probe(F2Probe::FieldAfterFirstPackedBuffer, || {
+                    Err(IndexError::CorruptCommittedState {
+                        detail: "f2 injected field failure".to_owned(),
+                    })
+                });
+            }
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                isolated_prepare(
+                    &cache,
+                    &snapshot,
+                    &guards,
+                    &budget,
+                    SegmentLimits::default(),
+                    &CancellationFlag::new(),
+                )
+            }));
+            clear_f2_probe();
+            match result {
+                Ok(Err(IndexError::CorruptCommittedState { detail })) => {
+                    assert!(!inject_panic, "panic run returned an error");
+                    assert_eq!(detail, "f2 injected field failure");
+                }
+                Ok(other) => panic!("unexpected outcome {other:?}"),
+                Err(_) => assert!(inject_panic, "error run panicked"),
+            }
+            assert_eq!(
+                entry_state(&cache).as_deref(),
+                Some("empty"),
+                "the claimed entry must reset"
+            );
+            assert_eq!(budget.used(), registry_only, "candidate released");
+            assert_eq!(
+                isolated_prepare(
+                    &cache,
+                    &snapshot,
+                    &guards,
+                    &budget,
+                    SegmentLimits::default(),
+                    &CancellationFlag::new(),
+                )
+                .expect("retry")
+                .ready()
+                .expect("ready")
+                .term_count(),
+                4
+            );
+        }
+    }
+
+    /// Wait until `flag` is set, bounded by a test-only deadline.
+    fn await_flag(flag: &std::sync::atomic::AtomicBool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the waiter never entered wait_timeout"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    // F2-I07 — a real blocked waiter is released by the RAII reset, registry.
+    #[test]
+    fn b1_g14_f2_registry_failure_wakes_real_waiter() {
+        let snapshot = Arc::new(three_segment_snapshot());
+        let cache = Arc::new(KeywordOrdinalCache::new());
+        let budget = Arc::new(MetadataBudget::new(u64::MAX));
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(release_rx);
+
+        let builder_cache = Arc::clone(&cache);
+        let builder_budget = Arc::clone(&budget);
+        let builder_snapshot = Arc::clone(&snapshot);
+        let builder = std::thread::spawn(move || {
+            let guards = guards_of(&builder_snapshot);
+            set_f2_probe(F2Probe::BeforeRegistryReadyPublish, move || {
+                ready_tx.send(()).expect("signal candidate");
+                release_rx.lock().expect("lock").recv().expect("release");
+                Err(IndexError::CorruptCommittedState {
+                    detail: "f2 injected registry failure".to_owned(),
+                })
+            });
+            let outcome = isolated_prepare(
+                &builder_cache,
+                &builder_snapshot,
+                &guards,
+                &builder_budget,
+                SegmentLimits::default(),
+                &CancellationFlag::new(),
+            );
+            clear_f2_probe();
+            outcome
+        });
+
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("candidate ready");
+        // The registry is claimed `Initializing` while the builder is paused.
+        {
+            let state = cache.state.lock().expect("lock");
+            assert!(matches!(&*state, RegistryState::Initializing));
+        }
+
+        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let waiter_cache = Arc::clone(&cache);
+        let waiter_budget = Arc::clone(&budget);
+        let waiter_snapshot = Arc::clone(&snapshot);
+        let waiter_entered = Arc::clone(&entered);
+        let waiter = std::thread::spawn(move || {
+            let guards = guards_of(&waiter_snapshot);
+            set_wait_entered_observer(Arc::clone(&waiter_entered));
+            isolated_prepare(
+                &waiter_cache,
+                &waiter_snapshot,
+                &guards,
+                &waiter_budget,
+                SegmentLimits::default(),
+                &CancellationFlag::new(),
+            )
+        });
+        await_flag(&entered);
+        // Release the builder: it fails, resets `Initializing` and notifies.
+        release_tx.send(()).expect("release builder");
+        match builder.join().expect("builder") {
+            Err(IndexError::CorruptCommittedState { detail }) => {
+                assert_eq!(detail, "f2 injected registry failure")
+            }
+            other => panic!("unexpected builder outcome {other:?}"),
+        }
+        let waiter_outcome = waiter.join().expect("waiter");
+        let preparation = waiter_outcome.expect("waiter prepares");
+        assert_eq!(preparation.ready().expect("ready").term_count(), 4);
+        drop(preparation);
+        drop(cache);
+        drop(budget);
+    }
+
+    // F2-I07 — a real blocked waiter is released by the RAII reset, field stage.
+    #[test]
+    fn b1_g14_f2_field_failure_wakes_real_waiter() {
+        let snapshot = Arc::new(three_segment_snapshot());
+        let cache = Arc::new(KeywordOrdinalCache::new());
+        let budget = Arc::new(MetadataBudget::new(u64::MAX));
+        {
+            let guards = guards_of(&snapshot);
+            install_ready_registry(&cache, &guards, &budget);
+        }
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(release_rx);
+
+        let builder_cache = Arc::clone(&cache);
+        let builder_budget = Arc::clone(&budget);
+        let builder_snapshot = Arc::clone(&snapshot);
+        let builder = std::thread::spawn(move || {
+            let guards = guards_of(&builder_snapshot);
+            set_f2_probe(F2Probe::BeforeFieldReadyPublish, move || {
+                ready_tx.send(()).expect("signal candidate");
+                release_rx.lock().expect("lock").recv().expect("release");
+                Err(IndexError::CorruptCommittedState {
+                    detail: "f2 injected field failure".to_owned(),
+                })
+            });
+            let outcome = isolated_prepare(
+                &builder_cache,
+                &builder_snapshot,
+                &guards,
+                &builder_budget,
+                SegmentLimits::default(),
+                &CancellationFlag::new(),
+            );
+            clear_f2_probe();
+            outcome
+        });
+
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("candidate ready");
+        // The field is claimed `Building` while the builder is paused.
+        assert_eq!(entry_state(&cache).as_deref(), Some("building"));
+
+        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let waiter_cache = Arc::clone(&cache);
+        let waiter_budget = Arc::clone(&budget);
+        let waiter_snapshot = Arc::clone(&snapshot);
+        let waiter_entered = Arc::clone(&entered);
+        let waiter = std::thread::spawn(move || {
+            let guards = guards_of(&waiter_snapshot);
+            set_wait_entered_observer(Arc::clone(&waiter_entered));
+            isolated_prepare(
+                &waiter_cache,
+                &waiter_snapshot,
+                &guards,
+                &waiter_budget,
+                SegmentLimits::default(),
+                &CancellationFlag::new(),
+            )
+        });
+        await_flag(&entered);
+        release_tx.send(()).expect("release builder");
+        match builder.join().expect("builder") {
+            Err(IndexError::CorruptCommittedState { detail }) => {
+                assert_eq!(detail, "f2 injected field failure")
+            }
+            other => panic!("unexpected builder outcome {other:?}"),
+        }
+        let waiter_outcome = waiter.join().expect("waiter");
+        assert_eq!(
+            waiter_outcome
+                .expect("waiter prepares")
+                .ready()
+                .expect("ready")
+                .term_count(),
+            4
+        );
+        assert_eq!(
+            entry_state(&cache).as_deref(),
+            Some("ready"),
+            "the waiter's rebuild published a Ready map"
+        );
     }
 }

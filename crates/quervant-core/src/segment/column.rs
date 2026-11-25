@@ -4494,8 +4494,14 @@ mod b1_tests {
         for case in 0..64u64 {
             let segment_count = 1 + (case % 5) as usize;
             let mut docs: Vec<SegmentDocument> = Vec::new();
-            // (key -> expected raw term or state) and per-segment dictionaries
-            let mut expected: Vec<(String, Option<&'static str>, bool)> = Vec::new();
+            // The expected row is captured from the *input* values being encoded.
+            struct ExpectedRow {
+                key: String,
+                values: FieldValues,
+                term: Option<&'static str>,
+                state: Option<KeywordOrdinalState>,
+            }
+            let mut expected: Vec<ExpectedRow> = Vec::new();
             // One column spans all documents, so this is one dictionary.
             let mut all_terms: Vec<&'static str> = Vec::new();
             for source in 0..segment_count as u64 {
@@ -4506,24 +4512,48 @@ mod b1_tests {
                     let mut document = doc(&key);
                     match selector {
                         0 => {
-                            put(&mut document, "city", FieldValues::Absent);
-                            expected.push((key, None, false));
+                            let values = FieldValues::Absent;
+                            put(&mut document, "city", values.clone());
+                            expected.push(ExpectedRow {
+                                key,
+                                values,
+                                term: None,
+                                state: None,
+                            });
                         }
                         1 => {
-                            put(&mut document, "city", FieldValues::ExplicitNull);
-                            expected.push((key, None, true));
+                            let values = FieldValues::ExplicitNull;
+                            put(&mut document, "city", values.clone());
+                            expected.push(ExpectedRow {
+                                key,
+                                values,
+                                term: None,
+                                state: None,
+                            });
                         }
                         2 => {
                             let term = ALPHABET[((case + row) % 10) as usize];
-                            put(&mut document, "city", multi_one(term));
+                            let values = multi_one(term);
+                            put(&mut document, "city", values.clone());
                             all_terms.push(term);
-                            expected.push((key, Some(term), false));
+                            expected.push(ExpectedRow {
+                                key,
+                                values,
+                                term: Some(term),
+                                state: Some(KeywordOrdinalState::MultiOne),
+                            });
                         }
                         _ => {
                             let term = ALPHABET[((case + source + row) % 10) as usize];
-                            put(&mut document, "city", single(term));
+                            let values = single(term);
+                            put(&mut document, "city", values.clone());
                             all_terms.push(term);
-                            expected.push((key, Some(term), false));
+                            expected.push(ExpectedRow {
+                                key,
+                                values,
+                                term: Some(term),
+                                state: Some(KeywordOrdinalState::Single),
+                            });
                         }
                     }
                     docs.push(document);
@@ -4553,49 +4583,78 @@ mod b1_tests {
                     "case {case}"
                 );
             }
-            // Every document's state, ordinal and value match the input oracle.
-            for (doc_id, (key, term, is_null)) in expected.iter().enumerate() {
+            // Every document's complete value, state and local ordinal match the
+            // input-derived oracle (including the exact MultiOne member).
+            for (doc_id, row) in expected.iter().enumerate() {
                 let value = reader
                     .value(field, doc_id as u64)
                     .expect("value")
                     .expect("column");
-                match (term, is_null) {
-                    (Some(term), _) => {
+                assert_eq!(
+                    value, row.values,
+                    "case {case} {}: complete value mismatch",
+                    row.key
+                );
+                match row.term {
+                    Some(term) => {
                         let ordinal = expected_terms
-                            .iter()
-                            .position(|candidate| candidate.as_slice() == term.as_bytes())
-                            .expect("term") as u64;
-                        let row = handle.doc_ordinal(doc_id as u64).expect("row");
-                        let (ordinal_actual, state) = match row {
-                            KeywordOrdinalValue::Value { ordinal, state } => (ordinal, state),
-                            other => panic!("case {case} {key}: unexpected {other:?}"),
-                        };
-                        assert_eq!(ordinal_actual, ordinal, "case {case} {key}");
-                        match value {
-                            FieldValues::Single(FieldValue::Keyword(text)) => {
-                                assert_eq!(state, KeywordOrdinalState::Single);
-                                assert_eq!(text, *term);
+                            .binary_search_by(|candidate| candidate.as_slice().cmp(term.as_bytes()))
+                            .expect("term in dictionary")
+                            as u64;
+                        match handle.doc_ordinal(doc_id as u64).expect("row") {
+                            KeywordOrdinalValue::Value {
+                                ordinal: actual,
+                                state,
+                            } => {
+                                assert_eq!(actual, ordinal, "case {case} {}", row.key);
+                                assert_eq!(state, row.state.expect("state"), "case {case}");
                             }
-                            FieldValues::Multi(ref list) => {
-                                assert_eq!(state, KeywordOrdinalState::MultiOne);
+                            other => panic!("case {case} {}: unexpected {other:?}", row.key),
+                        }
+                        match (&value, row.state) {
+                            (FieldValues::Multi(list), Some(KeywordOrdinalState::MultiOne)) => {
+                                // The exact contained member, not just its count.
                                 assert_eq!(list.len(), 1);
+                                assert_eq!(list[0], FieldValue::Keyword(term.to_owned()));
+                                // Negative oracle sanity: a wrong expected member
+                                // must not compare equal.
+                                let wrong = FieldValues::Multi(vec![FieldValue::Keyword(format!(
+                                    "{term}-wrong"
+                                ))]);
+                                assert_ne!(value, wrong, "case {case} {}", row.key);
                             }
-                            other => panic!("case {case} {key}: unexpected {other:?}"),
+                            (
+                                FieldValues::Single(FieldValue::Keyword(text)),
+                                Some(KeywordOrdinalState::Single),
+                            ) => {
+                                assert_eq!(text, term);
+                            }
+                            _ => panic!("case {case} {}: state/shape mismatch", row.key),
                         }
                     }
-                    (None, true) => {
-                        assert_eq!(value, FieldValues::ExplicitNull);
-                        assert_eq!(
-                            handle.doc_ordinal(doc_id as u64).expect("row"),
-                            KeywordOrdinalValue::Null
-                        );
-                    }
-                    (None, false) => {
-                        assert_eq!(value, FieldValues::Absent);
-                        assert_eq!(
-                            handle.doc_ordinal(doc_id as u64).expect("row"),
-                            KeywordOrdinalValue::Missing
-                        );
+                    None => {
+                        // Absent and explicit null stay distinct.
+                        match &row.values {
+                            FieldValues::Absent => {
+                                assert_eq!(value, FieldValues::Absent);
+                                assert_eq!(
+                                    handle.doc_ordinal(doc_id as u64).expect("row"),
+                                    KeywordOrdinalValue::Missing,
+                                    "case {case} {}",
+                                    row.key
+                                );
+                            }
+                            FieldValues::ExplicitNull => {
+                                assert_eq!(value, FieldValues::ExplicitNull);
+                                assert_eq!(
+                                    handle.doc_ordinal(doc_id as u64).expect("row"),
+                                    KeywordOrdinalValue::Null,
+                                    "case {case} {}",
+                                    row.key
+                                );
+                            }
+                            other => panic!("case {case} {}: {other:?}", row.key),
+                        }
                     }
                 }
             }

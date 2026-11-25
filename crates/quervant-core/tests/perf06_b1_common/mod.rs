@@ -485,6 +485,54 @@ pub fn sorted_keys(snapshot: &ReaderSnapshot) -> Vec<String> {
     keys
 }
 
+/// The literal six-field projection for one logical key.
+///
+/// This is an input oracle over the frozen table plus the two fixed appended
+/// `type-d` exceptions; it never consults a production reader, query result,
+/// codec, segment map or ordinal translator.
+pub fn expected_projected_fields(key: &str) -> Vec<(String, FieldValues)> {
+    // Appended-only rows (never part of the frozen first 18).
+    let appended: Option<(&str, i64)> = match key {
+        "d0" => Some(("Chicago", 18)),
+        "d1" => Some(("Seattle", 19)),
+        _ => None,
+    };
+    let (city, category, n) = match appended {
+        Some((city, n)) => (City::Value(city), "type-d", n),
+        None => {
+            let position = ROWS
+                .iter()
+                .position(|(row, _, _)| *row == key)
+                .unwrap_or_else(|| panic!("unknown corpus key {key}"));
+            let (_, batch, city) = ROWS[position];
+            (city, batch.category(), position as i64)
+        }
+    };
+    vec![
+        (
+            "body".to_owned(),
+            FieldValues::Single(FieldValue::Text("common".to_owned())),
+        ),
+        (
+            "category".to_owned(),
+            FieldValues::Single(FieldValue::Keyword(category.to_owned())),
+        ),
+        ("city".to_owned(), city.values()),
+        ("n".to_owned(), FieldValues::Single(FieldValue::I64(n))),
+        (
+            "stored_tag".to_owned(),
+            FieldValues::Single(FieldValue::Keyword("stored".to_owned())),
+        ),
+        (
+            "tags".to_owned(),
+            FieldValues::Multi(vec![
+                FieldValue::Keyword("one".to_owned()),
+                FieldValue::Keyword("two".to_owned()),
+            ]),
+        ),
+    ]
+}
+
 /// The complete expected `city` `FieldValues` map for the frozen corpus.
 pub fn expected_city_values() -> std::collections::BTreeMap<String, FieldValues> {
     ROWS.iter()

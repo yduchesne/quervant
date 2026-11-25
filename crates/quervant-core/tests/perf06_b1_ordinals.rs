@@ -1418,7 +1418,12 @@ fn assert_city_view(
                 .collect();
             assert_eq!(actual, expected, "{direction:?} {missing:?}");
             for hit in &response.hits {
-                assert_eq!(hit.fields.len(), 6, "complete projection");
+                assert_eq!(
+                    hit.fields,
+                    perf06_b1_common::expected_projected_fields(hit.key.as_str()),
+                    "full projection mismatch for {}",
+                    hit.key.as_str()
+                );
             }
             for limit in [1usize, 5, rows.len()] {
                 let mut request =
@@ -1439,6 +1444,15 @@ fn assert_city_view(
                         .collect::<Vec<_>>(),
                     expected[..limit].to_vec()
                 );
+                // K-prefix hits keep the complete six-field projection too.
+                for hit in &response.hits {
+                    assert_eq!(
+                        hit.fields,
+                        perf06_b1_common::expected_projected_fields(hit.key.as_str()),
+                        "K{limit} projection mismatch for {}",
+                        hit.key.as_str()
+                    );
+                }
             }
         }
     }
@@ -1493,7 +1507,12 @@ fn assert_legacy_city_view(snapshot: &ReaderSnapshot, rows: &[(String, City)]) {
                 expected
             );
             for hit in &response.hits {
-                assert_eq!(hit.fields.len(), 6, "complete projection");
+                assert_eq!(
+                    hit.fields,
+                    perf06_b1_common::expected_projected_fields(hit.key.as_str()),
+                    "full projection mismatch for {}",
+                    hit.key.as_str()
+                );
             }
         }
     }

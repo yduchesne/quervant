@@ -1,0 +1,10 @@
+TESTED_SHA (before this file): d579b7fd926ee96f0f79df6b74c58bd8ff61c51a + F2 working tree
+F2_START: d579b7fd926ee96f0f79df6b74c58bd8ff61c51a
+F1_TESTED: 1b9621e2d089f7658e5749a8ad73e3153d1b2045
+ACCEPTED_MAIN: 480a77e78c6897e05cb7ceb76b01434974b82ec6
+F2_PLAN_SHA256: 5f735e89e82a734815dbc585d2e1b98b7edb3cb9debc13f05ae2f45f083be4e3
+F2_PLAN_BLOB: 4f5483c349226e826b378fc0277afbc0eb7b8c0c
+PR: #126 (OPEN, draft=false retained, base main, branch dev/perf06-b1)
+local_qa: 13/13 exit 0; tests default 2638 passed / all-features 2683 passed; coverage 92.90%/93.04% lines
+changed paths: src/index/keyword_ordinals.rs, src/segment/column.rs (tests only), tests/perf06_b1_{common,ordinals,rustfs}, docs/evidence
+protected_diff: empty (evidence/f2-diff-inventory.txt)

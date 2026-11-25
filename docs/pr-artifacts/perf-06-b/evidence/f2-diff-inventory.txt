@@ -1,0 +1,40 @@
+# F2 diff inventory
+f2_start: d579b7fd926ee96f0f79df6b74c58bd8ff61c51a
+f1_tested_source: 1b9621e2d089f7658e5749a8ad73e3153d1b2045
+accepted_main: 480a77e78c6897e05cb7ceb76b01434974b82ec6
+
+## changed paths (working tree vs F1 tested source, excluding evidence)
+   M crates/quervant-core/src/index/keyword_ordinals.rs
+   M crates/quervant-core/src/segment/column.rs
+   M crates/quervant-core/tests/perf06_b1_common/mod.rs
+   M crates/quervant-core/tests/perf06_b1_ordinals.rs
+   M crates/quervant-core/tests/perf06_b1_rustfs.rs
+  ?? docs/pr-artifacts/perf-06-b/PERF06B1_F2_DETAILED_FIXUP_PLAN.md
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-bench_no-run.log
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-benchmark_scripts.log
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-clippy_1.85.0_all-features.log
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-clippy_1.98.1_all-features.log
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-clippy_1.98.1_default.log
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-coverage-all-features.log
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-coverage-default.log
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-diff-inventory.txt
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-doc_all-features.log
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-doc_default.log
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-fmt_1.85.0.log
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-fmt_1.98.1.log
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-git_diff_--check.log
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-preflight.txt
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-qa-ledger.txt
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-test_1.85.0_all-features.log
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-test_1.98.1_all-features.log
+  ?? docs/pr-artifacts/perf-06-b/evidence/f2-test_1.98.1_default.log
+
+## protected-path diff vs F1 tested source (must be empty)
+(end)
+
+## numstat vs F1 tested source (crates only)
+  871	27	crates/quervant-core/src/index/keyword_ordinals.rs
+  102	43	crates/quervant-core/src/segment/column.rs
+  48	0	crates/quervant-core/tests/perf06_b1_common/mod.rs
+  21	2	crates/quervant-core/tests/perf06_b1_ordinals.rs
+  10	0	crates/quervant-core/tests/perf06_b1_rustfs.rs

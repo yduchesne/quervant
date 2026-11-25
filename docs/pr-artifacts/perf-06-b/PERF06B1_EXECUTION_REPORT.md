@@ -532,3 +532,195 @@ result, and A6's numerical outcomes are unchanged.
 **Handoff:** PR #126 (draft, base `main`, branch `dev/perf06-b1`). B2 owns collector
 adoption, B3 owns document/duplicate identity, B4 owns the cumulative warm
 qualification. Do not merge, start B2, or promote B1 as accepted from this report.
+
+---
+
+# F2 independent-review closure
+
+**Plan:** [`PERF06B1_F2_DETAILED_FIXUP_PLAN.md`](PERF06B1_F2_DETAILED_FIXUP_PLAN.md),
+SHA-256 `5f735e89e82a734815dbc585d2e1b98b7edb3cb9debc13f05ae2f45f083be4e3`,
+Git blob `4f5483c349226e826b378fc0277afbc0eb7b8c0c`.
+
+All earlier sections stay as **historical observation**. F2 supersedes only these
+specific claims: the F1 G12/G14 statements that did not prove a pre-publication
+cancellation, a real field-stage claim, a live-candidate typed error/panic, or a
+waiter that actually entered `wait_timeout`; the U10 statement that a `MultiOne` row
+was verified (it checked list length, not the contained member); and the I04/R01
+statements that “complete projections” were asserted (they counted six fields). Those
+assertions are now strengthened and re-executed below. G10 remains **OPEN** and
+maintainer-owned; nothing here is a performance result.
+
+## F2.0 Source identity
+
+| Role | Value |
+| --- | --- |
+| Accepted main / merge base | `480a77e78c6897e05cb7ceb76b01434974b82ec6` |
+| F1 executable source (reviewed) | `1b9621e2d089f7658e5749a8ad73e3153d1b2045` |
+| F2 START head | `d579b7fd926ee96f0f79df6b74c58bd8ff61c51a` |
+| F2 start delta vs F1 source | `PERF06B1_EXECUTION_REPORT.md`, `evidence/f1-ci-status.txt`, `evidence/f1-delivery.txt` — docs/evidence only; executable blobs identical (`evidence/f2-preflight.txt`) → X01 |
+| TESTED / FINAL SHA | recorded in the PR body and `evidence/f2-delivery.txt` |
+| PR | #126, branch `dev/perf06-b1`, base `main`; actual state `OPEN`, `draft=false` retained unchanged |
+
+**Changed paths (whole F2 delta):** `src/index/keyword_ordinals.rs` (production +
+tests), `src/segment/column.rs` (**U10 test module only** — every hunk is inside
+`mod b1_tests`), `tests/perf06_b1_common/mod.rs`, `tests/perf06_b1_ordinals.rs`,
+`tests/perf06_b1_rustfs.rs`, plus the copied F2 plan, this report and
+`evidence/f2-*`. **Protected-path diff vs the F1 source is empty**
+(`evidence/f2-diff-inventory.txt`): `segment/metadata.rs`, `reader.rs`, `format.rs`,
+`build.rs`, `index/merge.rs`, `snapshot.rs`, `index/mod.rs`, production `search/*`,
+`contract/*`, `remote/*`, `storage/*`, `quervant-objectstore`,
+`quervant-distributed`, `.github/workflows/ci.yml`, Cargo/toolchain files, `AGENTS.md`,
+`benchmarks/`, and the frozen fixture package are untouched. No new public API,
+feature flag, dependency or budget account.
+
+## F2.1 Invariant worksheet (before code edits)
+
+| Invariant | Positive case | Plausible counterexample | Symbol | Test |
+| --- | --- | --- | --- | --- |
+| F2-I01 | ready registry published after a clean pre-publish poll | cancel after the candidate is built, before the lock | `prepare`/`Next::Initialize` + `publish_registry` | `b1_g12_f2_registry_ready_cancel_before_publish` |
+| F2-I02 | sticky registry outcome published when not cancelled | injected `Allocation` + pre-publish cancel must not stick | same + `BeforeRegistryUnavailablePublish` | `b1_g12_f2_registry_optional_cancel_before_publish` |
+| F2-I03 | map published and reused `Arc`-identically | cancel after the map is built; stale `Building` | `build_and_publish` + `publish_field` | `b1_g12_f2_field_ready_cancel_before_publish` |
+| F2-I04 | sticky field outcome published when not cancelled | alloc refusal + pre-publish cancel must reset to `Empty` | same + `BeforeFieldUnavailablePublish` | `b1_g12_f2_field_optional_cancel_before_publish` |
+| F2-I05 | post-publication result survives; later caller may see `Cancelled` | erasing a published map on a later cancel | `disarm` → notify → post-poll order | field-ready test tail, existing `b1_g12_cancellation_*` |
+| F2-I06 | 257-field schema initializes normally when not cancelled | unpolled 256-boundary scan | `initialize_registry` enumerate loops | `b1_g12_f2_registry_scan_periodic_cancellation` |
+| F2-I07 | error/panic after real admission resets and retries | stuck `Initializing`/`Building`, leaked charge, hung waiter | `RegistryInitGuard`/`FieldBuildGuard` | `b1_g14_f2_*` (4 tests) |
+| F2-I08 | every 64-case row equals the input `FieldValues` | `MultiOne` with the right length and the wrong member | `b1_u10_*` | `b1_u10_frozen_codec_differential_families` |
+| F2-I09 | all six ordered tuples equal the literal oracle | one wrong field value hidden by a count check | `assert_city_view`, `assert_legacy_city_view`, `sorted_keys` | `b1_i04_*` (+child), `b1_i01_*`, `b1_r01_*` |
+| F2-I10 | allowed paths only, protected diff empty | stale-head CI or benchmark drift | diff inventory + ledgers | §F2.4–F2.7 |
+
+Challenged explicitly: cancellation after a successful build but before publication
+(F2-I01/I03), field already `Building` (I03/I04/I07), registry `NotAvailable`
+construction (I02), panic after a reserved candidate (I07 panic runs), waiter already
+inside a timed wait (I07 waiter tests assert the observer), `MultiOne` carrying the
+wrong string with correct cardinality (I08 negative oracle), and a projection returning
+six wrong fields (I09 literal tuples).
+
+## F2.2 Production correction (single file)
+
+* **Four publication transitions** now run `f2_probe(<Before*Publish>)` → **last**
+  `poll(cancellation)?` **outside** the cache mutex → lock → state assertion → publish.
+  Ready and sticky-optional registry and field transitions are all covered. An
+  unexpected claim state returns the bounded
+  `CorruptCommittedState { detail: "keyword ordinal cache publication state changed" }`
+  and leaves the caller's RAII guard armed, so nothing is silently overwritten.
+* **Registry scans** (`initialize_registry`) now use explicit `enumerate()` loops with
+  a probe at index 256 and a `poll` every 256 items, then a poll after each loop, with
+  checked `eligible` accumulation (`ResourceBudget` on overflow, never a panic).
+  Canonical ascending order, allowance, `check_allocation_bytes`, fallible
+  `try_reserve_exact` and `charge_vec` semantics are unchanged.
+* `RegistryAfterEntries` fires after the entry vector is populated and before
+  `meter.finalize`; `FieldAfterFirstPackedBuffer` fires immediately after the first
+  inner packed buffer is pushed and before heap/output creation.
+* Post-publication order is preserved (disarm → notify → post-poll), so a later
+  cancellation reports `Cancelled` without erasing the published value. No
+  cancellation poll, hook or callback runs while the cache mutex is held.
+* Scoped seams: one `pub(crate)` zero-data `F2Probe` discriminator, a one-shot
+  thread-local callback that releases its `RefCell` borrow before invoking the closure,
+  and a wait-entry observer `AtomicBool`. All have `#[cfg(not(test))]` no-op stubs
+  (`evidence/f2-seam-audit.txt`); no production atomic, metric or fault path exists.
+
+## F2.3 Acceptance results (actual executions)
+
+`cargo +1.98.1 test -p quervant-core --lib b1_ -- --test-threads=1` → **64 passed,
+0 failed**. The nine new F2 tests and what each proved:
+
+| Test | Observed result |
+| --- | --- |
+| `b1_g12_f2_registry_ready_cancel_before_publish` | `Cancelled`; registry `Uninitialized`; ordinal budget `0`; same-cache/snapshot retry Ready with 4 terms |
+| `b1_g12_f2_registry_optional_cancel_before_publish` | injected `Allocation` + pre-publish cancel → `Cancelled`, **not** sticky; budget `0`; retry Ready |
+| `b1_g12_f2_field_ready_cancel_before_publish` | `Cancelled` after the map was built; entry back to `Empty`; account exactly `R`; retry Ready; a later cancelled caller left the published map `Arc`-identical (F2-I05) |
+| `b1_g12_f2_field_optional_cancel_before_publish` | first field allocation refused + pre-publish cancel → `Cancelled`, no sticky `NotAvailable`; entry `Empty`; account `R`; retry Ready |
+| `b1_g12_f2_registry_scan_periodic_cancellation` | real 257-field schema (eligible `city` = id 0 + 256 noneligible columnar `Bool` `z000..z255`); cancellation at both `RegistryEligibilityIndex256` and `RegistryFillIndex256` → `Cancelled`, `Uninitialized`, budget `0`, no publication; retry holds exactly one entry with field id 0 |
+| `b1_g14_f2_registry_after_entries_error_and_panic` | typed `CorruptCommittedState("f2 injected registry failure")` and a caught panic, both after real admission → `Uninitialized`, budget `0`, same-snapshot retry Ready |
+| `b1_g14_f2_field_after_buffer_error_and_panic` | typed `CorruptCommittedState("f2 injected field failure")` and a caught panic after a charged packed buffer → registry stays Ready, claimed entry `Empty`, account `R`, retry Ready |
+| `b1_g14_f2_registry_failure_wakes_real_waiter` | builder paused at the pre-publication probe with the cache `Initializing`; a second thread's `prepare` **entered `wait_timeout`** (observer flag, bounded 10 s test deadline); builder's RAII reset woke it and it completed Ready with 4 terms |
+| `b1_g14_f2_field_failure_wakes_real_waiter` | same with a genuine `Ready(registry)` + `Building` entry; the waiter-woken rebuild published a `Ready` map |
+
+`b1_u10_frozen_codec_differential_families` (64 cases) now compares the **complete**
+`FieldValues` (including `Multi(vec![Keyword(<exact member>)])`), the exact
+`KeywordOrdinalState`, and the local ordinal from an independent binary search over the
+sorted distinct input terms for every generated document, and includes a
+negative-oracle sanity check where a deliberately wrong `MultiOne` member is asserted
+unequal. `b1_i04_*` (with `PERF06_B1_I04_CHILD_PASS` from the real child process),
+`b1_i01_*` and `b1_r01_*` now assert every hit's six ordered
+`(field_name, FieldValues)` tuples from `perf06_b1_common::expected_projected_fields`,
+for all 18/19/20 rows, both directions, both missing placements and every K prefix.
+
+## F2.4 Final local QA (corrected source)
+
+`evidence/f2-qa-ledger.txt` (logs `evidence/f2-*.log`): **all 13 commands exit 0**.
+
+| Command | Exit |
+| --- | --- |
+| `cargo +1.98.1 fmt --all -- --check` | 0 |
+| `cargo +1.98.1 clippy --workspace --all-targets -- -D warnings` | 0 |
+| `cargo +1.98.1 clippy --workspace --all-targets --all-features -- -D warnings` | 0 |
+| `cargo +1.98.1 test --workspace --all-targets` | 0 — **2638 passed**, 0 failed, 16 ignored |
+| `cargo +1.98.1 test --workspace --all-targets --all-features` | 0 — **2683 passed**, 0 failed, 100 ignored |
+| `cargo +1.98.1 doc --workspace --no-deps` / `--all-features` | 0 / 0 |
+| `cargo +1.98.1 bench --workspace --no-run` | 0 (compile gate only) |
+| `bash benchmarks/scripts/test-scripts.sh` | 0 |
+| `cargo +1.85.0 fmt --all -- --check` | 0 |
+| `cargo +1.85.0 clippy --workspace --all-targets --all-features -- -D warnings` | 0 |
+| `cargo +1.85.0 test --workspace --all-targets --all-features` | 0 — **2683 passed**, 0 failed, 100 ignored |
+| `git diff --check` | 0 |
+
+Coverage (`evidence/f2-coverage-*.log`, `--fail-under-lines 85`, no exclusions):
+default **92.90 %** lines (67154/4766), all-features **93.04 %** lines (68661/5150).
+
+## F2.5 Gate ledger
+
+| Gate | Result on the F2 executable source |
+| --- | --- |
+| G0/G1 | **PASS** — fast-forward only, accepted main unchanged, plan hashes verified, invariant worksheet recorded |
+| G2 | **PASS** — no codec/format change; U10 strengthened and passing |
+| G3 | **PASS** — F2-I01…I07 proven by the nine new deterministic tests (four publication branches, scan periods, live-candidate error/panic, two real waiters) |
+| G4 | **PASS** — 64 `b1_*` unit tests executed (`--test-threads=1`), including all F1 groups |
+| G5 | **PASS** — I01–I08 re-executed with the full six-field oracle; I04 child actually ran (`PERF06_B1_I04_CHILD_PASS`) |
+| G6 | **PASS/PENDING** — see §F2.6 (real RustFS is executed by the ordinary CI job on this source) |
+| G7 | **PASS** — 13/13 local commands exit 0; both coverage floors met |
+| G8 | **PASS/PENDING** — see §F2.6 |
+| G9 | **PASS** — additive correction, allowed-path-only diff, protected diff empty |
+| G10 | **OPEN — maintainer only** |
+
+## F2.6 Real provider and CI
+
+R01 (`b1_r01_cold_shared_ordinals_and_pit`) runs in the ordinary CI `rustfs` job on the
+F2 source and now also verifies every hit's six projected fields; the provider-only
+five-object generation-3 closure, two independent generation-4 cold opens, held PIT and
+request-counter checks are unchanged. No local RustFS container was started for F2 (the
+plan forbids duplicating hosted CI). Terminal results are recorded in
+`evidence/f2-ci-status.txt`; a pending or unavailable service is reported as
+`PERF06_B1_F2_IMPLEMENTED_VERIFICATION_BLOCKED`, never as green.
+
+## F2.7 Adversarial self-review and residuals
+
+* A publication that skipped the last poll would be caught by the four branch tests
+  (each asserts both the returned `Cancelled` **and** the reverted state/charge).
+* A reset that leaked a candidate reservation would be caught by the exact budget
+  assertions (`0` for registry, `R` for field) before and after retry.
+* A waiter that never blocked would fail the bounded observer assertion (X18) instead
+  of passing silently.
+* A `MultiOne` with the wrong member now fails both the exact value comparison and the
+  negative-oracle sanity check.
+* A projection regression in any single field now fails the literal six-tuple
+  comparison in g3, g4, g5, the child process and R01.
+
+Residual risks are unchanged from F1 §8 (high-cardinality map payload, many held PITs,
+open-time validation cost, snapshot-scoped non-durable ranks, mixed legacy/new
+snapshots, out-of-scope multi/Text/JSON ordinals, inherited ordinary temporary
+allocations, remote compaction unqualified, no performance claim). The cooperative
+cancellation boundary remains: a cancellation observed only after the final pre-lock
+poll publishes the value and reports `Cancelled` to that caller (F2-I05), which is the
+existing API contract and is not claimed to be atomic.
+
+Applied decision rows: X01, X05, X06–X12, X14, X16, X17, X22/X23 (CI), X25, X27, X30,
+X31. No HARD STOP row was triggered.
+
+## F2.8 Disposition
+
+`PERF06_B1_F2_READY_FOR_INDEPENDENT_REVIEW` once the ordinary CI run on the F2 head
+passes all five jobs with R01 executed; otherwise
+`PERF06_B1_F2_IMPLEMENTED_VERIFICATION_BLOCKED` with the exact pending gate. **G10
+remains open**; do not merge, approve, or start B2/B3/B4 from this report. A6's
+numerical outcomes are unchanged and no latency, RSS or index-size claim is made.

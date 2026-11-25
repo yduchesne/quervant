@@ -1,0 +1,21 @@
+# F2 test-only seam audit
+--- cfg(not(test)) no-op stubs (production) ---
+77-fn alloc_fault_check() -> Result<(), KeywordOrdinalUnavailable> {
+690-fn f2_probe(_: F2Probe) -> IndexResult<()> {
+717-fn observe_wait_entered() {}
+773-fn run_pre_wait_hook() {}
+777-fn run_after_claim_hook() {}
+--- thread-local test state (all cfg(test)) ---
+52-#[cfg(test)]
+54:    static ALLOC_FAULT: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+650-#[cfg(test)]
+652:    static F2_PROBE: std::cell::RefCell<Option<(F2Probe, F2ProbeCallback)>> =
+695-#[cfg(test)]
+697:    static WAIT_ENTERED_OBSERVER: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicBool>>> =
+721-#[cfg(test)]
+723:    static WAIT_STARTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+724:    static PRE_WAIT_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+726:    static AFTER_CLAIM_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+--- production build has no test symbols ---
+   Compiling quervant-core v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-core)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.38s
