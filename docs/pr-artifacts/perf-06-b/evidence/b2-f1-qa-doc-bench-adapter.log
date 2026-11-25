@@ -1,0 +1,21 @@
+$ cargo +1.98.1 doc --workspace --no-deps
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.72s
+   Generated /home/yduchesne/Dev/Github/yduchesne/quervant/target/doc/quervant_core/index.html and 2 other files
+EXIT:0
+
+$ cargo +1.98.1 doc --workspace --all-features --no-deps
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.30s
+   Generated /home/yduchesne/Dev/Github/yduchesne/quervant/target/doc/quervant_core/index.html and 2 other files
+EXIT:0
+
+$ cargo +1.98.1 bench --workspace --no-run
+  Executable benches src/lib.rs (target/release/deps/quervant_distributed-248bb7bcf21e4d30)
+  Executable benches src/lib.rs (target/release/deps/quervant_objectstore-bafef1e727435e82)
+EXIT:0
+
+$ cargo +1.98.1 test --locked --manifest-path benchmarks/pr15d/adapters/quervant/Cargo.toml query_session_constructs_exactly_one_snapshot_for_the_whole_session
+test session_tests::query_session_constructs_exactly_one_snapshot_for_the_whole_session ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.04s
+
+EXIT:0

@@ -14,7 +14,7 @@ use crate::contract::result::{
     MissingValuePosition, MultiValueSelector, Sort, SortDirection, SortField,
 };
 use crate::contract::value::{FieldType, FieldValue};
-use crate::segment::column::ColumnKeywordView;
+use crate::segment::column::{ColumnKeywordView, KeywordSortOrdinalColumn};
 use crate::segment::value::encode_scalar;
 use crate::segment::{CodecField, CodecSchema, ColumnReader, SegmentError, SegmentReader};
 
@@ -184,6 +184,58 @@ pub fn sort_value_cmp(
     }
 }
 
+/// PERF-06-B2: one snapshot-wide numeric rank for a `Single` keyword sort value.
+///
+/// This is a crate-private collector representation, not a public query or
+/// cursor contract. `Value` always holds a rank translated by the B1
+/// [`SnapshotKeywordOrdinals`](crate::index::SnapshotKeywordOrdinals) map bound
+/// to the exact requesting snapshot and segment; a segment-local ordinal is
+/// never stored here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OrdinalSortKey {
+    /// The field is absent from the document.
+    Missing,
+    /// The field is an explicit null.
+    Null,
+    /// A non-null keyword value's shared snapshot-wide lexical rank.
+    Value(u64),
+}
+
+/// Compare two snapshot-wide ordinal sort keys exactly like
+/// [`sort_value_cmp`] compares the corresponding owned keyword sort values.
+///
+/// Missing/null placement never reverses under `Desc`; only the two numeric
+/// value ranks reverse. Equal classes compare equal here; the caller applies the
+/// ascending logical document-key tie-break.
+#[must_use]
+pub(crate) fn ordinal_sort_key_cmp(
+    a: OrdinalSortKey,
+    b: OrdinalSortKey,
+    direction: SortDirection,
+    position: MissingValuePosition,
+) -> Ordering {
+    let class = |key: OrdinalSortKey| match (key, position) {
+        (OrdinalSortKey::Missing, MissingValuePosition::First) => 0u8,
+        (OrdinalSortKey::Null, MissingValuePosition::First) => 1,
+        (OrdinalSortKey::Value(_), MissingValuePosition::First) => 2,
+        (OrdinalSortKey::Value(_), MissingValuePosition::Last) => 0,
+        (OrdinalSortKey::Null, MissingValuePosition::Last) => 1,
+        (OrdinalSortKey::Missing, MissingValuePosition::Last) => 2,
+    };
+    let a_rank = class(a);
+    let b_rank = class(b);
+    if a_rank != b_rank {
+        return a_rank.cmp(&b_rank);
+    }
+    match (a, b) {
+        (OrdinalSortKey::Value(a), OrdinalSortKey::Value(b)) => match direction {
+            SortDirection::Asc => a.cmp(&b),
+            SortDirection::Desc => b.cmp(&a),
+        },
+        _ => Ordering::Equal,
+    }
+}
+
 /// Compare a borrowed Keyword sort view with one retained owned sort value.
 ///
 /// Returns `None` only for `LegacyDecode` or an incompatible retained value; the
@@ -335,8 +387,20 @@ impl<'a> ColumnAccess<'a> {
         }
     }
 
-    /// Conservative logical byte bound for the decoded value of `(field, doc)`.
-    ///
+    /// PERF-06-B2: bind the numeric-ordinal keyword sort accessor once per
+    /// segment. `Ok(None)` means this segment has no ordinal column, which the
+    /// collector only accepts when no B1 map was prepared for the request.
+    pub(crate) fn bind_keyword_sort_ordinal(
+        &self,
+        field_id: u32,
+    ) -> Result<Option<KeywordSortOrdinalColumn<'a>>, SegmentError> {
+        match &self.columns {
+            Some(columns) => columns.bind_keyword_sort_ordinal(field_id),
+            None => Ok(None),
+        }
+    }
+
+    /// Conservative logical byte bound for the decoded value of `(field, doc)`.    ///
     /// Uses the encoded value shape (state, span, element count) from column
     /// metadata without decoding, so callers can pre-admit decoded-value memory
     /// before `value` allocates. The estimate over-counts container and element
@@ -779,5 +843,106 @@ mod b_comparator_tests {
             ),
             None
         );
+    }
+}
+
+/// PERF-06-B2 — snapshot-wide ordinal sort key parity tests.
+#[cfg(test)]
+mod b2_comparator_tests {
+    use super::*;
+    use crate::contract::result::{MissingValuePosition, SortDirection};
+
+    const RAW: [&str; 8] = ["", "\u{0}", "A", "a", "aa", "e\u{301}", "é", "😀"];
+
+    fn pairs() -> Vec<(OrdinalSortKey, SortValue)> {
+        let mut pairs = vec![
+            (OrdinalSortKey::Missing, SortValue::Missing),
+            (OrdinalSortKey::Null, SortValue::Null),
+        ];
+        for (rank, raw) in RAW.iter().enumerate() {
+            pairs.push((
+                OrdinalSortKey::Value(rank as u64),
+                SortValue::Value(FieldValue::Keyword((*raw).to_owned())),
+            ));
+        }
+        pairs
+    }
+
+    /// B2-U01: the numeric comparator equals the canonical typed comparator for
+    /// every direction/placement class combination, and `Desc` reverses values
+    /// only.
+    #[test]
+    fn b2_u01_ordinal_order_matches_canonical_sort_values() {
+        for direction in [SortDirection::Asc, SortDirection::Desc] {
+            for missing in [MissingValuePosition::First, MissingValuePosition::Last] {
+                for (left_key, left_value) in pairs() {
+                    for (right_key, right_value) in pairs() {
+                        assert_eq!(
+                            ordinal_sort_key_cmp(left_key, right_key, direction, missing),
+                            sort_value_cmp(&left_value, &right_value, direction, missing),
+                            "{left_key:?} vs {right_key:?} {direction:?}/{missing:?}"
+                        );
+                    }
+                }
+            }
+        }
+        // Desc reverses only the two value classes.
+        let one = SortValue::Value(FieldValue::Keyword("A".to_owned()));
+        let two = SortValue::Value(FieldValue::Keyword("a".to_owned()));
+        assert_eq!(
+            sort_value_cmp(&one, &two, SortDirection::Desc, MissingValuePosition::First),
+            Ordering::Greater
+        );
+    }
+
+    /// B2-U02: raw UTF-8 byte order is the sole value oracle — no Unicode
+    /// normalization, case folding or sentinel collision.
+    #[test]
+    fn b2_u02_raw_byte_order_is_preserved() {
+        let mut raw = [
+            "", "\u{0}", "A", "a", "aa", "ab", "a\u{0}", "e\u{301}", "é", "😀", "Z",
+        ];
+        raw.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+        for (left_rank, left) in raw.iter().enumerate() {
+            for (right_rank, right) in raw.iter().enumerate() {
+                assert_eq!(
+                    ordinal_sort_key_cmp(
+                        OrdinalSortKey::Value(left_rank as u64),
+                        OrdinalSortKey::Value(right_rank as u64),
+                        SortDirection::Asc,
+                        MissingValuePosition::First
+                    ),
+                    left.as_bytes().cmp(right.as_bytes()),
+                    "{left:?} vs {right:?}"
+                );
+            }
+        }
+        // Composed and decomposed spellings remain distinct values.
+        assert_ne!(
+            ordinal_sort_key_cmp(
+                OrdinalSortKey::Value(0),
+                OrdinalSortKey::Value(1),
+                SortDirection::Asc,
+                MissingValuePosition::Last
+            ),
+            Ordering::Equal
+        );
+        // A zero-length term is a real value, never Missing or Null.
+        assert_ne!(OrdinalSortKey::Value(0), OrdinalSortKey::Missing);
+        assert_ne!(OrdinalSortKey::Value(0), OrdinalSortKey::Null);
+        // Equal ranks compare equal; the caller breaks ties by logical key.
+        for direction in [SortDirection::Asc, SortDirection::Desc] {
+            for missing in [MissingValuePosition::First, MissingValuePosition::Last] {
+                assert_eq!(
+                    ordinal_sort_key_cmp(
+                        OrdinalSortKey::Value(3),
+                        OrdinalSortKey::Value(3),
+                        direction,
+                        missing
+                    ),
+                    Ordering::Equal
+                );
+            }
+        }
     }
 }

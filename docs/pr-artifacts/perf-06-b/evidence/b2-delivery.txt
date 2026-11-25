@@ -1,0 +1,17 @@
+# PERF-06-B2 delivery identity
+repository: yduchesne/quervant
+branch: dev/perf06-b2
+base: main
+post_b1_main: 3cb1cbdff4c3bc7bbc1cae1c4e92c5cb44ca95cc
+b1_reviewed_executable_source: ad66e5e833616bafaaa97e15d89cdc511d715868
+TESTED (implementation+tests): 237ae6dcc01d1c179f292b05cf843df76c9f6ad4
+FINAL (docs/evidence): e396177eb0a29a087228cf841bde18ddecf49947
+remote_head_verified: e396177eb0a29a087228cf841bde18ddecf49947
+draft_pr: 127
+draft_pr_url: https://github.com/yduchesne/quervant/pull/127
+draft: true
+state: OPEN
+ci_run: 45557000136 (pull_request, success, head e396177)
+x39_crates_diff_TESTED_to_FINAL: empty (crates/, .github/, benchmarks/, Cargo.*)
+notes:
+  - untracked evidence/f2-ci-status.txt predates B2 (B1 F2 leftover) and is intentionally not committed.

@@ -1048,3 +1048,21 @@ borrowed `(term, doc)` occurrences and emits one final buffer; retained ordinary
 inherited temporary `ByteWriter` behaviour of the ordinary layout is explicitly
 unchanged in B1. Merge reconstruction opens each source's columns once instead of
 per document/column.
+
+**Collector adoption (PERF-06-B2).** The existing global Top-K collector may rank
+eligible strict single-term `Keyword` sort requests by the B1 snapshot map: it
+prepares one map for the exact requesting snapshot and field, binds one numeric
+accessor and one `SegmentOrdinalMap` per segment, and compares candidates by
+`Missing`/`Null`/shared-rank plus the ascending logical-key tie-break inside the
+same bounded heap. Only `Keyword`/`Single`/columnar sort fields with one explicit
+sort field, no cursor/aggregation/batch/typed/JSON/geo shape and no `multi`
+selector are eligible; everything else keeps the prior string/typed executor. A
+B1 `NotAvailable` is a whole-request fallback decided before candidate
+processing, while B1 corruption, schema, poison or cancellation are typed errors.
+A `MultiOne` row keeps the complete legacy decoder (entry/vector/string admission)
+on every matched candidate and only reuses the shared numeric rank; a `Single`
+noncompetitive candidate performs the frozen per-value decode-budget admission
+without owning a string. Retained hits still own canonical string sort tuples, so
+the first-page cursor, batch, aggregation and projection contracts are unchanged.
+This is a collector representation only: no persisted rank, no cross-snapshot
+identity and no warm-performance claim (B4 owns qualification).

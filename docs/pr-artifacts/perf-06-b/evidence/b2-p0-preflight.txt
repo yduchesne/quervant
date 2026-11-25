@@ -1,0 +1,57 @@
+# PERF-06-B2 P0 preflight (UTC 2026-11-25T05:55:12Z)
+
+## working tree at start
+ M crates/quervant-core/src/search/typed_compare.rs
+ M crates/quervant-core/src/search/unified.rs
+ M crates/quervant-core/src/segment/column.rs
+ M docs/ARCHITECTURE.md
+ M docs/BENCHMARKING.md
+ M docs/PERF_OPTIMIZATION_ROADMAP.md
+ M docs/pr-artifacts/perf-06/PERF06_SERIES_REGISTER.md
+?? crates/quervant-core/tests/perf06_b2_ordinals.rs
+?? docs/pr-artifacts/perf-06-b/PERF06B2_DETAILED_PLAN.md
+?? docs/pr-artifacts/perf-06-b/evidence/b2-bench_no-run.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-benchmark_scripts.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-clippy_1.85.0_all-features.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-clippy_1.98.1_all-features.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-clippy_1.98.1_default.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-coverage-all-features.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-coverage-default.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-doc_all-features.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-doc_default.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-fmt_1.85.0.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-fmt_1.98.1.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-focused-tests.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-git_diff_--check.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-p0-preflight.txt
+?? docs/pr-artifacts/perf-06-b/evidence/b2-test_1.85.0_all-features.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-test_1.98.1_all-features.log
+?? docs/pr-artifacts/perf-06-b/evidence/b2-test_1.98.1_default.log
+?? docs/pr-artifacts/perf-06-b/evidence/f2-ci-status.txt
+
+## origin/main
+3cb1cbdff4c3bc7bbc1cae1c4e92c5cb44ca95cc
+## B1 reviewed executable source
+ad66e5e833616bafaaa97e15d89cdc511d715868
+## B1 ancestry in main
+YES: B1 executable source is an ancestor of origin/main
+## PR #126 (gh)
+{"baseRefName":"main","headRefOid":"ad66e5e833616bafaaa97e15d89cdc511d715868","mergeCommit":{"oid":"3cb1cbdff4c3bc7bbc1cae1c4e92c5cb44ca95cc"},"mergedAt":"2026-11-25T04:32:41Z","state":"MERGED","url":"https://github.com/yduchesne/quervant/pull/126"}
+
+## critical path blob comparison (origin/main vs ad66e5e)
+MATCH crates/quervant-core/src/index/keyword_ordinals.rs 6e20bab8128a0c792f0a6e1004ce53319e028155
+MATCH crates/quervant-core/src/index/snapshot.rs 65fef3bc9b66467580ee3f2e9c367a1bdaf8543e
+MATCH crates/quervant-core/src/index/mod.rs 36afccccead5466ca18d0dec45b01382c1bf421d
+MATCH crates/quervant-core/src/segment/column.rs 907b77e676b058c987cd0030b1ffbb905cfb1ce6
+MATCH crates/quervant-core/src/segment/format.rs 296b7c5ca7d8211890667745956116ace8f4c6fe
+MATCH crates/quervant-core/src/segment/reader.rs f01189520c3cd73723ef30c3fb6064e5c909718b
+MATCH crates/quervant-core/src/segment/build.rs 093ad98d6bc439158d95ebdec5fc7decd0a2f945
+MATCH crates/quervant-core/src/index/merge.rs 2fec1308ae10491239150e468e532f6227ed5ae3
+MATCH crates/quervant-core/src/search/unified.rs 89419f6404ce248c5912be0565d8ed9e9eb7aedf
+MATCH crates/quervant-core/src/search/typed_compare.rs 3ec503103a93d083cd3c3994431e659ce397eaea
+
+## X02: pre-existing B2 symbols on main
+(none)
+
+## untracked artifact present before B2 work (left untouched)
+-rw-r--r-- 1 yduchesne yduchesne 969 Nov 24 20:26 docs/pr-artifacts/perf-06-b/evidence/f2-ci-status.txt

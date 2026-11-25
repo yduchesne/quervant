@@ -1,0 +1,17 @@
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 1120 filtered out; finished in 1.24s
+
+LIB_B2:0
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
+
+IT_B2:0
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 1082 filtered out; finished in 1.75s
+
+LIB_B1:0
+test result: ok. 9 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 1.01s
+
+IT_B1:0
+test result: ok. 62 passed; 0 failed; 0 ignored; 0 measured; 1084 filtered out; finished in 5.42s
+
+LIB_15HB:0

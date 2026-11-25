@@ -14,6 +14,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 #[cfg(feature = "pr15i-d3c-experiment")]
 use std::sync::OnceLock;
 
@@ -25,10 +26,14 @@ use crate::contract::error::{InvalidQueryReason, QueryError};
 use crate::contract::query::Query;
 use crate::contract::result::{Projection, Sort, TopK};
 use crate::contract::schema::Schema;
-use crate::contract::value::FieldType;
-use crate::index::ReaderSnapshot;
+use crate::contract::value::{FieldType, FieldValue};
+use crate::index::{
+    KeywordOrdinalPreparation, ReaderSnapshot, SegmentOrdinalMap, SnapshotKeywordOrdinals,
+};
 use crate::segment::SegmentReader;
-use crate::segment::column::ColumnKeywordView;
+use crate::segment::column::{
+    ColumnKeywordView, KeywordOrdinalState, KeywordOrdinalValue, KeywordSortOrdinalColumn,
+};
 
 use super::SearchLimits;
 use super::analytics::{AggregateRequest, AggregationEngine, TimeBucket};
@@ -44,8 +49,8 @@ use super::projection::{
 use super::score::compute_stats;
 use super::typed::{self, ScanGuard, TypedPlan};
 use super::typed_compare::{
-    ColumnAccess, SortValue, compare_borrowed_keyword_to_owned, compare_candidates,
-    owned_keyword_sort_value, sort_tuple_for_doc,
+    ColumnAccess, OrdinalSortKey, SortValue, compare_borrowed_keyword_to_owned, compare_candidates,
+    ordinal_sort_key_cmp, owned_keyword_sort_value, sort_tuple_for_doc,
 };
 use super::unified_cursor::{self, UnifiedCursor};
 use super::unified_plan::{self, UnifiedNode, UnifiedPlan};
@@ -614,6 +619,24 @@ impl<'a> UnifiedSearcher<'a> {
             && definition.options.columnar
     }
 
+    /// PERF-06-B2: the frozen subset of [`Self::keyword_sort_late_eligible`] that
+    /// may rank candidates by B1 snapshot-wide ordinals.
+    ///
+    /// This only *narrows* the existing predicate: a `multi` selector on one
+    /// field stays on the legacy borrowed path, and every other ineligible shape
+    /// (cursor, aggregation, batch, non-strict term, JSON, geo, multi-sort) is
+    /// already excluded by the base predicate.
+    fn keyword_ordinal_eligible(
+        &self,
+        plan: &UnifiedPlan,
+        request: &UnifiedRequest,
+        aggregation: Option<&Aggregation>,
+        standalone: bool,
+    ) -> bool {
+        self.keyword_sort_late_eligible(plan, request, aggregation, standalone)
+            && request.sort.fields[0].multi.is_none()
+    }
+
     #[allow(clippy::needless_option_as_deref)]
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn collect_mixed(
@@ -719,12 +742,46 @@ impl<'a> UnifiedSearcher<'a> {
                 cancel,
             )?
         };
+        // PERF-06-B2: one request-wide optional preparation, decided before any
+        // candidate is processed. `None` means the whole request uses the
+        // existing string/typed path; a B1 error is never a fallback.
+        let ordinal_field_id = if self.snapshot.segment_count() > 0
+            && self.keyword_ordinal_eligible(plan, request, aggregation, standalone)
+        {
+            #[cfg(test)]
+            b2_observation::record_eligible_request();
+            plan.codec.field_id(&request.sort.fields[0].field)
+        } else {
+            None
+        };
+        let ordinal_map = match ordinal_field_id {
+            Some(field_id) => {
+                #[cfg(test)]
+                b2_observation::record_map_preparation();
+                let preparation = self
+                    .snapshot
+                    .prepare_keyword_ordinals(field_id, &guards, cancel)
+                    .map_err(ordinal_preparation_error)?;
+                let map = ordinal_ready_from_preparation(preparation);
+                #[cfg(test)]
+                if map.is_none() {
+                    b2_observation::record_optional_fallback();
+                }
+                map
+            }
+            None => None,
+        };
+        #[cfg(test)]
+        if ordinal_map.is_some() {
+            b2_observation::record_ready_use();
+        }
         let mut budget = CandidateBudget::new(&self.limits);
         let mut scope = memory.map(SlotMemoryScope::new);
         let relevance = request.sort.fields.is_empty();
         let scoring = !plan.positive_lexical.is_empty();
         let heap_limit = request.top_k.limit.saturating_add(1);
         let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut ordinal_heap_audit = ordinal_map.as_ref().map(|_| OrdinalHeapAudit::new());
         let mut experiment = d3c::State::for_request(
             request.top_k.limit,
             self.topk_duplicate,
@@ -747,6 +804,20 @@ impl<'a> UnifiedSearcher<'a> {
                 )
             } else {
                 None
+            };
+            // PERF-06-B2: bind the numeric accessor and this segment's rank
+            // translation exactly once; neither is looked up per candidate.
+            let ordinal_binding = match (&ordinal_map, ordinal_field_id) {
+                (Some(map), Some(field_id)) => {
+                    let bound = columns
+                        .bind_keyword_sort_ordinal(field_id)?
+                        .ok_or_else(ready_ordinal_column_missing)?;
+                    #[cfg(test)]
+                    b2_observation::record_bound_column();
+                    let translation = map.bind_segment(&guards[segment_index])?;
+                    Some((bound, translation))
+                }
+                _ => None,
             };
             let json = typed::JsonAccess::open(reader)?;
             let mut typed_geo: Vec<typed::GeoMembership> = Vec::new();
@@ -870,6 +941,32 @@ impl<'a> UnifiedSearcher<'a> {
                 } else {
                     reader.doc_key(doc_id)?
                 };
+                if let Some((bound, translation)) = &ordinal_binding {
+                    #[cfg(test)]
+                    b2_observation::record_numeric_candidate();
+                    let audit = ordinal_heap_audit
+                        .as_mut()
+                        .ok_or_else(mixed_ordinal_heap_error)?;
+                    consider_ordinal_keyword_candidate(
+                        &columns,
+                        reader.schema(),
+                        request,
+                        doc_id,
+                        segment_index,
+                        key,
+                        score,
+                        scoring,
+                        bound,
+                        translation,
+                        audit,
+                        &mut heap,
+                        heap_limit,
+                        &mut budget,
+                        &mut scope,
+                        &mut experiment,
+                    )?;
+                    continue;
+                }
                 if let Some(field_id) = keyword_field_id {
                     consider_borrowed_keyword_candidate(
                         &columns,
@@ -964,6 +1061,7 @@ impl<'a> UnifiedSearcher<'a> {
                     charge,
                     sort: &request.sort,
                     relevance,
+                    ordinal_sort: None,
                 };
                 // Effective-live keys are unique per snapshot; a duplicate among
                 // retained candidates indicates corrupt committed state.
@@ -1196,14 +1294,22 @@ fn heap_commit_release(
 
 /// Conservative logical-byte charge for one retained candidate.
 fn candidate_charge(hit: &SelectedHit) -> SearchResult<u64> {
+    candidate_charge_parts(&hit.key, &hit.sort_tuple)
+}
+
+/// The exact `candidate_charge` formula over an already-owned key and tuple.
+///
+/// Used by the B2 ordinal path to charge a `MultiOne` legacy tuple without
+/// cloning the key into a temporary `SelectedHit`. The formula is unchanged.
+fn candidate_charge_parts(key: &DocumentKey, sort_tuple: &[SortValue]) -> SearchResult<u64> {
     let overflow = || SearchError::ResourceLimit {
         limit: u64::MAX,
         requested: u64::MAX,
     };
     let mut bytes = 64u64
-        .checked_add(hit.key.as_str().len() as u64)
+        .checked_add(key.as_str().len() as u64)
         .ok_or_else(overflow)?;
-    for value in &hit.sort_tuple {
+    for value in sort_tuple {
         bytes = bytes.checked_add(32).ok_or_else(overflow)?;
         if let SortValue::Value(value) = value {
             bytes = bytes
@@ -1929,6 +2035,7 @@ fn materialize_keyword_entry<'a>(
         charge,
         sort: &request.sort,
         relevance: false,
+        ordinal_sort: None,
     })
 }
 
@@ -1965,6 +2072,7 @@ fn admit_legacy_keyword_candidate<'a>(
         charge,
         sort: &request.sort,
         relevance: false,
+        ordinal_sort: None,
     };
     experiment.check(heap, &entry.hit.key)?;
     experiment.admit(entry, heap, heap_limit, budget, scope)
@@ -2094,6 +2202,260 @@ fn consider_borrowed_keyword_candidate<'a>(
     experiment.admit(entry, heap, heap_limit, budget, scope)
 }
 
+/// PERF-06-B2: the frozen detail for a prepared map without a segment column.
+fn ready_ordinal_column_missing() -> SearchError {
+    SearchError::CorruptIndex {
+        detail: "ready keyword ordinal map has no matching segment column".to_owned(),
+    }
+}
+
+/// PERF-06-B2: a numeric and a legacy entry must never share one heap.
+fn mixed_ordinal_heap_error() -> SearchError {
+    SearchError::CorruptIndex {
+        detail: "mixed ordinal and legacy sort entries".to_owned(),
+    }
+}
+
+/// PERF-06-B2: classify one B1 preparation result.
+///
+/// `NotAvailable` is a documented whole-request optional outcome; genuine B1
+/// errors never reach this helper.
+fn ordinal_ready_from_preparation(
+    preparation: KeywordOrdinalPreparation,
+) -> Option<Arc<SnapshotKeywordOrdinals>> {
+    match preparation {
+        KeywordOrdinalPreparation::Ready(map) => Some(map),
+        KeywordOrdinalPreparation::NotAvailable(_) => None,
+    }
+}
+
+/// PERF-06-B2: map one genuine B1 preparation error to its search category.
+fn ordinal_preparation_error(error: crate::index::IndexError) -> SearchError {
+    match error {
+        crate::index::IndexError::Cancelled => SearchError::Cancelled,
+        other => SearchError::Index(other),
+    }
+}
+
+/// PERF-06-B2: legacy-equivalent logical charge for a missing/null/single row.
+///
+/// Mirrors `candidate_charge` exactly: base + key, one 32-byte component, and
+/// `utf8_len + 4` for a present `Single` keyword. It is a *logical* owned-value
+/// charge, never a packed-ordinal size.
+fn ordinal_keyword_candidate_charge(key: &DocumentKey, term_len: Option<u64>) -> SearchResult<u64> {
+    let overflow = || SearchError::ResourceLimit {
+        limit: u64::MAX,
+        requested: u64::MAX,
+    };
+    let mut bytes = 64u64
+        .checked_add(key.as_str().len() as u64)
+        .ok_or_else(overflow)?;
+    bytes = bytes.checked_add(32).ok_or_else(overflow)?;
+    if let Some(term_len) = term_len {
+        bytes = bytes
+            .checked_add(term_len.checked_add(4).ok_or_else(overflow)?)
+            .ok_or_else(overflow)?;
+    }
+    Ok(bytes)
+}
+
+/// PERF-06-B2: reject a mixed-mode heap before any heap mutation.
+fn ensure_ordinal_heap(heap: &BinaryHeap<MixedEntry<'_>>) -> SearchResult<()> {
+    if heap.iter().any(|entry| entry.ordinal_sort.is_none()) {
+        return Err(mixed_ordinal_heap_error());
+    }
+    Ok(())
+}
+
+/// PERF-06-B2-F1: request-local proof that the ordinal heap was inspected before
+/// its first numeric candidate comparison. Thereafter the numeric-only admission
+/// path maintains the invariant by induction.
+struct OrdinalHeapAudit {
+    checked: bool,
+}
+
+impl OrdinalHeapAudit {
+    fn new() -> Self {
+        Self { checked: false }
+    }
+
+    fn verify_once(&mut self, heap: &BinaryHeap<MixedEntry<'_>>) -> SearchResult<()> {
+        if self.checked {
+            return Ok(());
+        }
+        #[cfg(test)]
+        b2_observation::record_full_heap_audit();
+        ensure_ordinal_heap(heap)?;
+        self.checked = true;
+        Ok(())
+    }
+}
+
+/// PERF-06-B2: full numeric candidate order, including the logical-key tie-break.
+fn ordinal_candidate_order(
+    candidate: OrdinalSortKey,
+    worst: OrdinalSortKey,
+    sort: &Sort,
+    candidate_key: &DocumentKey,
+    worst_key: &DocumentKey,
+) -> Ordering {
+    let field = &sort.fields[0];
+    match ordinal_sort_key_cmp(candidate, worst, field.direction, field.missing) {
+        Ordering::Equal => candidate_key
+            .as_str()
+            .as_bytes()
+            .cmp(worst_key.as_str().as_bytes()),
+        other => other,
+    }
+}
+
+/// PERF-06-B2: process one scored candidate through the snapshot-wide ordinals.
+///
+/// The caller has already incremented `total_hits` and resolved the logical key.
+/// Every matched candidate — competitive or not — is validated and charged in the
+/// frozen order: one numeric row read (which applies the legacy logical string
+/// budget for `Single`), the shared-rank translation, the legacy-equivalent
+/// logical charge, the existing duplicate check, then the numeric competitiveness
+/// decision. Only a competitive candidate owns a string sort tuple.
+#[allow(clippy::too_many_arguments)]
+fn consider_ordinal_keyword_candidate<'a>(
+    columns: &ColumnAccess<'_>,
+    schema: &crate::segment::CodecSchema,
+    request: &'a UnifiedRequest,
+    doc_id: u64,
+    segment_index: usize,
+    key: DocumentKey,
+    score: f64,
+    include_score: bool,
+    bound: &KeywordSortOrdinalColumn<'_>,
+    translation: &SegmentOrdinalMap<'_>,
+    audit: &mut OrdinalHeapAudit,
+    heap: &mut BinaryHeap<MixedEntry<'a>>,
+    heap_limit: usize,
+    budget: &mut CandidateBudget,
+    scope: &mut Option<SlotMemoryScope<'_>>,
+    experiment: &mut d3c::State,
+) -> SearchResult<()> {
+    let row = bound.read_sort_row(doc_id)?;
+    let numeric = match row {
+        KeywordOrdinalValue::Missing => OrdinalSortKey::Missing,
+        KeywordOrdinalValue::Null => OrdinalSortKey::Null,
+        KeywordOrdinalValue::Value { ordinal, .. } => {
+            OrdinalSortKey::Value(translation.translate(ordinal)?)
+        }
+    };
+    // A `MultiOne` row keeps the complete legacy decode (entry/vector/string
+    // admission and error order) before any reject decision.
+    let mut multi_one_tuple: Option<Vec<SortValue>> = None;
+    let charge = match row {
+        KeywordOrdinalValue::Missing | KeywordOrdinalValue::Null => {
+            ordinal_keyword_candidate_charge(&key, None)?
+        }
+        KeywordOrdinalValue::Value {
+            ordinal,
+            state: KeywordOrdinalState::Single,
+        } => {
+            let term_len = bound.dictionary_term(ordinal)?.len() as u64;
+            ordinal_keyword_candidate_charge(&key, Some(term_len))?
+        }
+        KeywordOrdinalValue::Value {
+            state: KeywordOrdinalState::MultiOne,
+            ..
+        } => {
+            #[cfg(test)]
+            b2_observation::record_multi_one_legacy_decode();
+            let tuple = sort_tuple_for_doc(columns, schema, &request.sort, None, doc_id)?;
+            if !matches!(tuple.as_slice(), [SortValue::Value(FieldValue::Keyword(_))]) {
+                return Err(SearchError::CorruptIndex {
+                    detail: "keyword ordinal MultiOne decoded an unexpected value shape".to_owned(),
+                });
+            }
+            let charge = candidate_charge_parts(&key, &tuple)?;
+            multi_one_tuple = Some(tuple);
+            charge
+        }
+    };
+    experiment.check(heap, &key)?;
+    audit.verify_once(heap)?;
+    if heap.len() >= heap_limit {
+        let worst = heap.peek().expect("heap is nonempty");
+        let Some(worst_key) = worst.ordinal_sort else {
+            return Err(mixed_ordinal_heap_error());
+        };
+        #[cfg(test)]
+        b2_observation::record_numeric_compare();
+        let ordering =
+            ordinal_candidate_order(numeric, worst_key, &request.sort, &key, &worst.hit.key);
+        if ordering != Ordering::Less {
+            #[cfg(test)]
+            match row {
+                KeywordOrdinalValue::Value {
+                    state: KeywordOrdinalState::MultiOne,
+                    ..
+                } => {}
+                _ => b2_observation::record_single_rejected(),
+            }
+            return Ok(());
+        }
+    }
+    let sort_value = match row {
+        KeywordOrdinalValue::Missing => SortValue::Missing,
+        KeywordOrdinalValue::Null => SortValue::Null,
+        KeywordOrdinalValue::Value {
+            ordinal,
+            state: KeywordOrdinalState::Single,
+        } => {
+            let term = bound.dictionary_term(ordinal)?;
+            let raw = std::str::from_utf8(term)
+                .map_err(|_| crate::segment::SegmentError::InvalidUtf8 { context: "keyword" })?;
+            // The B1 map proved this Single row exists; a disappearing view is
+            // an internal inconsistency, never a silent fallback.
+            owned_keyword_sort_value(&ColumnKeywordView::Value(raw))?.ok_or_else(|| {
+                SearchError::CorruptIndex {
+                    detail: "keyword ordinal single value was not materializable".to_owned(),
+                }
+            })?
+        }
+        KeywordOrdinalValue::Value {
+            state: KeywordOrdinalState::MultiOne,
+            ..
+        } => multi_one_tuple
+            .expect("MultiOne decoded above")
+            .pop()
+            .expect("single sort component"),
+    };
+    #[cfg(test)]
+    if matches!(
+        row,
+        KeywordOrdinalValue::Value {
+            state: KeywordOrdinalState::Single,
+            ..
+        }
+    ) {
+        b2_observation::record_owned_single_string();
+    }
+    let hit = SelectedHit {
+        segment_index,
+        doc_id,
+        key,
+        score: if include_score { Some(score) } else { None },
+        sort_tuple: vec![sort_value],
+    };
+    #[cfg(test)]
+    {
+        let owned_charge = candidate_charge(&hit)?;
+        assert_eq!(owned_charge, charge, "ordinal keyword charge mismatch");
+    }
+    let entry = MixedEntry {
+        hit,
+        charge,
+        sort: &request.sort,
+        relevance: false,
+        ordinal_sort: Some(numeric),
+    };
+    experiment.admit(entry, heap, heap_limit, budget, scope)
+}
+
 /// One bounded top-K entry. `Ord` delegates to the canonical comparator and
 /// orders **better** candidates as `Less`, so `BinaryHeap::peek` is the worst
 /// retained candidate and `into_sorted_vec` yields best-first.
@@ -2102,6 +2464,9 @@ struct MixedEntry<'a> {
     charge: u64,
     sort: &'a Sort,
     relevance: bool,
+    /// PERF-06-B2: the snapshot-wide numeric rank of an ordinal-path entry.
+    /// Legacy entries keep `None` and the canonical tuple comparator.
+    ordinal_sort: Option<OrdinalSortKey>,
 }
 
 impl PartialEq for MixedEntry<'_> {
@@ -2121,16 +2486,24 @@ impl PartialOrd for MixedEntry<'_> {
 impl Ord for MixedEntry<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
         if self.relevance {
-            default_relevance_cmp(&self.hit, &other.hit)
-        } else {
-            compare_candidates(
-                &self.hit.sort_tuple,
-                &self.hit.key,
-                &other.hit.sort_tuple,
-                &other.hit.key,
-                self.sort,
-            )
+            return default_relevance_cmp(&self.hit, &other.hit);
         }
+        if let (Some(candidate), Some(retained)) = (self.ordinal_sort, other.ordinal_sort) {
+            return ordinal_candidate_order(
+                candidate,
+                retained,
+                self.sort,
+                &self.hit.key,
+                &other.hit.key,
+            );
+        }
+        compare_candidates(
+            &self.hit.sort_tuple,
+            &self.hit.key,
+            &other.hit.sort_tuple,
+            &other.hit.key,
+            self.sort,
+        )
     }
 }
 
@@ -2431,6 +2804,108 @@ pub(crate) mod b_observation {
     }
     pub(crate) fn record_legacy() {
         LEGACY_CANDIDATE_FALLBACKS.with(|value| value.set(value.get() + 1));
+    }
+}
+
+/// PERF-06-B2 structural witnesses. Test-only; compiled out elsewhere.
+#[cfg(test)]
+pub(crate) mod b2_observation {
+    use std::cell::Cell;
+
+    thread_local! {
+        static ELIGIBLE_REQUESTS: Cell<usize> = const { Cell::new(0) };
+        static MAP_PREPARATIONS: Cell<usize> = const { Cell::new(0) };
+        static READY_USES: Cell<usize> = const { Cell::new(0) };
+        static OPTIONAL_FALLBACKS: Cell<usize> = const { Cell::new(0) };
+        static BOUND_COLUMNS: Cell<usize> = const { Cell::new(0) };
+        static NUMERIC_CANDIDATES: Cell<usize> = const { Cell::new(0) };
+        static NUMERIC_COMPARES: Cell<usize> = const { Cell::new(0) };
+        static OWNED_SINGLE_STRINGS: Cell<usize> = const { Cell::new(0) };
+        static MULTI_ONE_LEGACY_DECODES: Cell<usize> = const { Cell::new(0) };
+        static SINGLE_REJECTED_WITHOUT_COPY: Cell<usize> = const { Cell::new(0) };
+        static FULL_HEAP_AUDITS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn reset() {
+        ELIGIBLE_REQUESTS.with(|value| value.set(0));
+        MAP_PREPARATIONS.with(|value| value.set(0));
+        READY_USES.with(|value| value.set(0));
+        OPTIONAL_FALLBACKS.with(|value| value.set(0));
+        BOUND_COLUMNS.with(|value| value.set(0));
+        NUMERIC_CANDIDATES.with(|value| value.set(0));
+        NUMERIC_COMPARES.with(|value| value.set(0));
+        OWNED_SINGLE_STRINGS.with(|value| value.set(0));
+        MULTI_ONE_LEGACY_DECODES.with(|value| value.set(0));
+        SINGLE_REJECTED_WITHOUT_COPY.with(|value| value.set(0));
+        FULL_HEAP_AUDITS.with(|value| value.set(0));
+    }
+
+    pub(crate) fn eligible_requests() -> usize {
+        ELIGIBLE_REQUESTS.with(Cell::get)
+    }
+    pub(crate) fn map_preparations() -> usize {
+        MAP_PREPARATIONS.with(Cell::get)
+    }
+    pub(crate) fn ready_uses() -> usize {
+        READY_USES.with(Cell::get)
+    }
+    pub(crate) fn optional_fallbacks() -> usize {
+        OPTIONAL_FALLBACKS.with(Cell::get)
+    }
+    pub(crate) fn bound_columns() -> usize {
+        BOUND_COLUMNS.with(Cell::get)
+    }
+    pub(crate) fn numeric_candidates() -> usize {
+        NUMERIC_CANDIDATES.with(Cell::get)
+    }
+    pub(crate) fn numeric_compares() -> usize {
+        NUMERIC_COMPARES.with(Cell::get)
+    }
+    pub(crate) fn owned_single_strings() -> usize {
+        OWNED_SINGLE_STRINGS.with(Cell::get)
+    }
+    pub(crate) fn multi_one_legacy_decodes() -> usize {
+        MULTI_ONE_LEGACY_DECODES.with(Cell::get)
+    }
+    pub(crate) fn single_rejected_without_copy() -> usize {
+        SINGLE_REJECTED_WITHOUT_COPY.with(Cell::get)
+    }
+    pub(crate) fn full_heap_audits() -> usize {
+        FULL_HEAP_AUDITS.with(Cell::get)
+    }
+
+    pub(crate) fn record_eligible_request() {
+        ELIGIBLE_REQUESTS.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_map_preparation() {
+        MAP_PREPARATIONS.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_ready_use() {
+        READY_USES.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_optional_fallback() {
+        OPTIONAL_FALLBACKS.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_bound_column() {
+        BOUND_COLUMNS.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_numeric_candidate() {
+        NUMERIC_CANDIDATES.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_numeric_compare() {
+        NUMERIC_COMPARES.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_owned_single_string() {
+        OWNED_SINGLE_STRINGS.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_multi_one_legacy_decode() {
+        MULTI_ONE_LEGACY_DECODES.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_single_rejected() {
+        SINGLE_REJECTED_WITHOUT_COPY.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_full_heap_audit() {
+        FULL_HEAP_AUDITS.with(|value| value.set(value.get() + 1));
     }
 }
 
@@ -5507,6 +5982,7 @@ mod b_tests {
 
         for top_k in [10usize, 100] {
             b_observation::reset();
+            b2_observation::reset();
             let eligible = search(
                 &snapshot,
                 &request(
@@ -5522,18 +5998,28 @@ mod b_tests {
                 (0..top_k).map(|i| format!("k{i:05}")).collect::<Vec<_>>()
             );
             assert_eq!(b_observation::eligible_invocations(), 1);
-            assert_eq!(b_observation::borrowed_value_reads(), 50_000);
-            // Only the K+1 heap entries (and replacements) own a tuple.
+            // PERF-06-B2: the eligible request now ranks by snapshot-wide
+            // ordinals instead of the PR 15H-B borrowed string comparator.
+            assert_eq!(b_observation::borrowed_value_reads(), 0);
+            assert_eq!(b_observation::owned_tuple_materializations(), 0);
+            assert_eq!(b_observation::legacy_candidate_fallbacks(), 0);
+            assert_eq!(b2_observation::eligible_requests(), 1);
+            assert_eq!(b2_observation::map_preparations(), 1);
+            assert_eq!(b2_observation::ready_uses(), 1);
+            assert_eq!(b2_observation::optional_fallbacks(), 0);
+            assert_eq!(b2_observation::bound_columns(), 1);
+            assert_eq!(b2_observation::numeric_candidates(), 50_000);
+            // Only the K+1 heap entries (and replacements) own a string.
             assert!(
-                b_observation::owned_tuple_materializations() <= top_k + 1,
+                b2_observation::owned_single_strings() <= top_k + 1,
                 "owned={}",
-                b_observation::owned_tuple_materializations()
+                b2_observation::owned_single_strings()
             );
             assert_eq!(
-                b_observation::rejected_without_materialization(),
-                50_000 - b_observation::owned_tuple_materializations()
+                b2_observation::single_rejected_without_copy(),
+                50_000 - b2_observation::owned_single_strings()
             );
-            assert_eq!(b_observation::legacy_candidate_fallbacks(), 0);
+            assert_eq!(b2_observation::multi_one_legacy_decodes(), 0);
             let fallback = search(
                 &snapshot,
                 &request(
@@ -5886,6 +6372,1549 @@ mod b_tests {
     }
 }
 
+/// PERF-06-B2 — snapshot-wide ordinal collector tests.
+#[cfg(test)]
+#[allow(clippy::needless_option_as_deref)]
+mod b2_tests {
+    use super::*;
+    use crate::analysis::NeverCancel;
+    use crate::contract::document::{Cardinality, Document, DocumentKey, FieldValues};
+    use crate::contract::result::{
+        MissingValuePosition, MultiValueSelector, Sort, SortDirection, SortField, TopK,
+    };
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue};
+    use crate::index::{Index, IndexLimits, ReaderSnapshot};
+    use crate::segment::SegmentLimits;
+    use crate::storage::{Directory, MemoryDirectory};
+    use std::num::NonZeroUsize;
+    use std::sync::Arc;
+
+    fn schema() -> Schema {
+        Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "grp",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, false, false),
+                ),
+                FieldDefinition::new(
+                    "doc_id",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, true),
+                )
+                .with_normalizer("keyword"),
+                FieldDefinition::new(
+                    "n",
+                    FieldType::I64,
+                    Cardinality::Single,
+                    FieldOptions::new(false, true, true),
+                ),
+            ],
+            None,
+        )
+        .unwrap()
+    }
+
+    /// One input row's `doc_id` state, independent of the production codec.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum City {
+        Missing,
+        Null,
+        Value(&'static str),
+        /// A single-element `FieldValues::Multi`, encoded as `MultiOne`.
+        Multi(&'static str),
+    }
+
+    fn values(city: City) -> Option<FieldValues> {
+        match city {
+            City::Missing => None,
+            City::Null => Some(FieldValues::ExplicitNull),
+            City::Value(value) => Some(FieldValues::Single(FieldValue::Keyword(value.to_owned()))),
+            City::Multi(value) => Some(FieldValues::Multi(vec![FieldValue::Keyword(
+                value.to_owned(),
+            )])),
+        }
+    }
+
+    fn text(city: City) -> Option<&'static str> {
+        match city {
+            City::Missing | City::Null => None,
+            City::Value(value) | City::Multi(value) => Some(value),
+        }
+    }
+
+    fn document(key: &str, city: City) -> Document {
+        let mut document = Document::new(DocumentKey::new(key).expect("key"));
+        document
+            .insert(
+                "grp",
+                FieldValues::Single(FieldValue::Keyword("common".to_owned())),
+            )
+            .expect("grp");
+        if let Some(city) = values(city) {
+            document.insert("doc_id", city).expect("doc_id");
+        }
+        document
+            .insert("n", FieldValues::Single(FieldValue::I64(1)))
+            .expect("n");
+        document
+    }
+
+    fn large_limits() -> IndexLimits {
+        IndexLimits::default()
+            .with_max_pending_docs(200_000)
+            .with_max_pending_bytes(512 * 1024 * 1024)
+    }
+
+    fn directory() -> Arc<dyn Directory> {
+        Arc::new(MemoryDirectory::new())
+    }
+
+    fn build(docs: &[(&str, City)]) -> Index {
+        build_segments(&[docs.to_vec()])
+    }
+
+    fn build_segments(segments: &[Vec<(&str, City)>]) -> Index {
+        let directory = directory();
+        {
+            let index = Index::create_with_limits(
+                Arc::clone(&directory),
+                schema(),
+                AnalyzerRegistry::builtin(),
+                large_limits(),
+            )
+            .expect("create");
+            for segment in segments {
+                let mut writer = index.writer().expect("writer");
+                for (key, city) in segment {
+                    writer.insert(document(key, *city)).expect("insert");
+                }
+                writer.commit().expect("commit");
+            }
+        }
+        Index::open_existing(directory, schema(), AnalyzerRegistry::builtin()).expect("reopen")
+    }
+
+    fn term() -> Query {
+        Query::Term {
+            field: "grp".to_owned(),
+            value: FieldValue::Keyword("common".to_owned()),
+        }
+    }
+
+    fn fallback_query() -> Query {
+        Query::And(vec![term()])
+    }
+
+    fn sort_field(direction: SortDirection, missing: MissingValuePosition) -> Sort {
+        let mut field = SortField::new("doc_id", direction);
+        field.missing = missing;
+        Sort::new(vec![field])
+    }
+
+    fn request(query: Query, top_k: usize, sort: Sort) -> UnifiedRequest {
+        let mut request = UnifiedRequest::new(query, TopK::new(top_k).expect("top-k"));
+        request.sort = sort;
+        request.projection = Projection::Fields(vec!["doc_id".to_owned()]);
+        request
+    }
+
+    fn run(
+        snapshot: &ReaderSnapshot,
+        request: &UnifiedRequest,
+        limits: SearchLimits,
+    ) -> SearchResult<UnifiedResponse> {
+        let schema = schema();
+        let registry = AnalyzerRegistry::builtin();
+        UnifiedSearcher::new(snapshot, &schema, &registry, limits).search(
+            request,
+            &Budgets::new(),
+            &NeverCancel,
+        )
+    }
+
+    fn search(snapshot: &ReaderSnapshot, request: &UnifiedRequest) -> UnifiedResponse {
+        run(snapshot, request, SearchLimits::default()).expect("search")
+    }
+
+    fn keys(response: &UnifiedResponse) -> Vec<String> {
+        response
+            .hits
+            .iter()
+            .map(|hit| hit.key.as_str().to_owned())
+            .collect()
+    }
+
+    fn bits(response: &UnifiedResponse) -> Vec<u64> {
+        response
+            .hits
+            .iter()
+            .map(|hit| hit.score.expect("scored").to_bits())
+            .collect()
+    }
+
+    /// Independent input oracle: class rank, then raw bytes adjusted only for
+    /// `Desc`, then logical key bytes ascending. Never calls production code.
+    fn expected_order(
+        rows: &[(String, City)],
+        direction: SortDirection,
+        missing: MissingValuePosition,
+    ) -> Vec<String> {
+        let class = |city: City| match (city, missing) {
+            (City::Missing, MissingValuePosition::First) => 0u8,
+            (City::Null, MissingValuePosition::First) => 1,
+            (City::Value(_) | City::Multi(_), MissingValuePosition::First) => 2,
+            (City::Value(_) | City::Multi(_), MissingValuePosition::Last) => 0,
+            (City::Null, MissingValuePosition::Last) => 1,
+            (City::Missing, MissingValuePosition::Last) => 2,
+        };
+        let mut order: Vec<&(String, City)> = rows.iter().collect();
+        order.sort_by(|left, right| {
+            class(left.1)
+                .cmp(&class(right.1))
+                .then_with(|| match (text(left.1), text(right.1)) {
+                    (Some(a), Some(b)) => match direction {
+                        SortDirection::Asc => a.as_bytes().cmp(b.as_bytes()),
+                        SortDirection::Desc => b.as_bytes().cmp(a.as_bytes()),
+                    },
+                    _ => Ordering::Equal,
+                })
+                .then_with(|| left.0.as_bytes().cmp(right.0.as_bytes()))
+        });
+        order.into_iter().map(|(key, _)| key.clone()).collect()
+    }
+
+    fn compare_both(snapshot: &ReaderSnapshot, rows: &[(String, City)], top_k: usize) {
+        for direction in [SortDirection::Asc, SortDirection::Desc] {
+            for missing in [MissingValuePosition::First, MissingValuePosition::Last] {
+                let sort = sort_field(direction, missing);
+                let ordinal = search(snapshot, &request(term(), top_k, sort.clone()));
+                let legacy = search(snapshot, &request(fallback_query(), top_k, sort));
+                let expected = expected_order(rows, direction, missing);
+                let expected_prefix: Vec<String> = expected.iter().take(top_k).cloned().collect();
+                assert_eq!(keys(&ordinal), expected_prefix, "{direction:?}/{missing:?}");
+                assert_eq!(ordinal.total_hits, rows.len() as u64);
+                assert_eq!(legacy.total_hits, ordinal.total_hits);
+                assert_eq!(keys(&legacy), keys(&ordinal));
+                assert_eq!(bits(&legacy), bits(&ordinal));
+                assert_eq!(
+                    legacy
+                        .hits
+                        .iter()
+                        .map(|hit| hit.fields.clone())
+                        .collect::<Vec<_>>(),
+                    ordinal
+                        .hits
+                        .iter()
+                        .map(|hit| hit.fields.clone())
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(ordinal.next_cursor.is_some(), rows.len() > top_k);
+            }
+        }
+    }
+
+    fn primary_guard(snapshot: &ReaderSnapshot) -> crate::index::GuardedSegmentReader {
+        snapshot.open_segment_reader(0).expect("guard")
+    }
+
+    /// B2-U03: shared ranks, not segment-local ordinals, drive the merge.
+    #[test]
+    fn b2_u03_local_ordinals_translate_to_one_shared_order() {
+        let index = build_segments(&[
+            vec![("a0", City::Value("Seattle"))],
+            vec![
+                ("b0", City::Value("Boston")),
+                ("b1", City::Value("Seattle")),
+            ],
+            vec![("c0", City::Value("Austin")), ("c1", City::Value("Boston"))],
+        ]);
+        let snapshot = index.snapshot();
+        let guards: Vec<_> = (0..snapshot.segment_count())
+            .map(|index| snapshot.open_segment_reader(index).expect("guard"))
+            .collect();
+        let field = guards[0]
+            .reader()
+            .schema()
+            .field_id("doc_id")
+            .expect("doc_id field id");
+        let preparation = snapshot
+            .prepare_keyword_ordinals(field, &guards, &NeverCancel)
+            .expect("prepare");
+        let map = preparation
+            .ready()
+            .unwrap_or_else(|| panic!("ready map: {preparation:?}"));
+
+        // Locate a document by logical key: manifest segment order is not the
+        // commit order.
+        let locate = |key: &str| {
+            for (index, guard) in guards.iter().enumerate() {
+                let keys = guard.reader().doc_keys().expect("keys");
+                if let Some(doc_id) = keys.iter().position(|entry| entry.as_str() == key) {
+                    return (index, doc_id as u64);
+                }
+            }
+            panic!("key {key} not found");
+        };
+        let local = |index: usize, doc: u64| {
+            let columns = guards[index]
+                .reader()
+                .open_columns()
+                .expect("columns")
+                .expect("section");
+            let handle = columns
+                .bind_keyword_ordinals(field)
+                .expect("bind")
+                .expect("ordinal");
+            match handle.doc_ordinal(doc).expect("row") {
+                KeywordOrdinalValue::Value { ordinal, .. } => ordinal,
+                other => panic!("expected a value row, got {other:?}"),
+            }
+        };
+        let (a_index, a_doc) = locate("a0");
+        let (b0_index, b0_doc) = locate("b0");
+        let (b1_index, b1_doc) = locate("b1");
+        assert_ne!(a_index, b0_index);
+        assert_eq!(b0_index, b1_index);
+        let a_seattle = local(a_index, a_doc);
+        let b_boston = local(b0_index, b0_doc);
+        let b_seattle = local(b1_index, b1_doc);
+        assert_eq!(
+            a_seattle, b_boston,
+            "the same local ordinal names different terms in two segments"
+        );
+        assert_ne!(
+            a_seattle, b_seattle,
+            "same term, different local ordinals across segments"
+        );
+        let shared = |index: usize, doc: u64| {
+            map.bind_segment(&guards[index])
+                .expect("bind")
+                .translate(local(index, doc))
+                .expect("translate")
+        };
+        assert_eq!(shared(a_index, a_doc), shared(b1_index, b1_doc));
+        assert_ne!(shared(a_index, a_doc), shared(b0_index, b0_doc));
+        assert!(shared(b0_index, b0_doc) < shared(a_index, a_doc));
+
+        let rows = vec![
+            ("a0".to_owned(), City::Value("Seattle")),
+            ("b0".to_owned(), City::Value("Boston")),
+            ("b1".to_owned(), City::Value("Seattle")),
+            ("c0".to_owned(), City::Value("Austin")),
+            ("c1".to_owned(), City::Value("Boston")),
+        ];
+        b2_observation::reset();
+        compare_both(&snapshot, &rows, 100);
+        assert_eq!(b2_observation::map_preparations(), 4);
+        assert_eq!(b2_observation::optional_fallbacks(), 0);
+        assert_eq!(b2_observation::bound_columns(), 12);
+    }
+
+    /// B2-U04/U12: bounded top-K sizes, complete counts and K+1 truncation.
+    #[test]
+    fn b2_u04_top_k_sizes_and_truncation() {
+        let index = build_segments(&[
+            vec![
+                ("k0", City::Value("d")),
+                ("k1", City::Value("a")),
+                ("k2", City::Missing),
+            ],
+            vec![("k3", City::Value("c")), ("k4", City::Null)],
+            vec![
+                ("k5", City::Value("b")),
+                ("k6", City::Value("a")),
+                ("k7", City::Value("e")),
+            ],
+        ]);
+        let snapshot = index.snapshot();
+        let rows: Vec<(String, City)> = vec![
+            ("k0".to_owned(), City::Value("d")),
+            ("k1".to_owned(), City::Value("a")),
+            ("k2".to_owned(), City::Missing),
+            ("k3".to_owned(), City::Value("c")),
+            ("k4".to_owned(), City::Null),
+            ("k5".to_owned(), City::Value("b")),
+            ("k6".to_owned(), City::Value("a")),
+            ("k7".to_owned(), City::Value("e")),
+        ];
+        for top_k in [1usize, 2, 5, 10, 100] {
+            compare_both(&snapshot, &rows, top_k);
+        }
+        // Exactly K and K+1 candidates produce no cursor / one cursor.
+        let one = search(
+            &snapshot,
+            &request(
+                term(),
+                8,
+                sort_field(SortDirection::Asc, MissingValuePosition::First),
+            ),
+        );
+        assert_eq!(one.total_hits, 8);
+        assert!(one.next_cursor.is_none());
+        let one = search(
+            &snapshot,
+            &request(
+                term(),
+                7,
+                sort_field(SortDirection::Asc, MissingValuePosition::First),
+            ),
+        );
+        assert!(one.next_cursor.is_some());
+        // The cursor retains the Kth owned string tuple, never a numeric rank.
+        let cursor = one.next_cursor.expect("cursor");
+        assert!(matches!(
+            cursor.last_sort.first(),
+            Some(SortValue::Value(FieldValue::Keyword(_)))
+        ));
+    }
+
+    /// B2-U05: equal shared ordinals across segments tie by logical key bytes.
+    #[test]
+    fn b2_u05_equal_ranks_tie_by_key_ascending() {
+        let index = build_segments(&[
+            vec![("b1", City::Value("tie")), ("a2", City::Value("a0"))],
+            vec![("a1", City::Value("tie"))],
+        ]);
+        let snapshot = index.snapshot();
+        let rows = vec![
+            ("b1".to_owned(), City::Value("tie")),
+            ("a2".to_owned(), City::Value("a0")),
+            ("a1".to_owned(), City::Value("tie")),
+        ];
+        for (direction, expected) in [
+            (SortDirection::Asc, vec!["a2", "a1", "b1"]),
+            (SortDirection::Desc, vec!["a1", "b1", "a2"]),
+        ] {
+            let response = search(
+                &snapshot,
+                &request(
+                    term(),
+                    100,
+                    sort_field(direction, MissingValuePosition::Last),
+                ),
+            );
+            assert_eq!(keys(&response), expected, "{direction:?}");
+        }
+        compare_both(&snapshot, &rows, 100);
+    }
+
+    /// B2-U06: `MultiOne` keeps its legacy shape and full decode but sorts by its
+    /// one value.
+    #[test]
+    fn b2_u06_multi_one_keeps_shape_and_order() {
+        let index = build_segments(&[vec![
+            ("k0", City::Value("m")),
+            ("k1", City::Multi("m")),
+            ("k2", City::Missing),
+            ("k3", City::Null),
+            ("k4", City::Value("a")),
+            ("k5", City::Value("z")),
+        ]]);
+        let snapshot = index.snapshot();
+        let rows = vec![
+            ("k0".to_owned(), City::Value("m")),
+            ("k1".to_owned(), City::Multi("m")),
+            ("k2".to_owned(), City::Missing),
+            ("k3".to_owned(), City::Null),
+            ("k4".to_owned(), City::Value("a")),
+            ("k5".to_owned(), City::Value("z")),
+        ];
+        b2_observation::reset();
+        compare_both(&snapshot, &rows, 100);
+        assert!(b2_observation::multi_one_legacy_decodes() >= 4);
+        // The projected value keeps the one-element multi shape.
+        let response = search(
+            &snapshot,
+            &request(
+                term(),
+                100,
+                sort_field(SortDirection::Asc, MissingValuePosition::Last),
+            ),
+        );
+        let multi = response
+            .hits
+            .iter()
+            .find(|hit| hit.key.as_str() == "k1")
+            .expect("multi hit");
+        assert_eq!(
+            multi.fields,
+            vec![(
+                "doc_id".to_owned(),
+                FieldValues::Multi(vec![FieldValue::Keyword("m".to_owned())])
+            )]
+        );
+    }
+
+    /// B2-U07: a losing 80-byte `Single` still fails the frozen 79-byte logical
+    /// admission before discard.
+    #[test]
+    fn b2_u07_losing_long_value_reports_the_decode_limit() {
+        let long: &'static str = Box::leak("z".repeat(80).into_boxed_str());
+        assert_eq!(long.len(), 80);
+        // "a" sorts before the 80-byte value, so the long row is a loser at K=1.
+        let rows: [(&str, City); 2] = [("k0", City::Value("a")), ("k1", City::Value(long))];
+        let directory = directory();
+        {
+            let index = Index::create_with_limits(
+                Arc::clone(&directory),
+                schema(),
+                AnalyzerRegistry::builtin(),
+                large_limits(),
+            )
+            .expect("create");
+            let mut writer = index.writer().expect("writer");
+            for (key, city) in rows {
+                writer.insert(document(key, city)).expect("insert");
+            }
+            writer.commit().expect("commit");
+        }
+        // The container-open path already requires a decode allowance above 80
+        // bytes for this fixture (`max_section_decode_bytes(79)` is refused with
+        // `requested: 600`), so a public snapshot cannot also exercise the
+        // per-candidate 79-byte rejection: the bound accessor unit test
+        // (`b2_u07_decode_budget_79_rejects_the_80_byte_single_before_discard`)
+        // proves that exact `limit: 79, requested: 80` error on real v2 bytes.
+        // Here the losing 80-byte value must be fully admitted under permissive
+        // limits and never truncate the result.
+        let index =
+            Index::open_existing(directory, schema(), AnalyzerRegistry::builtin()).expect("open");
+        let snapshot = index.snapshot();
+        let response = run(
+            &snapshot,
+            &request(
+                term(),
+                1,
+                sort_field(SortDirection::Asc, MissingValuePosition::Last),
+            ),
+            SearchLimits::default(),
+        )
+        .expect("permissive limits admit the 80-byte value");
+        assert_eq!(response.total_hits, 2);
+        assert_eq!(keys(&response), vec!["k0".to_owned()]);
+        let response = search(
+            &snapshot,
+            &request(
+                term(),
+                2,
+                sort_field(SortDirection::Asc, MissingValuePosition::Last),
+            ),
+        );
+        assert_eq!(keys(&response), vec!["k0".to_owned(), "k1".to_owned()]);
+    }
+
+    /// B2-U08/U22: an exact candidate-budget preflight failure leaves the heap and
+    /// retained charge untouched; retained charges equal `candidate_charge`.
+    #[test]
+    fn b2_u08_u22_budget_failure_leaves_heap_unchanged_and_charges_match() {
+        let request = request(
+            term(),
+            1,
+            sort_field(SortDirection::Asc, MissingValuePosition::Last),
+        );
+        let exact = SearchLimits::default()
+            .with_max_total_candidate_bytes(209)
+            .expect("limit");
+        let index = build(&[("k000", City::Value("b")), ("k001", City::Value("a"))]);
+        let snapshot = index.snapshot();
+        let guard = primary_guard(&snapshot);
+        let guards = [primary_guard(&snapshot)];
+        let field = guards[0]
+            .reader()
+            .schema()
+            .field_id("doc_id")
+            .expect("doc_id field id");
+        let preparation = snapshot
+            .prepare_keyword_ordinals(field, &guards, &NeverCancel)
+            .expect("prepare");
+        let map = preparation
+            .ready()
+            .unwrap_or_else(|| panic!("ready: {preparation:?}"));
+        let translation = map.bind_segment(&guard).expect("bind segment");
+        let reader = guard.reader();
+        let columns = ColumnAccess::open(reader).expect("columns");
+        let bound = columns
+            .bind_keyword_sort_ordinal(field)
+            .expect("bind")
+            .expect("ordinal");
+        let mut budget = CandidateBudget::new(&exact);
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut experiment = d3c::State::for_test(d3c::Kind::Linear, d3c::Profile::P0, 1);
+        let mut audit = OrdinalHeapAudit::new();
+        consider_ordinal_keyword_candidate(
+            &columns,
+            reader.schema(),
+            &request,
+            0,
+            0,
+            DocumentKey::new("k000").expect("key"),
+            1.0,
+            true,
+            &bound,
+            &translation,
+            &mut audit,
+            &mut heap,
+            1,
+            &mut budget,
+            &mut scope,
+            &mut experiment,
+        )
+        .expect("first candidate fits");
+        assert_eq!(heap.len(), 1);
+        let retained = heap.peek().expect("retained");
+        assert_eq!(retained.hit.key.as_str(), "k000");
+        assert_eq!(
+            retained.charge,
+            candidate_charge(&retained.hit).expect("charge")
+        );
+        assert_eq!(retained.charge, 105);
+        let error = consider_ordinal_keyword_candidate(
+            &columns,
+            reader.schema(),
+            &request,
+            1,
+            0,
+            DocumentKey::new("k001").expect("key"),
+            1.0,
+            true,
+            &bound,
+            &translation,
+            &mut audit,
+            &mut heap,
+            1,
+            &mut budget,
+            &mut scope,
+            &mut experiment,
+        )
+        .expect_err("second insertion exceeds the exact budget");
+        assert!(matches!(
+            error,
+            SearchError::ResourceLimit {
+                limit: 209,
+                requested: 210
+            }
+        ));
+        assert_eq!(heap.len(), 1);
+        assert_eq!(
+            heap.peek().expect("retained").hit.key.as_str(),
+            "k000",
+            "no partial replacement"
+        );
+        assert_eq!(
+            heap.peek().expect("retained").charge,
+            candidate_charge(&heap.peek().expect("retained").hit).expect("charge")
+        );
+    }
+
+    /// B2-U09/U15/U24: ineligible shapes never attempt preparation.
+    #[test]
+    fn b2_u09_u15_u24_ineligible_shapes_do_not_prepare() {
+        let index = build(&[
+            ("k0", City::Value("a")),
+            ("k1", City::Value("b")),
+            ("k2", City::Missing),
+        ]);
+        let snapshot = index.snapshot();
+        let asc = sort_field(SortDirection::Asc, MissingValuePosition::Last);
+        let mut multi_selector = SortField::new("doc_id", SortDirection::Asc);
+        multi_selector.multi = Some(MultiValueSelector::Min);
+        let mut json_field = SortField::new("doc_id", SortDirection::Asc);
+        json_field.json_path =
+            Some(crate::contract::query::JsonPathExpr::parse("$.x").expect("json path"));
+        let mut geo_field = SortField::new("doc_id", SortDirection::Asc);
+        geo_field.distance_from =
+            Some(crate::contract::value::GeoPoint::new(0.0, 0.0).expect("geo point"));
+        let mut relevance = request(term(), 10, Sort::default());
+        relevance.sort = Sort::default();
+        let shapes = vec![
+            request(term(), 10, Sort::default()),
+            request(
+                term(),
+                10,
+                Sort::new(vec![
+                    SortField::new("doc_id", SortDirection::Asc),
+                    SortField::new("n", SortDirection::Asc),
+                ]),
+            ),
+            request(
+                term(),
+                10,
+                Sort::new(vec![SortField::new("n", SortDirection::Asc)]),
+            ),
+            request(term(), 10, Sort::new(vec![multi_selector])),
+            request(term(), 10, Sort::new(vec![json_field])),
+            request(term(), 10, Sort::new(vec![geo_field])),
+            request(fallback_query(), 10, asc.clone()),
+            request(
+                Query::And(vec![
+                    term(),
+                    Query::Exists {
+                        field: "doc_id".to_owned(),
+                    },
+                ]),
+                10,
+                asc.clone(),
+            ),
+            relevance,
+        ];
+        for shape in shapes {
+            b2_observation::reset();
+            let _ = run(&snapshot, &shape, SearchLimits::default());
+            assert_eq!(b2_observation::eligible_requests(), 0, "{shape:?}");
+            assert_eq!(b2_observation::map_preparations(), 0, "{shape:?}");
+        }
+
+        // Batch and aggregation requests are ineligible too.
+        b2_observation::reset();
+        let mut meter = BatchExecutionMeter::new(1_000_000, 1_000_000, 1_000_000);
+        let schema = self::schema();
+        let registry = AnalyzerRegistry::builtin();
+        let searcher = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+        let _ = searcher
+            .search_with_batch(
+                &request(term(), 10, asc.clone()),
+                &Budgets::new(),
+                &NeverCancel,
+                &mut meter,
+            )
+            .expect("batch slot");
+        assert_eq!(b2_observation::map_preparations(), 0);
+        let aggregation = Aggregation::new();
+        let _ = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+            .search_impl(
+                &request(term(), 10, asc),
+                &Budgets::new(),
+                &NeverCancel,
+                None,
+                false,
+                Some(&aggregation),
+            )
+            .expect("aggregation slot");
+        assert_eq!(b2_observation::map_preparations(), 0);
+
+        // The same eligible shape does prepare exactly once per request.
+        b2_observation::reset();
+        let response = search(
+            &snapshot,
+            &request(
+                term(),
+                10,
+                sort_field(SortDirection::Asc, MissingValuePosition::Last),
+            ),
+        );
+        assert_eq!(response.total_hits, 3);
+        assert_eq!(b2_observation::eligible_requests(), 1);
+        assert_eq!(b2_observation::map_preparations(), 1);
+        assert_eq!(b2_observation::ready_uses(), 1);
+        assert_eq!(b2_observation::bound_columns(), 1);
+        assert_eq!(b2_observation::numeric_candidates(), 3);
+    }
+
+    /// B2-U10/U11/U12: optional outcomes, cancellation and genuine errors map
+    /// distinctly.
+    #[test]
+    fn b2_u10_u11_u12_optional_and_error_dispatch() {
+        for reason in [
+            crate::index::KeywordOrdinalUnavailable::LegacySegment,
+            crate::index::KeywordOrdinalUnavailable::ResourceBudget,
+            crate::index::KeywordOrdinalUnavailable::Allocation,
+            crate::index::KeywordOrdinalUnavailable::UnsupportedField,
+        ] {
+            assert!(
+                ordinal_ready_from_preparation(KeywordOrdinalPreparation::NotAvailable(reason))
+                    .is_none(),
+                "{reason:?} must be a whole-request fallback"
+            );
+        }
+        assert!(matches!(
+            ordinal_preparation_error(crate::index::IndexError::Cancelled),
+            SearchError::Cancelled
+        ));
+        assert!(matches!(
+            ordinal_preparation_error(crate::index::IndexError::CorruptCommittedState {
+                detail: "poison".to_owned()
+            }),
+            SearchError::Index(crate::index::IndexError::CorruptCommittedState { .. })
+        ));
+
+        let index = build(&[("k0", City::Value("a"))]);
+        let snapshot = index.snapshot();
+        let guards: Vec<_> = (0..snapshot.segment_count())
+            .map(|index| snapshot.open_segment_reader(index).expect("guard"))
+            .collect();
+        let cancelled = crate::analysis::CancellationFlag::new();
+        cancelled.cancel();
+        assert!(matches!(
+            snapshot.prepare_keyword_ordinals(
+                guards[0]
+                    .reader()
+                    .schema()
+                    .field_id("doc_id")
+                    .expect("field"),
+                &guards,
+                &cancelled
+            ),
+            Err(crate::index::IndexError::Cancelled)
+        ));
+        let error = run(
+            &snapshot,
+            &request(
+                term(),
+                1,
+                sort_field(SortDirection::Asc, MissingValuePosition::Last),
+            ),
+            SearchLimits::default(),
+        );
+        // A pre-cancelled flag is rejected by the existing request checks; the
+        // important property is the canonical `SearchError::Cancelled`.
+        let _ = error;
+        let schema = self::schema();
+        let registry = AnalyzerRegistry::builtin();
+        let error = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+            .search(
+                &request(
+                    term(),
+                    1,
+                    sort_field(SortDirection::Asc, MissingValuePosition::Last),
+                ),
+                &Budgets::new(),
+                &cancelled,
+            )
+            .expect_err("cancelled request");
+        assert!(matches!(error, SearchError::Cancelled));
+    }
+
+    /// B2-U14: legacy entries stay `None`, ordinal entries `Some`, and a mixed
+    /// heap is rejected before mutation.
+    #[test]
+    fn b2_u14_mixed_heaps_are_rejected_before_mutation() {
+        let sort = sort_field(SortDirection::Asc, MissingValuePosition::Last);
+        let entry = |key: &str, ordinal: Option<OrdinalSortKey>| MixedEntry {
+            hit: SelectedHit {
+                segment_index: 0,
+                doc_id: 0,
+                key: DocumentKey::new(key).expect("key"),
+                score: Some(1.0),
+                sort_tuple: vec![SortValue::Value(FieldValue::Keyword(key.to_owned()))],
+            },
+            charge: 100,
+            sort: &sort,
+            relevance: false,
+            ordinal_sort: ordinal,
+        };
+        let one = entry("k1", Some(OrdinalSortKey::Value(2)));
+        let two = entry("k2", Some(OrdinalSortKey::Value(1)));
+        assert_eq!(two.cmp(&one), Ordering::Less);
+        assert_eq!(
+            one.cmp(&two),
+            ordinal_sort_key_cmp(
+                OrdinalSortKey::Value(2),
+                OrdinalSortKey::Value(1),
+                SortDirection::Asc,
+                MissingValuePosition::Last
+            )
+        );
+        // Equal ranks tie by key ascending.
+        let tie = entry("k0", Some(OrdinalSortKey::Value(2)));
+        assert_eq!(tie.cmp(&one), Ordering::Less);
+        // Legacy entries keep the canonical tuple comparator.
+        let legacy_a = entry("k1", None);
+        let legacy_b = entry("k2", None);
+        assert_eq!(
+            legacy_a.cmp(&legacy_b),
+            compare_candidates(
+                &legacy_a.hit.sort_tuple,
+                &legacy_a.hit.key,
+                &legacy_b.hit.sort_tuple,
+                &legacy_b.hit.key,
+                &sort
+            )
+        );
+        // A mixed pair falls back to the canonical comparison without panicking.
+        assert_eq!(
+            legacy_a.cmp(&one),
+            compare_candidates(
+                &legacy_a.hit.sort_tuple,
+                &legacy_a.hit.key,
+                &one.hit.sort_tuple,
+                &one.hit.key,
+                &sort
+            )
+        );
+        let mut heap = BinaryHeap::new();
+        heap.push(legacy_a);
+        let error = ensure_ordinal_heap(&heap).expect_err("mixed heap");
+        assert!(matches!(error, SearchError::CorruptIndex { .. }));
+        assert_eq!(heap.len(), 1);
+    }
+
+    /// B2-U16: descending input makes every candidate competitive, so owned
+    /// strings track actual admissions; ascending input bounds them by K+1.
+    #[test]
+    fn b2_u16_materialization_tracks_competitiveness() {
+        let count = 1_000usize;
+        let descending: Vec<(String, City)> = (0..count)
+            .map(|index| {
+                let value = format!("d{:08}", count - index);
+                // Leaked literals keep the test input table static.
+                (
+                    format!("k{index:05}"),
+                    City::Value(Box::leak(value.into_boxed_str())),
+                )
+            })
+            .collect();
+        let refs: Vec<(&str, City)> = descending
+            .iter()
+            .map(|(key, city)| (key.as_str(), *city))
+            .collect();
+        let index = build(&refs);
+        let snapshot = index.snapshot();
+        b2_observation::reset();
+        let response = search(
+            &snapshot,
+            &request(
+                term(),
+                10,
+                sort_field(SortDirection::Asc, MissingValuePosition::Last),
+            ),
+        );
+        assert_eq!(response.total_hits, count as u64);
+        assert_eq!(b2_observation::numeric_candidates(), count);
+        assert_eq!(b2_observation::owned_single_strings(), count);
+        assert_eq!(b2_observation::single_rejected_without_copy(), 0);
+        assert_eq!(b2_observation::numeric_compares(), count - 11);
+
+        let ascending: Vec<(&str, City)> = (0..count)
+            .map(|index| {
+                let value = Box::leak(format!("d{index:08}").into_boxed_str());
+                (
+                    Box::leak(format!("k{index:05}").into_boxed_str()) as &str,
+                    City::Value(value),
+                )
+            })
+            .collect();
+        let index = build(&ascending);
+        let snapshot = index.snapshot();
+        b2_observation::reset();
+        let response = search(
+            &snapshot,
+            &request(
+                term(),
+                10,
+                sort_field(SortDirection::Asc, MissingValuePosition::Last),
+            ),
+        );
+        assert_eq!(response.total_hits, count as u64);
+        assert!(b2_observation::owned_single_strings() <= 11);
+        assert_eq!(
+            b2_observation::single_rejected_without_copy(),
+            count - b2_observation::owned_single_strings()
+        );
+    }
+
+    /// B2-U17: a corrupt v2 dictionary term is refused by the authoritative
+    /// reader, never downgraded to optional unavailability.
+    #[test]
+    fn b2_u17_corrupt_v2_terms_are_authoritative_errors() {
+        let index = build(&[("k0", City::Value("alpha")), ("k1", City::Value("beta"))]);
+        let guard = primary_guard(&index.snapshot());
+        let mut bytes = guard.reader().bytes().to_vec();
+        let at = bytes
+            .windows(5)
+            .position(|window| window == b"alpha")
+            .expect("alpha payload");
+        bytes[at] = 0xFF;
+        assert!(crate::segment::SegmentReader::open(bytes, SegmentLimits::default()).is_err());
+    }
+
+    /// B2-U18: both production duplicate strategies keep identical results.
+    #[test]
+    fn b2_u18_duplicate_strategies_preserve_ordinal_results() {
+        let segments: Vec<Vec<(&str, City)>> = (0..3)
+            .map(|segment| {
+                (0..20)
+                    .map(|position| {
+                        let key: &'static str =
+                            Box::leak(format!("k{segment}-{position:03}").into_boxed_str());
+                        let value: &'static str = Box::leak(
+                            format!("v{:03}", (position * 7 + segment) % 13).into_boxed_str(),
+                        );
+                        (key, City::Value(value))
+                    })
+                    .collect()
+            })
+            .collect();
+        let index = build_segments(&segments);
+        let snapshot = index.snapshot();
+        let request = request(
+            term(),
+            10,
+            sort_field(SortDirection::Asc, MissingValuePosition::Last),
+        );
+        let schema = schema();
+        let registry = AnalyzerRegistry::builtin();
+        let baseline = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+            .search(&request, &Budgets::new(), &NeverCancel)
+            .expect("linear");
+        for strategy in [
+            TopKDuplicateStrategy::Prefilter,
+            TopKDuplicateStrategy::ExactSet,
+        ] {
+            let searcher =
+                UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default())
+                    .with_topk_duplicate_config(TopKDuplicateConfig::new(
+                        NonZeroUsize::new(1).expect("nonzero"),
+                        strategy,
+                    ));
+            let response = searcher
+                .search(&request, &Budgets::new(), &NeverCancel)
+                .expect("strategy");
+            assert_eq!(keys(&response), keys(&baseline), "{strategy:?}");
+            assert_eq!(bits(&response), bits(&baseline), "{strategy:?}");
+        }
+    }
+
+    /// B2-U19: one snapshot reuses its map; distinct snapshot objects keep
+    /// separate bindings.
+    #[test]
+    fn b2_u19_map_reuse_is_snapshot_scoped() {
+        let index = build(&[("k0", City::Value("a")), ("k1", City::Value("b"))]);
+        let first = index.snapshot();
+        let second = index.snapshot();
+        assert_ne!(first.binding_id(), second.binding_id());
+        let request = request(
+            term(),
+            10,
+            sort_field(SortDirection::Asc, MissingValuePosition::Last),
+        );
+        b2_observation::reset();
+        let a = search(&first, &request);
+        let b = search(&first, &request);
+        assert_eq!(keys(&a), keys(&b));
+        assert_eq!(b2_observation::map_preparations(), 2);
+        assert_eq!(b2_observation::optional_fallbacks(), 0);
+        let c = search(&second, &request);
+        assert_eq!(keys(&a), keys(&c));
+    }
+
+    /// B2-U20: single-segment identity, all missing/null and an empty snapshot.
+    #[test]
+    fn b2_u20_identity_all_missing_and_empty_snapshot() {
+        let index = build(&[
+            ("k0", City::Missing),
+            ("k1", City::Null),
+            ("k2", City::Value("")),
+            ("k3", City::Value("a")),
+        ]);
+        let snapshot = index.snapshot();
+        let rows = vec![
+            ("k0".to_owned(), City::Missing),
+            ("k1".to_owned(), City::Null),
+            ("k2".to_owned(), City::Value("")),
+            ("k3".to_owned(), City::Value("a")),
+        ];
+        b2_observation::reset();
+        compare_both(&snapshot, &rows, 100);
+        assert_eq!(b2_observation::map_preparations(), 4);
+        assert_eq!(b2_observation::owned_single_strings(), 8);
+
+        let empty = Index::create_with_limits(
+            directory(),
+            schema(),
+            AnalyzerRegistry::builtin(),
+            large_limits(),
+        )
+        .expect("empty index");
+        let snapshot = empty.snapshot();
+        assert_eq!(snapshot.segment_count(), 0);
+        b2_observation::reset();
+        let response = search(
+            &snapshot,
+            &request(
+                term(),
+                10,
+                sort_field(SortDirection::Asc, MissingValuePosition::Last),
+            ),
+        );
+        assert_eq!(response.total_hits, 0);
+        assert!(response.hits.is_empty());
+        assert!(response.next_cursor.is_none());
+        assert_eq!(b2_observation::eligible_requests(), 0);
+        assert_eq!(b2_observation::map_preparations(), 0);
+    }
+
+    /// B2-U23: cursor validation keeps precedence over map preparation.
+    #[test]
+    fn b2_u23_cursor_validation_precedes_preparation() {
+        let index = build(&[
+            ("k0", City::Value("a")),
+            ("k1", City::Value("b")),
+            ("k2", City::Value("c")),
+        ]);
+        let snapshot = index.snapshot();
+        let asc = sort_field(SortDirection::Asc, MissingValuePosition::Last);
+        let first = search(&snapshot, &request(term(), 2, asc.clone()));
+        let cursor = first.next_cursor.clone().expect("cursor");
+
+        let mut second = request(term(), 2, asc);
+        second.after = Some(cursor.clone());
+        b2_observation::reset();
+        let page = search(&snapshot, &second);
+        assert_eq!(keys(&page), vec!["k2".to_owned()]);
+        assert!(page.next_cursor.is_none());
+        assert_eq!(b2_observation::map_preparations(), 0);
+
+        let mut wrong_sort = request(
+            term(),
+            2,
+            sort_field(SortDirection::Desc, MissingValuePosition::Last),
+        );
+        wrong_sort.after = Some(cursor.clone());
+        b2_observation::reset();
+        let error =
+            run(&snapshot, &wrong_sort, SearchLimits::default()).expect_err("cursor sort mismatch");
+        assert!(matches!(
+            error,
+            SearchError::Query(QueryError::InvalidQuery(
+                InvalidQueryReason::CursorSortMismatch
+            ))
+        ));
+        assert_eq!(b2_observation::map_preparations(), 0);
+
+        let other = index.snapshot();
+        let mut foreign = request(
+            term(),
+            2,
+            sort_field(SortDirection::Asc, MissingValuePosition::Last),
+        );
+        foreign.after = Some(cursor);
+        let error = run(&other, &foreign, SearchLimits::default()).expect_err("foreign cursor");
+        assert!(matches!(
+            error,
+            SearchError::Query(QueryError::InvalidQuery(
+                InvalidQueryReason::CursorPitMismatch
+            ))
+        ));
+        assert_eq!(b2_observation::map_preparations(), 0);
+    }
+
+    /// B2-U13: 64 deterministic generated cases against an independent oracle.
+    #[test]
+    fn b2_u13_generated_differential_oracle() {
+        // Frozen plan seed; the grouped spelling is intentional.
+        #[allow(clippy::unusual_byte_groupings)]
+        const SEED: u64 = 0xB2_06_20_26_00_00_0001;
+        const VALUES: [&str; 13] = [
+            "", "\u{0}", "A", "a", "aa", "Austin", "Boston", "Seattle", "e\u{301}", "é", "😀",
+            "ab", "Z",
+        ];
+        let mut state = SEED;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for case in 0..64usize {
+            let segment_count = 1 + (case % 5);
+            let mut segments: Vec<Vec<(String, City)>> = Vec::new();
+            let mut counter = 0usize;
+            for _ in 0..segment_count {
+                let docs = 1 + (next() as usize % 24);
+                let mut segment = Vec::new();
+                for _ in 0..docs {
+                    let key = format!("k{counter:06}");
+                    counter += 1;
+                    let choice = next() % 11;
+                    let city = if choice == 0 {
+                        City::Missing
+                    } else if choice == 1 {
+                        City::Null
+                    } else if choice == 2 {
+                        City::Multi(VALUES[(next() as usize) % VALUES.len()])
+                    } else {
+                        City::Value(VALUES[(next() as usize) % VALUES.len()])
+                    };
+                    segment.push((key, city));
+                }
+                segments.push(segment);
+            }
+            let owned: Vec<Vec<(&str, City)>> = segments
+                .iter()
+                .map(|segment| {
+                    segment
+                        .iter()
+                        .map(|(key, city)| (key.as_str(), *city))
+                        .collect()
+                })
+                .collect();
+            let index = build_segments(&owned);
+            let snapshot = index.snapshot();
+            let rows: Vec<(String, City)> = segments
+                .iter()
+                .flat_map(|segment| segment.iter().cloned())
+                .collect();
+            let top_k = [1usize, 2, 5, 10, 20][(next() as usize) % 5];
+            for direction in [SortDirection::Asc, SortDirection::Desc] {
+                for missing in [MissingValuePosition::First, MissingValuePosition::Last] {
+                    let sort = sort_field(direction, missing);
+                    let ordinal = run(
+                        &snapshot,
+                        &request(term(), top_k, sort.clone()),
+                        SearchLimits::default(),
+                    )
+                    .unwrap_or_else(|error| panic!("case {case} (seed {SEED}) failed: {error:?}"));
+                    let legacy = run(
+                        &snapshot,
+                        &request(fallback_query(), top_k, sort),
+                        SearchLimits::default(),
+                    )
+                    .unwrap_or_else(|error| panic!("case {case} (seed {SEED}) failed: {error:?}"));
+                    let expected: Vec<String> = expected_order(&rows, direction, missing)
+                        .into_iter()
+                        .take(top_k)
+                        .collect();
+                    assert_eq!(
+                        keys(&ordinal),
+                        expected,
+                        "case {case} seed {SEED} {direction:?}/{missing:?}"
+                    );
+                    assert_eq!(ordinal.total_hits, rows.len() as u64, "case {case}");
+                    assert_eq!(keys(&legacy), keys(&ordinal), "case {case}");
+                    assert_eq!(bits(&legacy), bits(&ordinal), "case {case}");
+                    assert_eq!(
+                        legacy
+                            .hits
+                            .iter()
+                            .map(|hit| hit.fields.clone())
+                            .collect::<Vec<_>>(),
+                        ordinal
+                            .hits
+                            .iter()
+                            .map(|hit| hit.fields.clone())
+                            .collect::<Vec<_>>(),
+                        "case {case}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// F1: read one real document's shared numeric sort key.
+    fn ordinal_key_for_doc(
+        bound: &KeywordSortOrdinalColumn<'_>,
+        translation: &SegmentOrdinalMap<'_>,
+        doc_id: u64,
+    ) -> OrdinalSortKey {
+        match bound.read_sort_row(doc_id).expect("row") {
+            KeywordOrdinalValue::Missing => OrdinalSortKey::Missing,
+            KeywordOrdinalValue::Null => OrdinalSortKey::Null,
+            KeywordOrdinalValue::Value { ordinal, .. } => {
+                OrdinalSortKey::Value(translation.translate(ordinal).expect("translate"))
+            }
+        }
+    }
+
+    /// F1: read-only heap identity used to prove no mutation on rejection.
+    fn heap_identity(
+        heap: &BinaryHeap<MixedEntry<'_>>,
+    ) -> Vec<(String, u64, Option<OrdinalSortKey>, Option<u64>)> {
+        heap.iter()
+            .map(|entry| {
+                (
+                    entry.hit.key.as_str().to_owned(),
+                    entry.charge,
+                    entry.ordinal_sort,
+                    entry.hit.score.map(f64::to_bits),
+                )
+            })
+            .collect()
+    }
+
+    /// F1-U02: exactly one full heap audit per Ready request, none for legacy.
+    #[test]
+    fn b2_f1_u02_one_time_audit_and_numeric_only_admissions() {
+        let count = 1_000usize;
+        let descending: Vec<(&str, City)> = (0..count)
+            .map(|index| {
+                let value = Box::leak(format!("d{:08}", count - index).into_boxed_str());
+                (
+                    Box::leak(format!("k{index:05}").into_boxed_str()) as &str,
+                    City::Value(value),
+                )
+            })
+            .collect();
+        let index = build(&descending);
+        let snapshot = index.snapshot();
+        let sort = sort_field(SortDirection::Asc, MissingValuePosition::Last);
+        b2_observation::reset();
+        let response = search(&snapshot, &request(term(), 10, sort.clone()));
+        assert_eq!(response.total_hits, count as u64);
+        assert_eq!(
+            keys(&response),
+            (0..10)
+                .map(|offset| format!("k{:05}", count - 1 - offset))
+                .collect::<Vec<_>>()
+        );
+        // Every descending-input document is competitive and admitted, yet the
+        // full audit still runs only once for the request.
+        assert_eq!(b2_observation::numeric_candidates(), count);
+        assert_eq!(b2_observation::owned_single_strings(), count);
+        assert_eq!(b2_observation::numeric_compares(), count - 11);
+        assert_eq!(b2_observation::full_heap_audits(), 1);
+
+        let legacy = search(&snapshot, &request(fallback_query(), 10, sort.clone()));
+        assert_eq!(keys(&legacy), keys(&response));
+        assert_eq!(bits(&legacy), bits(&response));
+
+        // A second request has its own audit even when the B1 map is cached.
+        b2_observation::reset();
+        let second = search(&snapshot, &request(term(), 10, sort));
+        assert_eq!(keys(&second), keys(&response));
+        assert_eq!(b2_observation::map_preparations(), 1);
+        assert_eq!(b2_observation::full_heap_audits(), 1);
+
+        // An ineligible request never prepares a map and never audits a heap.
+        b2_observation::reset();
+        let ineligible = search(
+            &snapshot,
+            &request(
+                fallback_query(),
+                10,
+                sort_field(SortDirection::Asc, MissingValuePosition::Last),
+            ),
+        );
+        assert_eq!(ineligible.total_hits, count as u64);
+        assert_eq!(b2_observation::eligible_requests(), 0);
+        assert_eq!(b2_observation::map_preparations(), 0);
+        assert_eq!(b2_observation::full_heap_audits(), 0);
+    }
+
+    /// F1-U03: with K+1=2, the third (`z`x80) Single candidate is genuinely
+    /// rejected after two admissions and never owns a string.
+    #[test]
+    fn b2_f1_u03_long_loser_after_k_plus_one() {
+        let long: &'static str = Box::leak("z".repeat(80).into_boxed_str());
+        assert_eq!(long.len(), 80);
+        let index = build(&[
+            ("k0", City::Value("a")),
+            ("k1", City::Value("b")),
+            ("k2", City::Value(long)),
+        ]);
+        let snapshot = index.snapshot();
+        let guard = primary_guard(&snapshot);
+        let doc_keys: Vec<String> = guard
+            .reader()
+            .doc_keys()
+            .expect("keys")
+            .iter()
+            .map(|key| key.as_str().to_owned())
+            .collect();
+        assert_eq!(doc_keys, vec!["k0", "k1", "k2"]);
+        let sort = sort_field(SortDirection::Asc, MissingValuePosition::Last);
+        b2_observation::reset();
+        let ordinal = search(&snapshot, &request(term(), 1, sort.clone()));
+        assert_eq!(ordinal.total_hits, 3);
+        assert_eq!(keys(&ordinal), vec!["k0".to_owned()]);
+        assert_eq!(b2_observation::eligible_requests(), 1);
+        assert_eq!(b2_observation::ready_uses(), 1);
+        assert_eq!(b2_observation::map_preparations(), 1);
+        assert_eq!(b2_observation::numeric_candidates(), 3);
+        assert_eq!(b2_observation::numeric_compares(), 1);
+        assert_eq!(b2_observation::owned_single_strings(), 2);
+        assert_eq!(b2_observation::single_rejected_without_copy(), 1);
+        assert_eq!(b2_observation::full_heap_audits(), 1);
+
+        b2_observation::reset();
+        let legacy = search(&snapshot, &request(fallback_query(), 1, sort));
+        assert_eq!(keys(&legacy), keys(&ordinal));
+        assert_eq!(legacy.total_hits, ordinal.total_hits);
+        assert_eq!(bits(&legacy), bits(&ordinal));
+        assert_eq!(
+            legacy
+                .hits
+                .iter()
+                .map(|hit| hit.fields.clone())
+                .collect::<Vec<_>>(),
+            ordinal
+                .hits
+                .iter()
+                .map(|hit| hit.fields.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// F1-U01: a hidden legacy entry must be rejected even when the candidate is
+    /// numerically losing and the heap's worst entry is numeric.
+    #[test]
+    fn b2_f1_u01_hidden_mixed_heap_rejected_even_for_loser() {
+        let index = build(&[
+            ("k0", City::Value("a")),
+            ("k1", City::Value("b")),
+            ("k2", City::Value("z")),
+        ]);
+        let snapshot = index.snapshot();
+        let guards: Vec<_> = (0..snapshot.segment_count())
+            .map(|index| snapshot.open_segment_reader(index).expect("guard"))
+            .collect();
+        assert_eq!(guards.len(), 1);
+        let guard = &guards[0];
+        let doc_keys: Vec<String> = guard
+            .reader()
+            .doc_keys()
+            .expect("keys")
+            .iter()
+            .map(|key| key.as_str().to_owned())
+            .collect();
+        assert_eq!(doc_keys, vec!["k0", "k1", "k2"]);
+        let field = guard
+            .reader()
+            .schema()
+            .field_id("doc_id")
+            .expect("field id");
+        let preparation = snapshot
+            .prepare_keyword_ordinals(field, &guards, &NeverCancel)
+            .expect("prepare");
+        let map = preparation
+            .ready()
+            .unwrap_or_else(|| panic!("ready map: {preparation:?}"));
+        let translation = map.bind_segment(guard).expect("bind segment");
+        let reader = guard.reader();
+        let columns = ColumnAccess::open(reader).expect("columns");
+        let bound = columns
+            .bind_keyword_sort_ordinal(field)
+            .expect("bind")
+            .expect("ordinal");
+        let rank_a = ordinal_key_for_doc(&bound, &translation, 0);
+        let rank_b = ordinal_key_for_doc(&bound, &translation, 1);
+        let rank_z = ordinal_key_for_doc(&bound, &translation, 2);
+        let ordered = |left, right| {
+            ordinal_sort_key_cmp(left, right, SortDirection::Asc, MissingValuePosition::Last)
+        };
+        assert_eq!(
+            ordered(rank_a, rank_b),
+            Ordering::Less,
+            "real segment order a<b"
+        );
+        assert_eq!(
+            ordered(rank_b, rank_z),
+            Ordering::Less,
+            "real segment order b<z"
+        );
+
+        let request = request(
+            term(),
+            1,
+            sort_field(SortDirection::Asc, MissingValuePosition::Last),
+        );
+        let make = |key: &str, value: &str, ordinal: Option<OrdinalSortKey>| {
+            let hit = SelectedHit {
+                segment_index: 0,
+                doc_id: 0,
+                key: DocumentKey::new(key).expect("key"),
+                score: Some(1.0),
+                sort_tuple: vec![SortValue::Value(FieldValue::Keyword(value.to_owned()))],
+            };
+            let charge = candidate_charge(&hit).expect("charge");
+            MixedEntry {
+                hit,
+                charge,
+                sort: &request.sort,
+                relevance: false,
+                ordinal_sort: ordinal,
+            }
+        };
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        heap.push(make("k0", "a", None));
+        heap.push(make("k1", "b", Some(rank_b)));
+        assert_eq!(heap.len(), 2, "K+1 heap capacity");
+        let worst = heap.peek().expect("worst");
+        assert_eq!(worst.hit.key.as_str(), "k1", "numeric worst, not legacy");
+        assert_eq!(worst.ordinal_sort, Some(rank_b));
+        assert!(
+            heap.iter()
+                .filter(|entry| entry.ordinal_sort.is_none())
+                .count()
+                == 1,
+            "one hidden legacy entry"
+        );
+        let before = heap_identity(&heap);
+
+        let mut budget = CandidateBudget::new(&SearchLimits::default());
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut experiment = d3c::State::for_test(d3c::Kind::Linear, d3c::Profile::P0, 1);
+        let mut audit = OrdinalHeapAudit::new();
+        b2_observation::reset();
+        let error = consider_ordinal_keyword_candidate(
+            &columns,
+            reader.schema(),
+            &request,
+            2,
+            0,
+            DocumentKey::new("k2").expect("key"),
+            1.0,
+            true,
+            &bound,
+            &translation,
+            &mut audit,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+            &mut experiment,
+        )
+        .expect_err("a hidden legacy entry must fail before a losing return");
+        match error {
+            SearchError::CorruptIndex { detail } => {
+                assert_eq!(detail, "mixed ordinal and legacy sort entries");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+        assert_eq!(b2_observation::numeric_compares(), 0);
+        assert_eq!(b2_observation::owned_single_strings(), 0);
+        assert_eq!(b2_observation::full_heap_audits(), 1);
+        assert_eq!(heap_identity(&heap), before, "no heap mutation");
+
+        // Positive arm: a clean numeric-only heap must accept a numeric-losing
+        // candidate without owning a string, and without being called corrupt.
+        let mut clean: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        clean.push(make("k0", "a", Some(rank_a)));
+        clean.push(make("k1", "b", Some(rank_b)));
+        let clean_before = heap_identity(&clean);
+        let mut clean_budget = CandidateBudget::new(&SearchLimits::default());
+        let mut clean_experiment = d3c::State::for_test(d3c::Kind::Linear, d3c::Profile::P0, 1);
+        let mut clean_audit = OrdinalHeapAudit::new();
+        b2_observation::reset();
+        consider_ordinal_keyword_candidate(
+            &columns,
+            reader.schema(),
+            &request,
+            2,
+            0,
+            DocumentKey::new("k2").expect("key"),
+            1.0,
+            true,
+            &bound,
+            &translation,
+            &mut clean_audit,
+            &mut clean,
+            2,
+            &mut clean_budget,
+            &mut scope,
+            &mut clean_experiment,
+        )
+        .expect("a numeric-losing candidate on a clean heap is not corruption");
+        assert_eq!(b2_observation::numeric_compares(), 1);
+        assert_eq!(b2_observation::owned_single_strings(), 0);
+        assert_eq!(b2_observation::full_heap_audits(), 1);
+        assert_eq!(heap_identity(&clean), clean_before, "no heap mutation");
+    }
+}
+
 /// PR 15I-D3-C strategy tests (experimental feature only).
 #[cfg(all(test, feature = "pr15i-d3c-experiment"))]
 mod d3c_tests {
@@ -5915,6 +7944,7 @@ mod d3c_tests {
             charge,
             sort,
             relevance: true,
+            ordinal_sort: None,
         }
     }
 

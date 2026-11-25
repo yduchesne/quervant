@@ -1,0 +1,71 @@
+# F1 focused tests on green source (UTC 2026-11-25T16:28:03Z)
+
+$ cargo +1.98.1 test -p quervant-core --lib b2_f1_ -- --test-threads=1
+test search::unified::b2_tests::b2_f1_u03_long_loser_after_k_plus_one ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1146 filtered out; finished in 0.13s
+
+EXIT:0
+
+$ cargo +1.98.1 test -p quervant-core --lib b2_u08_u22_budget_failure_leaves_heap_unchanged_and_charges_match -- --test-threads=1
+test search::unified::b2_tests::b2_u08_u22_budget_failure_leaves_heap_unchanged_and_charges_match ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1148 filtered out; finished in 0.00s
+
+EXIT:0
+
+$ cargo +1.98.1 test -p quervant-core --lib b2_u14_mixed_heaps_are_rejected_before_mutation -- --test-threads=1
+test search::unified::b2_tests::b2_u14_mixed_heaps_are_rejected_before_mutation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1148 filtered out; finished in 0.00s
+
+EXIT:0
+
+$ cargo +1.98.1 test -p quervant-core --lib b2_u16_materialization_tracks_competitiveness -- --test-threads=1
+test search::unified::b2_tests::b2_u16_materialization_tracks_competitiveness ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1148 filtered out; finished in 0.22s
+
+EXIT:0
+
+$ cargo +1.98.1 test -p quervant-core --test perf06_b2_ordinals b2_i07_losing_long_value_and_container_wrapped_corruption -- --exact --test-threads=1
+test b2_i07_losing_long_value_and_container_wrapped_corruption ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.13s
+
+EXIT:0
+
+$ cargo +1.98.1 test -p quervant-core --lib b2_ -- --test-threads=1
+test segment::column::b2_accessor_tests::b2_u21_bound_row_reads_preserve_single_missing_null_and_multi_one ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 1120 filtered out; finished in 1.36s
+
+EXIT:0
+
+$ cargo +1.98.1 test -p quervant-core --test perf06_b2_ordinals -- --test-threads=1
+test b2_i08_adapter_session_keeps_one_snapshot_per_session ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.76s
+
+EXIT:0
+
+$ cargo +1.98.1 test -p quervant-core --lib b1_ -- --test-threads=1
+test segment::json_paths::tests::b1_wide_shallow_survives_modest_frontier_budget ... ok
+
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 1085 filtered out; finished in 1.78s
+
+EXIT:0
+
+$ cargo +1.98.1 test -p quervant-core --test perf06_b1_ordinals -- --test-threads=1
+test b1_u14_real_writer_rejects_zero_multi_count ... ok
+
+test result: ok. 9 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 1.07s
+
+EXIT:0
+
+$ cargo +1.98.1 test -p quervant-core --lib b_u -- --test-threads=1
+test segment::column::b_keyword_view_tests::b_u18_decode_budget_rejected ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 1137 filtered out; finished in 5.41s
+
+EXIT:0
