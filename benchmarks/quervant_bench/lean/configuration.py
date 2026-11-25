@@ -48,8 +48,11 @@ def default_configuration(family: str, name: str, description: str, *,
                           regime: str = "warm",
                           baseline_revision: str | None = None,
                           candidate_revision: str | None = None,
-                          quervant_revision: str | None = None) -> dict[str, Any]:
+                          quervant_revision: str | None = None,
+                          readiness_advisory: bool = False) -> dict[str, Any]:
     """Generate one *new* immutable configuration with its own UUID."""
+    if readiness_advisory and family != "perf-06":
+        raise ArtifactError("advisory host readiness is supported only for perf-06")
     if family not in ("retained-key", "cross-engine", "perf-02", "perf-05", "perf-06"):
         raise ArtifactError("family must be retained-key, cross-engine, perf-02, perf-05 or perf-06")
     if regime not in ("warm", "process-cold") or (family != "cross-engine" and regime != "warm"):
@@ -72,6 +75,8 @@ def default_configuration(family: str, name: str, description: str, *,
               "max_aa_gain_percent": PERF05_MAX_AA_GAIN_PERCENT, "exclude_blocks": {}, "control_arms": [],
               "readiness": {"intervals": 4, "interval_ms": 250,
                             "max_busy_percent": 25, "max_steal_percent": 2}}
+    if readiness_advisory:
+        policy["readiness"]["mode"] = "advisory"
     if family == "retained-key":
         arm_settings = {"A": {"engine": "quervant", "mode": "BASE", "source": "baseline"},
                         "L": {"engine": "quervant", "mode": "linear", "source": "current"},
@@ -281,6 +286,11 @@ def validate_configuration(config: Mapping[str, Any]) -> None:
         raise ArtifactError("readiness observation budget exceeded")
     if readiness["max_busy_percent"] > 100 or readiness["max_steal_percent"] > 100:
         raise ArtifactError("readiness percentages must not exceed 100")
+    mode = readiness.get("mode", "blocking")
+    if mode not in ("blocking", "advisory"):
+        raise ArtifactError("unsupported host readiness mode")
+    if mode == "advisory" and family != "perf-06":
+        raise ArtifactError("advisory host readiness is supported only for perf-06")
     excluded = policy.get("exclude_blocks", {})
     if not isinstance(excluded, dict):
         raise ArtifactError("exclude_blocks must be a map")
@@ -322,10 +332,12 @@ def prepare_configuration(studies_root: Path, *, family: str, name: str,
                           description: str, regime: str = "warm",
                           baseline_revision: str | None = None,
                           candidate_revision: str | None = None,
-                          quervant_revision: str | None = None) -> Path:
+                          quervant_revision: str | None = None,
+                          readiness_advisory: bool = False) -> Path:
     """Create under studies/<family>/<regime>/configurations automatically."""
     config = default_configuration(family, name, description, regime=regime,
                                    baseline_revision=baseline_revision,
                                    candidate_revision=candidate_revision,
-                                   quervant_revision=quervant_revision)
+                                   quervant_revision=quervant_revision,
+                                   readiness_advisory=readiness_advisory)
     return create_configuration(configuration_directory(studies_root, config), config)

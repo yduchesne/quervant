@@ -39,6 +39,8 @@ def parser() -> argparse.ArgumentParser:
                       help="full immutable Quervant Git SHA for perf-02/perf-06 arm B; may equal A for A=A validation")
     make.add_argument("--quervant-revision",
                       help="full immutable Quervant Git commit for the single perf-05 arm B")
+    make.add_argument("--readiness-advisory", action="store_true",
+                      help="perf-06 only: preserve actual host load observations without using them as an acquisition gate")
     make.add_argument("--studies-root", type=Path, default=repo_root() / "benchmarks" / "studies",
                       help="root for family/regime studies (must be named studies)")
     stage = sub.add_parser("stage", help="build and validate reusable inputs, WITHOUT benchmark acquisition")
@@ -71,7 +73,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                                         description=args.description, regime=args.regime,
                                         baseline_revision=args.baseline_revision,
                                         candidate_revision=args.candidate_revision,
-                                        quervant_revision=args.quervant_revision))
+                                        quervant_revision=args.quervant_revision,
+                                        readiness_advisory=args.readiness_advisory))
         elif args.action == "validate":
             validate_configuration(load_configuration(args.config))
             print("VALID")

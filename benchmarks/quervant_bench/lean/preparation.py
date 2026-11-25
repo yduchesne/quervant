@@ -317,6 +317,9 @@ def stage_inputs(config_path: Path, *, root: Path, scratch_root: Path | None = N
         raise runtime.MeasurementBlocked("benchmark scratch directory must not be a symlink")
     scratch = scratch.resolve()
     scratch.mkdir(parents=True, exist_ok=True)
+    readiness_advisory = (
+        config["family"] == "perf-06" and
+        config["policy"]["readiness"].get("mode", "blocking") == "advisory")
     if check_host:
         host = runtime.host_context(scratch, check=True)
         if cpu is None:
@@ -359,13 +362,11 @@ def stage_inputs(config_path: Path, *, root: Path, scratch_root: Path | None = N
                 timings["corpus_ns"] = _seconds(corpus_start)
                 if check_host:
                     readiness = config["policy"]["readiness"]
-                    probe = runtime.assess_readiness(
-                        cpu, intervals=readiness["intervals"],
-                        interval_seconds=readiness["interval_ms"] / 1000,
-                        max_busy_percent=readiness["max_busy_percent"],
-                        max_steal_percent=readiness["max_steal_percent"])
+                    probe = runtime.observe_readiness(cpu, readiness, advisory=readiness_advisory)
                     prepare_host["readiness_index_pre"] = probe
-                    if probe["status"] != "clear":
+                    if readiness_advisory:
+                        prepare_host["readiness_mode"] = "advisory"
+                    if probe["status"] != "clear" and not readiness_advisory:
                         raise runtime.MeasurementBlocked("host contention before indexing staged inputs")
                 index_start = time.monotonic_ns()
                 indexes = {}

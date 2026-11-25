@@ -120,6 +120,23 @@ def assess_readiness(cpu: int, *, intervals: int = 4, interval_seconds: float = 
             "status":"clear" if maximum_busy <= max_busy_percent and maximum_steal <= max_steal_percent else "busy"}
 
 
+def observe_readiness(cpu: int, readiness: Mapping[str, Any], *, advisory: bool) -> dict[str, Any]:
+    """Record actual host load; advisory mode never rewrites a real status to clear."""
+    try:
+        return assess_readiness(
+            cpu, intervals=readiness["intervals"],
+            interval_seconds=readiness["interval_ms"] / 1000,
+            max_busy_percent=readiness["max_busy_percent"],
+            max_steal_percent=readiness["max_steal_percent"])
+    except MeasurementBlocked as error:
+        if not advisory:
+            raise
+        return {"cpu": cpu, "observations": [],
+                "max_busy_percent": readiness["max_busy_percent"],
+                "max_steal_percent": readiness["max_steal_percent"],
+                "status": "unavailable", "reason": str(error)[:500]}
+
+
 @contextmanager
 def pinned_controller(cpu: int | None):
     """Keep controller and engine process on distinct CPUs during timing."""
@@ -869,6 +886,10 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
             scratch=scratch, directory=directory, root=root, check_host=check_host,
             programs=programs, invoke_phase=invoke_phase, index_builder=index_builder,
             report=report, run_started=run_started)
+    readiness_advisory = (
+        config["family"] == "perf-06" and
+        config["policy"]["readiness"].get("mode", "blocking") == "advisory")
+    report["context"]["host_readiness_mode"] = "advisory" if readiness_advisory else "blocking"
     try:
         started = time.monotonic_ns()
         report["context"]["host"] = host_context(scratch, check=check_host)
@@ -882,10 +903,7 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
         readiness = config["policy"]["readiness"]
 
         def observe() -> dict[str, Any]:
-            return assess_readiness(adapter_cpu, intervals=readiness["intervals"],
-                                    interval_seconds=readiness["interval_ms"] / 1000,
-                                    max_busy_percent=readiness["max_busy_percent"],
-                                    max_steal_percent=readiness["max_steal_percent"])
+            return observe_readiness(adapter_cpu, readiness, advisory=readiness_advisory)
 
         indexes: dict[str, dict[int, Path]] = {}
         if programs is None:
@@ -928,7 +946,7 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
             # Preserve targeted readiness/indexing boundary tests.
             if check_host:
                 report["controls"]["readiness_index_pre"] = observe()
-                if report["controls"]["readiness_index_pre"]["status"] != "clear":
+                if report["controls"]["readiness_index_pre"]["status"] != "clear" and not readiness_advisory:
                     raise MeasurementBlocked("host contention before indexing; index measurements invalid")
             started = time.monotonic_ns()
             for arm_id, arm in config["arms"].items():
@@ -946,7 +964,7 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
         with pinned_controller(controller_cpu):
             if check_host:
                 report["controls"]["readiness_pre"] = observe()
-                if report["controls"]["readiness_pre"]["status"] != "clear":
+                if report["controls"]["readiness_pre"]["status"] != "clear" and not readiness_advisory:
                     raise MeasurementBlocked("host contention before A/A; control invalid")
             started = time.monotonic_ns()
             control_raw = controller(control, lanes, binaries, indexes, cpu=adapter_cpu,
@@ -962,7 +980,7 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
                 raise MeasurementBlocked("A/A control is unstable; comparative acquisition is blocked")
             if check_host:
                 report["controls"]["readiness_treatment"] = observe()
-                if report["controls"]["readiness_treatment"]["status"] != "clear":
+                if report["controls"]["readiness_treatment"]["status"] != "clear" and not readiness_advisory:
                     raise MeasurementBlocked("host contention before treatment; run invalid")
             started = time.monotonic_ns()
             observed = controller(config, lanes, binaries, indexes, cpu=adapter_cpu,
@@ -974,7 +992,7 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
             report["phase_durations_ns"]["treatment_analysis_ns"] = max(1, time.monotonic_ns() - started)
             if check_host:
                 report["controls"]["readiness_post"] = observe()
-                if report["controls"]["readiness_post"]["status"] != "clear":
+                if report["controls"]["readiness_post"]["status"] != "clear" and not readiness_advisory:
                     raise MeasurementBlocked("host contention after treatment; preserve samples but invalidate run")
             if (config["family"] == "cross-engine"
                     and config["workload"]["regimes"] == ["warm"]
@@ -983,7 +1001,8 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
                 # from the already completed treatment search measurements.
                 if check_host:
                     report["controls"]["readiness_throughput_pre"] = observe()
-                    if report["controls"]["readiness_throughput_pre"]["status"] != "clear":
+                    if (report["controls"]["readiness_throughput_pre"]["status"] != "clear"
+                            and not readiness_advisory):
                         raise MeasurementBlocked("host contention before throughput; throughput invalid")
                 metric = next((lane for lane in lanes if lane["n"] == 10000 and
                                lane["class"] == "medium" and lane["k"] == 10 and
@@ -1000,7 +1019,8 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
                 report["phase_durations_ns"]["throughput_acquisition_ns"] = max(1, time.monotonic_ns() - started)
                 if check_host:
                     report["controls"]["readiness_throughput_post"] = observe()
-                    if report["controls"]["readiness_throughput_post"]["status"] != "clear":
+                    if (report["controls"]["readiness_throughput_post"]["status"] != "clear"
+                            and not readiness_advisory):
                         raise MeasurementBlocked("host contention after throughput; preserve samples but invalidate run")
             report["status"] = _run_status(report["analysis"])
     except KeyboardInterrupt:
