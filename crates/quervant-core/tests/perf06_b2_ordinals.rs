@@ -1032,12 +1032,45 @@ fn b2_i06_ineligible_shapes_keep_existing_behavior() {
 // B2-I07 — losing values and corrupt unselected v2 data.
 // ---------------------------------------------------------------------------
 
-/// B2-I07: a losing long value is fully validated, and a container-wrapped
-/// corrupt v2 term is refused before any numeric selection.
+/// The complete six-field projection expected for one synthetic `type-d` row.
+fn expected_appended_fields(city: &str, n: i64) -> Vec<(String, FieldValues)> {
+    vec![
+        (
+            "body".to_owned(),
+            FieldValues::Single(FieldValue::Text("common".to_owned())),
+        ),
+        (
+            "category".to_owned(),
+            FieldValues::Single(FieldValue::Keyword("type-d".to_owned())),
+        ),
+        (
+            "city".to_owned(),
+            FieldValues::Single(FieldValue::Keyword(city.to_owned())),
+        ),
+        ("n".to_owned(), FieldValues::Single(FieldValue::I64(n))),
+        (
+            "stored_tag".to_owned(),
+            FieldValues::Single(FieldValue::Keyword("stored".to_owned())),
+        ),
+        (
+            "tags".to_owned(),
+            FieldValues::Multi(vec![
+                FieldValue::Keyword("one".to_owned()),
+                FieldValue::Keyword("two".to_owned()),
+            ]),
+        ),
+    ]
+}
+
+/// B2-I07: a genuinely noncompetitive later long value is validated and
+/// discarded, and a container-wrapped corrupt v2 term is refused before any
+/// numeric selection.
 #[test]
 fn b2_i07_losing_long_value_and_container_wrapped_corruption() {
-    // Losing 80-byte value: it is charged and validated, never truncated.
+    // Three matching rows, inserted in this physical order. With K=1 the global
+    // heap holds K+1=2 entries, so `k2` is the third candidate and loses.
     let long: &'static str = Box::leak("z".repeat(80).into_boxed_str());
+    assert_eq!(long.len(), 80);
     let dir = B2TempDir::new("b2-i07");
     {
         let index = Index::create(fs_directory(dir.path()), schema(), registry()).expect("create");
@@ -1046,31 +1079,114 @@ fn b2_i07_losing_long_value_and_container_wrapped_corruption() {
             .insert(appended_document("k0", City::Value("a"), 0))
             .expect("k0");
         writer
-            .insert(appended_document("k1", City::Value(long), 1))
+            .insert(appended_document("k1", City::Value("b"), 1))
             .expect("k1");
+        writer
+            .insert(appended_document("k2", City::Value(long), 2))
+            .expect("k2");
         writer.commit().expect("commit");
     }
     let index = reopen(dir.path());
     let snapshot = index.snapshot();
-    let response = search(
-        &snapshot,
-        &request(
-            body_term(),
-            1,
-            city_sort(SortDirection::Asc, MissingValuePosition::Last),
-        ),
+    assert_eq!(snapshot.segment_count(), 1, "one real v2 segment");
+    let guard = snapshot.open_segment_reader(0).expect("guard");
+    let doc_keys: Vec<String> = guard
+        .reader()
+        .doc_keys()
+        .expect("keys")
+        .iter()
+        .map(|key| key.as_str().to_owned())
+        .collect();
+    assert_eq!(doc_keys, vec!["k0", "k1", "k2"], "physical doc-id order");
+    assert!(
+        guard
+            .reader()
+            .required_features()
+            .iter()
+            .any(|(id, _)| *id == quervant_core::segment::format::FEATURE_KEYWORD_ORDINALS),
+        "the segment carries the B1 ordinal feature"
     );
+    let columns = guard
+        .reader()
+        .open_columns()
+        .expect("columns")
+        .expect("section");
+    assert!(
+        columns.bind_keyword_ordinals(CITY).expect("bind").is_some(),
+        "the city ordinal column exists"
+    );
+    drop(guard);
+
+    let sort = city_sort(SortDirection::Asc, MissingValuePosition::Last);
+    let response = search(&snapshot, &request(body_term(), 1, sort.clone()));
+    assert_eq!(response.total_hits, 3);
     assert_eq!(keys(&response), vec!["k0".to_owned()]);
-    assert_eq!(response.total_hits, 2);
-    let response = search(
-        &snapshot,
-        &request(
-            body_term(),
-            2,
-            city_sort(SortDirection::Asc, MissingValuePosition::Last),
-        ),
+    let cursor = response.next_cursor.clone().expect("K=1 cursor");
+    assert!(matches!(
+        cursor.last_sort_values().first(),
+        Some(quervant_core::search::SortValue::Value(
+            FieldValue::Keyword(value)
+        )) if value == "a"
+    ));
+    for hit in &response.hits {
+        assert_eq!(hit.fields, expected_appended_fields("a", 0));
+    }
+
+    let response_two = search(&snapshot, &request(body_term(), 2, sort.clone()));
+    assert_eq!(response_two.total_hits, 3);
+    assert_eq!(keys(&response_two), vec!["k0".to_owned(), "k1".to_owned()]);
+    let cursor = response_two.next_cursor.clone().expect("K=2 cursor");
+    assert!(matches!(
+        cursor.last_sort_values().first(),
+        Some(quervant_core::search::SortValue::Value(
+            FieldValue::Keyword(value)
+        )) if value == "b"
+    ));
+    for hit in &response_two.hits {
+        let (city, n) = match hit.key.as_str() {
+            "k0" => ("a", 0),
+            "k1" => ("b", 1),
+            other => panic!("unexpected hit {other}"),
+        };
+        assert_eq!(hit.fields, expected_appended_fields(city, n));
+    }
+
+    let response_three = search(&snapshot, &request(body_term(), 3, sort.clone()));
+    assert_eq!(response_three.total_hits, 3);
+    assert_eq!(
+        keys(&response_three),
+        vec!["k0".to_owned(), "k1".to_owned(), "k2".to_owned()]
     );
-    assert_eq!(keys(&response), vec!["k0".to_owned(), "k1".to_owned()]);
+    assert!(response_three.next_cursor.is_none());
+    for hit in &response_three.hits {
+        let (city, n) = match hit.key.as_str() {
+            "k0" => ("a", 0),
+            "k1" => ("b", 1),
+            "k2" => (long, 2),
+            other => panic!("unexpected hit {other}"),
+        };
+        assert_eq!(hit.fields, expected_appended_fields(city, n));
+    }
+
+    for (top_k, ordinal) in [(1usize, &response), (2, &response_two)] {
+        let legacy = search(&snapshot, &request(fallback_query(), top_k, sort.clone()));
+        assert_eq!(legacy.total_hits, 3);
+        assert_eq!(keys(&legacy), keys(ordinal), "K={top_k}");
+        assert_eq!(score_bits(&legacy), score_bits(ordinal), "K={top_k}");
+        assert_eq!(
+            legacy
+                .hits
+                .iter()
+                .map(|hit| hit.fields.clone())
+                .collect::<Vec<_>>(),
+            ordinal
+                .hits
+                .iter()
+                .map(|hit| hit.fields.clone())
+                .collect::<Vec<_>>(),
+            "K={top_k}"
+        );
+    }
 
     // Corrupt unselected v2 dictionary term behind a valid outer envelope.
     let (_corpus_dir, corpus) = build_fs_corpus();

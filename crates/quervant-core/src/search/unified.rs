@@ -781,6 +781,7 @@ impl<'a> UnifiedSearcher<'a> {
         let scoring = !plan.positive_lexical.is_empty();
         let heap_limit = request.top_k.limit.saturating_add(1);
         let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        let mut ordinal_heap_audit = ordinal_map.as_ref().map(|_| OrdinalHeapAudit::new());
         let mut experiment = d3c::State::for_request(
             request.top_k.limit,
             self.topk_duplicate,
@@ -943,6 +944,9 @@ impl<'a> UnifiedSearcher<'a> {
                 if let Some((bound, translation)) = &ordinal_binding {
                     #[cfg(test)]
                     b2_observation::record_numeric_candidate();
+                    let audit = ordinal_heap_audit
+                        .as_mut()
+                        .ok_or_else(mixed_ordinal_heap_error)?;
                     consider_ordinal_keyword_candidate(
                         &columns,
                         reader.schema(),
@@ -954,6 +958,7 @@ impl<'a> UnifiedSearcher<'a> {
                         scoring,
                         bound,
                         translation,
+                        audit,
                         &mut heap,
                         heap_limit,
                         &mut budget,
@@ -2262,6 +2267,30 @@ fn ensure_ordinal_heap(heap: &BinaryHeap<MixedEntry<'_>>) -> SearchResult<()> {
     Ok(())
 }
 
+/// PERF-06-B2-F1: request-local proof that the ordinal heap was inspected before
+/// its first numeric candidate comparison. Thereafter the numeric-only admission
+/// path maintains the invariant by induction.
+struct OrdinalHeapAudit {
+    checked: bool,
+}
+
+impl OrdinalHeapAudit {
+    fn new() -> Self {
+        Self { checked: false }
+    }
+
+    fn verify_once(&mut self, heap: &BinaryHeap<MixedEntry<'_>>) -> SearchResult<()> {
+        if self.checked {
+            return Ok(());
+        }
+        #[cfg(test)]
+        b2_observation::record_full_heap_audit();
+        ensure_ordinal_heap(heap)?;
+        self.checked = true;
+        Ok(())
+    }
+}
+
 /// PERF-06-B2: full numeric candidate order, including the logical-key tie-break.
 fn ordinal_candidate_order(
     candidate: OrdinalSortKey,
@@ -2300,6 +2329,7 @@ fn consider_ordinal_keyword_candidate<'a>(
     include_score: bool,
     bound: &KeywordSortOrdinalColumn<'_>,
     translation: &SegmentOrdinalMap<'_>,
+    audit: &mut OrdinalHeapAudit,
     heap: &mut BinaryHeap<MixedEntry<'a>>,
     heap_limit: usize,
     budget: &mut CandidateBudget,
@@ -2346,6 +2376,7 @@ fn consider_ordinal_keyword_candidate<'a>(
         }
     };
     experiment.check(heap, &key)?;
+    audit.verify_once(heap)?;
     if heap.len() >= heap_limit {
         let worst = heap.peek().expect("heap is nonempty");
         let Some(worst_key) = worst.ordinal_sort else {
@@ -2367,7 +2398,6 @@ fn consider_ordinal_keyword_candidate<'a>(
             return Ok(());
         }
     }
-    ensure_ordinal_heap(heap)?;
     let sort_value = match row {
         KeywordOrdinalValue::Missing => SortValue::Missing,
         KeywordOrdinalValue::Null => SortValue::Null,
@@ -2793,6 +2823,7 @@ pub(crate) mod b2_observation {
         static OWNED_SINGLE_STRINGS: Cell<usize> = const { Cell::new(0) };
         static MULTI_ONE_LEGACY_DECODES: Cell<usize> = const { Cell::new(0) };
         static SINGLE_REJECTED_WITHOUT_COPY: Cell<usize> = const { Cell::new(0) };
+        static FULL_HEAP_AUDITS: Cell<usize> = const { Cell::new(0) };
     }
 
     pub(crate) fn reset() {
@@ -2806,6 +2837,7 @@ pub(crate) mod b2_observation {
         OWNED_SINGLE_STRINGS.with(|value| value.set(0));
         MULTI_ONE_LEGACY_DECODES.with(|value| value.set(0));
         SINGLE_REJECTED_WITHOUT_COPY.with(|value| value.set(0));
+        FULL_HEAP_AUDITS.with(|value| value.set(0));
     }
 
     pub(crate) fn eligible_requests() -> usize {
@@ -2838,6 +2870,9 @@ pub(crate) mod b2_observation {
     pub(crate) fn single_rejected_without_copy() -> usize {
         SINGLE_REJECTED_WITHOUT_COPY.with(Cell::get)
     }
+    pub(crate) fn full_heap_audits() -> usize {
+        FULL_HEAP_AUDITS.with(Cell::get)
+    }
 
     pub(crate) fn record_eligible_request() {
         ELIGIBLE_REQUESTS.with(|value| value.set(value.get() + 1));
@@ -2868,6 +2903,9 @@ pub(crate) mod b2_observation {
     }
     pub(crate) fn record_single_rejected() {
         SINGLE_REJECTED_WITHOUT_COPY.with(|value| value.set(value.get() + 1));
+    }
+    pub(crate) fn record_full_heap_audit() {
+        FULL_HEAP_AUDITS.with(|value| value.set(value.get() + 1));
     }
 }
 
@@ -6906,6 +6944,7 @@ mod b2_tests {
         let mut scope: Option<SlotMemoryScope<'_>> = None;
         let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
         let mut experiment = d3c::State::for_test(d3c::Kind::Linear, d3c::Profile::P0, 1);
+        let mut audit = OrdinalHeapAudit::new();
         consider_ordinal_keyword_candidate(
             &columns,
             reader.schema(),
@@ -6917,6 +6956,7 @@ mod b2_tests {
             true,
             &bound,
             &translation,
+            &mut audit,
             &mut heap,
             1,
             &mut budget,
@@ -6943,6 +6983,7 @@ mod b2_tests {
             true,
             &bound,
             &translation,
+            &mut audit,
             &mut heap,
             1,
             &mut budget,
@@ -7561,6 +7602,316 @@ mod b2_tests {
                 }
             }
         }
+    }
+
+    /// F1: read one real document's shared numeric sort key.
+    fn ordinal_key_for_doc(
+        bound: &KeywordSortOrdinalColumn<'_>,
+        translation: &SegmentOrdinalMap<'_>,
+        doc_id: u64,
+    ) -> OrdinalSortKey {
+        match bound.read_sort_row(doc_id).expect("row") {
+            KeywordOrdinalValue::Missing => OrdinalSortKey::Missing,
+            KeywordOrdinalValue::Null => OrdinalSortKey::Null,
+            KeywordOrdinalValue::Value { ordinal, .. } => {
+                OrdinalSortKey::Value(translation.translate(ordinal).expect("translate"))
+            }
+        }
+    }
+
+    /// F1: read-only heap identity used to prove no mutation on rejection.
+    fn heap_identity(
+        heap: &BinaryHeap<MixedEntry<'_>>,
+    ) -> Vec<(String, u64, Option<OrdinalSortKey>, Option<u64>)> {
+        heap.iter()
+            .map(|entry| {
+                (
+                    entry.hit.key.as_str().to_owned(),
+                    entry.charge,
+                    entry.ordinal_sort,
+                    entry.hit.score.map(f64::to_bits),
+                )
+            })
+            .collect()
+    }
+
+    /// F1-U02: exactly one full heap audit per Ready request, none for legacy.
+    #[test]
+    fn b2_f1_u02_one_time_audit_and_numeric_only_admissions() {
+        let count = 1_000usize;
+        let descending: Vec<(&str, City)> = (0..count)
+            .map(|index| {
+                let value = Box::leak(format!("d{:08}", count - index).into_boxed_str());
+                (
+                    Box::leak(format!("k{index:05}").into_boxed_str()) as &str,
+                    City::Value(value),
+                )
+            })
+            .collect();
+        let index = build(&descending);
+        let snapshot = index.snapshot();
+        let sort = sort_field(SortDirection::Asc, MissingValuePosition::Last);
+        b2_observation::reset();
+        let response = search(&snapshot, &request(term(), 10, sort.clone()));
+        assert_eq!(response.total_hits, count as u64);
+        assert_eq!(
+            keys(&response),
+            (0..10)
+                .map(|offset| format!("k{:05}", count - 1 - offset))
+                .collect::<Vec<_>>()
+        );
+        // Every descending-input document is competitive and admitted, yet the
+        // full audit still runs only once for the request.
+        assert_eq!(b2_observation::numeric_candidates(), count);
+        assert_eq!(b2_observation::owned_single_strings(), count);
+        assert_eq!(b2_observation::numeric_compares(), count - 11);
+        assert_eq!(b2_observation::full_heap_audits(), 1);
+
+        let legacy = search(&snapshot, &request(fallback_query(), 10, sort.clone()));
+        assert_eq!(keys(&legacy), keys(&response));
+        assert_eq!(bits(&legacy), bits(&response));
+
+        // A second request has its own audit even when the B1 map is cached.
+        b2_observation::reset();
+        let second = search(&snapshot, &request(term(), 10, sort));
+        assert_eq!(keys(&second), keys(&response));
+        assert_eq!(b2_observation::map_preparations(), 1);
+        assert_eq!(b2_observation::full_heap_audits(), 1);
+
+        // An ineligible request never prepares a map and never audits a heap.
+        b2_observation::reset();
+        let ineligible = search(
+            &snapshot,
+            &request(
+                fallback_query(),
+                10,
+                sort_field(SortDirection::Asc, MissingValuePosition::Last),
+            ),
+        );
+        assert_eq!(ineligible.total_hits, count as u64);
+        assert_eq!(b2_observation::eligible_requests(), 0);
+        assert_eq!(b2_observation::map_preparations(), 0);
+        assert_eq!(b2_observation::full_heap_audits(), 0);
+    }
+
+    /// F1-U03: with K+1=2, the third (`z`x80) Single candidate is genuinely
+    /// rejected after two admissions and never owns a string.
+    #[test]
+    fn b2_f1_u03_long_loser_after_k_plus_one() {
+        let long: &'static str = Box::leak("z".repeat(80).into_boxed_str());
+        assert_eq!(long.len(), 80);
+        let index = build(&[
+            ("k0", City::Value("a")),
+            ("k1", City::Value("b")),
+            ("k2", City::Value(long)),
+        ]);
+        let snapshot = index.snapshot();
+        let guard = primary_guard(&snapshot);
+        let doc_keys: Vec<String> = guard
+            .reader()
+            .doc_keys()
+            .expect("keys")
+            .iter()
+            .map(|key| key.as_str().to_owned())
+            .collect();
+        assert_eq!(doc_keys, vec!["k0", "k1", "k2"]);
+        let sort = sort_field(SortDirection::Asc, MissingValuePosition::Last);
+        b2_observation::reset();
+        let ordinal = search(&snapshot, &request(term(), 1, sort.clone()));
+        assert_eq!(ordinal.total_hits, 3);
+        assert_eq!(keys(&ordinal), vec!["k0".to_owned()]);
+        assert_eq!(b2_observation::eligible_requests(), 1);
+        assert_eq!(b2_observation::ready_uses(), 1);
+        assert_eq!(b2_observation::map_preparations(), 1);
+        assert_eq!(b2_observation::numeric_candidates(), 3);
+        assert_eq!(b2_observation::numeric_compares(), 1);
+        assert_eq!(b2_observation::owned_single_strings(), 2);
+        assert_eq!(b2_observation::single_rejected_without_copy(), 1);
+        assert_eq!(b2_observation::full_heap_audits(), 1);
+
+        b2_observation::reset();
+        let legacy = search(&snapshot, &request(fallback_query(), 1, sort));
+        assert_eq!(keys(&legacy), keys(&ordinal));
+        assert_eq!(legacy.total_hits, ordinal.total_hits);
+        assert_eq!(bits(&legacy), bits(&ordinal));
+        assert_eq!(
+            legacy
+                .hits
+                .iter()
+                .map(|hit| hit.fields.clone())
+                .collect::<Vec<_>>(),
+            ordinal
+                .hits
+                .iter()
+                .map(|hit| hit.fields.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// F1-U01: a hidden legacy entry must be rejected even when the candidate is
+    /// numerically losing and the heap's worst entry is numeric.
+    #[test]
+    fn b2_f1_u01_hidden_mixed_heap_rejected_even_for_loser() {
+        let index = build(&[
+            ("k0", City::Value("a")),
+            ("k1", City::Value("b")),
+            ("k2", City::Value("z")),
+        ]);
+        let snapshot = index.snapshot();
+        let guards: Vec<_> = (0..snapshot.segment_count())
+            .map(|index| snapshot.open_segment_reader(index).expect("guard"))
+            .collect();
+        assert_eq!(guards.len(), 1);
+        let guard = &guards[0];
+        let doc_keys: Vec<String> = guard
+            .reader()
+            .doc_keys()
+            .expect("keys")
+            .iter()
+            .map(|key| key.as_str().to_owned())
+            .collect();
+        assert_eq!(doc_keys, vec!["k0", "k1", "k2"]);
+        let field = guard
+            .reader()
+            .schema()
+            .field_id("doc_id")
+            .expect("field id");
+        let preparation = snapshot
+            .prepare_keyword_ordinals(field, &guards, &NeverCancel)
+            .expect("prepare");
+        let map = preparation
+            .ready()
+            .unwrap_or_else(|| panic!("ready map: {preparation:?}"));
+        let translation = map.bind_segment(guard).expect("bind segment");
+        let reader = guard.reader();
+        let columns = ColumnAccess::open(reader).expect("columns");
+        let bound = columns
+            .bind_keyword_sort_ordinal(field)
+            .expect("bind")
+            .expect("ordinal");
+        let rank_a = ordinal_key_for_doc(&bound, &translation, 0);
+        let rank_b = ordinal_key_for_doc(&bound, &translation, 1);
+        let rank_z = ordinal_key_for_doc(&bound, &translation, 2);
+        let ordered = |left, right| {
+            ordinal_sort_key_cmp(left, right, SortDirection::Asc, MissingValuePosition::Last)
+        };
+        assert_eq!(
+            ordered(rank_a, rank_b),
+            Ordering::Less,
+            "real segment order a<b"
+        );
+        assert_eq!(
+            ordered(rank_b, rank_z),
+            Ordering::Less,
+            "real segment order b<z"
+        );
+
+        let request = request(
+            term(),
+            1,
+            sort_field(SortDirection::Asc, MissingValuePosition::Last),
+        );
+        let make = |key: &str, value: &str, ordinal: Option<OrdinalSortKey>| {
+            let hit = SelectedHit {
+                segment_index: 0,
+                doc_id: 0,
+                key: DocumentKey::new(key).expect("key"),
+                score: Some(1.0),
+                sort_tuple: vec![SortValue::Value(FieldValue::Keyword(value.to_owned()))],
+            };
+            let charge = candidate_charge(&hit).expect("charge");
+            MixedEntry {
+                hit,
+                charge,
+                sort: &request.sort,
+                relevance: false,
+                ordinal_sort: ordinal,
+            }
+        };
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        heap.push(make("k0", "a", None));
+        heap.push(make("k1", "b", Some(rank_b)));
+        assert_eq!(heap.len(), 2, "K+1 heap capacity");
+        let worst = heap.peek().expect("worst");
+        assert_eq!(worst.hit.key.as_str(), "k1", "numeric worst, not legacy");
+        assert_eq!(worst.ordinal_sort, Some(rank_b));
+        assert!(
+            heap.iter()
+                .filter(|entry| entry.ordinal_sort.is_none())
+                .count()
+                == 1,
+            "one hidden legacy entry"
+        );
+        let before = heap_identity(&heap);
+
+        let mut budget = CandidateBudget::new(&SearchLimits::default());
+        let mut scope: Option<SlotMemoryScope<'_>> = None;
+        let mut experiment = d3c::State::for_test(d3c::Kind::Linear, d3c::Profile::P0, 1);
+        let mut audit = OrdinalHeapAudit::new();
+        b2_observation::reset();
+        let error = consider_ordinal_keyword_candidate(
+            &columns,
+            reader.schema(),
+            &request,
+            2,
+            0,
+            DocumentKey::new("k2").expect("key"),
+            1.0,
+            true,
+            &bound,
+            &translation,
+            &mut audit,
+            &mut heap,
+            2,
+            &mut budget,
+            &mut scope,
+            &mut experiment,
+        )
+        .expect_err("a hidden legacy entry must fail before a losing return");
+        match error {
+            SearchError::CorruptIndex { detail } => {
+                assert_eq!(detail, "mixed ordinal and legacy sort entries");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+        assert_eq!(b2_observation::numeric_compares(), 0);
+        assert_eq!(b2_observation::owned_single_strings(), 0);
+        assert_eq!(b2_observation::full_heap_audits(), 1);
+        assert_eq!(heap_identity(&heap), before, "no heap mutation");
+
+        // Positive arm: a clean numeric-only heap must accept a numeric-losing
+        // candidate without owning a string, and without being called corrupt.
+        let mut clean: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        clean.push(make("k0", "a", Some(rank_a)));
+        clean.push(make("k1", "b", Some(rank_b)));
+        let clean_before = heap_identity(&clean);
+        let mut clean_budget = CandidateBudget::new(&SearchLimits::default());
+        let mut clean_experiment = d3c::State::for_test(d3c::Kind::Linear, d3c::Profile::P0, 1);
+        let mut clean_audit = OrdinalHeapAudit::new();
+        b2_observation::reset();
+        consider_ordinal_keyword_candidate(
+            &columns,
+            reader.schema(),
+            &request,
+            2,
+            0,
+            DocumentKey::new("k2").expect("key"),
+            1.0,
+            true,
+            &bound,
+            &translation,
+            &mut clean_audit,
+            &mut clean,
+            2,
+            &mut clean_budget,
+            &mut scope,
+            &mut clean_experiment,
+        )
+        .expect("a numeric-losing candidate on a clean heap is not corruption");
+        assert_eq!(b2_observation::numeric_compares(), 1);
+        assert_eq!(b2_observation::owned_single_strings(), 0);
+        assert_eq!(b2_observation::full_heap_audits(), 1);
+        assert_eq!(heap_identity(&clean), clean_before, "no heap mutation");
     }
 }
 
