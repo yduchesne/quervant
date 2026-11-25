@@ -21,10 +21,12 @@
 use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::Duration;
 
 use quervant_objectstore::ContentDescriptor;
 
+use crate::analysis::Cancellation;
 use crate::contract::document::DocumentKey;
 
 use super::bounds::{GeoBounds, TimeBounds};
@@ -114,6 +116,396 @@ struct ValidatedStoredBlocks {
 struct ValidatedOffsets {
     ends: Vec<u64>,
     _reservation: MetadataReservation,
+}
+
+/// PERF-06-B3: bounded wait cadence for a competing fingerprint-cache binder.
+///
+/// This is a poll cadence, never a timeout error: every wake-up re-checks the
+/// live state predicate under the lock and re-polls cancellation outside it.
+const KEY_FINGERPRINT_WAIT_INTERVAL: Duration = Duration::from_millis(5);
+
+/// PERF-06-B3: how many validated rows are hashed between cancellation polls.
+const KEY_FINGERPRINT_POLL_ROWS: u64 = 256;
+
+/// PERF-06-B3: the exact runtime document-key hash.
+///
+/// This is **not** an identity: it is only a duplicate-check prefilter, is never
+/// persisted, and is never compared across process or compiler versions. A hash
+/// match is always confirmed with the full raw UTF-8 key bytes.
+///
+/// `DefaultHasher::new()` is deterministically seeded within one process, which
+/// is exactly the scope the retained per-segment directory is valid for.
+pub(crate) fn runtime_doc_key_hash(key: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// PERF-06-B3: one retained raw-string hash per physical document id.
+///
+/// Owned by the shared verified segment state; it retains no document text and
+/// no query-local `DocumentKey`. The `MetadataReservation` keeps the accounted
+/// charge alive exactly as long as this directory is reachable.
+struct KeyFingerprints {
+    hashes: Vec<u64>,
+    _reservation: MetadataReservation,
+}
+
+/// PERF-06-B3: the four-state lazy fingerprint directory.
+enum KeyFingerprintState {
+    /// No binder has attempted this verified state yet.
+    Empty,
+    /// Exactly one binder is constructing a candidate.
+    Building,
+    /// A complete, validated, accounted directory is published.
+    Ready(Arc<KeyFingerprints>),
+    /// A documented optional capacity refusal; sticky for this verified state.
+    Unavailable,
+}
+
+/// PERF-06-B3: per-verified-segment-state fingerprint directory machine.
+///
+/// `Cancelled` and genuine corruption are never cached: only a successfully
+/// published directory or a documented optional capacity refusal is sticky.
+struct KeyFingerprintCache {
+    state: Mutex<KeyFingerprintState>,
+    ready: Condvar,
+}
+
+impl KeyFingerprintCache {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(KeyFingerprintState::Empty),
+            ready: Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> SegmentResult<MutexGuard<'_, KeyFingerprintState>> {
+        self.state.lock().map_err(|_| fingerprint_lock_poisoned())
+    }
+}
+
+/// PERF-06-B3: a query-local read-only handle over one verified key directory.
+///
+/// It borrows the immutable `DOC_KEYS` body and the already validated offset
+/// certificate of the exact segment it was bound from, and clones the published
+/// `Arc` of hashes. It never escapes the reader/guard lifetime, and it performs
+/// no per-document allocation, hashing or UTF-8 decode in [`Self::meta`].
+pub(crate) struct BoundKeyIdentity<'a> {
+    body: &'a [u8],
+    offsets: &'a ValidatedOffsets,
+    hashes: Arc<KeyFingerprints>,
+}
+
+/// PERF-06-B3: constant-size candidate identity metadata.
+#[derive(Clone, Copy)]
+pub(crate) struct KeyIdentityMeta {
+    /// Prevalidated runtime hash. Never an exact identity; a prefilter only.
+    pub(crate) hash: u64,
+    /// Logical key bytes (the raw UTF-8 key, not the length prefix or record).
+    pub(crate) utf8_len: u64,
+}
+
+fn fingerprint_lock_poisoned() -> SegmentError {
+    SegmentError::Corrupt {
+        context: "doc key identity",
+        detail: "fingerprint cache lock poisoned".to_owned(),
+    }
+}
+
+fn invalid_key_span() -> SegmentError {
+    SegmentError::Corrupt {
+        context: "doc key identity",
+        detail: "invalid validated key span".to_owned(),
+    }
+}
+
+fn identity_size_mismatch() -> SegmentError {
+    SegmentError::Corrupt {
+        context: "doc key identity",
+        detail: "identity directory size mismatch".to_owned(),
+    }
+}
+
+/// Restores `Building -> Empty` and wakes waiters on error, cancellation or
+/// unwind. Only this cleanup guard may use `PoisonError::into_inner`.
+struct KeyFingerprintBuildGuard<'a> {
+    cache: &'a KeyFingerprintCache,
+    armed: bool,
+}
+
+impl<'a> KeyFingerprintBuildGuard<'a> {
+    fn new(cache: &'a KeyFingerprintCache) -> Self {
+        Self { cache, armed: true }
+    }
+
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for KeyFingerprintBuildGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let mut state = self
+            .cache
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if matches!(&*state, KeyFingerprintState::Building) {
+            *state = KeyFingerprintState::Empty;
+        }
+        drop(state);
+        self.cache.ready.notify_all();
+    }
+}
+
+/// Validate one already-offset DOC_KEYS record and return its exact runtime hash.
+fn hash_one_doc_key(body: &[u8], offsets: &ValidatedOffsets, doc_id: u64) -> SegmentResult<u64> {
+    let range = offsets.range(doc_id)?;
+    let slice = body.get(range).ok_or_else(invalid_key_span)?;
+    let mut bytes = ByteReader::new(slice);
+    let key_bytes = bytes.len_prefixed_u16("doc key")?;
+    let key_ref = std::str::from_utf8(key_bytes)
+        .map_err(|_| SegmentError::InvalidUtf8 { context: "doc key" })?;
+    if key_ref.is_empty() || key_ref.len() > DocumentKey::MAX_BYTES {
+        return Err(SegmentError::Corrupt {
+            context: "doc key",
+            detail: "invalid document key".to_owned(),
+        });
+    }
+    bytes.expect_end("doc keys")?;
+    Ok(runtime_doc_key_hash(key_ref))
+}
+
+impl<'a> BoundKeyIdentity<'a> {
+    /// Checked record range and logical key length for `doc_id`.
+    fn key_span(&self, doc_id: u64) -> SegmentResult<(Range<usize>, u64)> {
+        let range = self.offsets.range(doc_id)?;
+        let record_len = range
+            .end
+            .checked_sub(range.start)
+            .ok_or_else(invalid_key_span)?;
+        // The v1 record is a `u16` length prefix followed by the raw key bytes.
+        let utf8_len = record_len.checked_sub(2).ok_or_else(invalid_key_span)?;
+        let body: &'a [u8] = self.body;
+        body.get(range.clone()).ok_or_else(invalid_key_span)?;
+        if utf8_len == 0 || utf8_len > DocumentKey::MAX_BYTES {
+            return Err(invalid_key_span());
+        }
+        let utf8_len = u64::try_from(utf8_len).map_err(|_| invalid_key_span())?;
+        Ok((range, utf8_len))
+    }
+
+    /// Checked constant-size identity metadata: one hash lookup plus an
+    /// offset-derived length, with no allocation, no UTF-8 decode and no raw key
+    /// borrow.
+    pub(crate) fn meta(&self, doc_id: u64) -> SegmentResult<KeyIdentityMeta> {
+        #[cfg(test)]
+        B3_META_READS.with(|cell| cell.set(cell.get() + 1));
+        let index = usize::try_from(doc_id).map_err(|_| invalid_key_span())?;
+        let hash = *self.hashes.hashes.get(index).ok_or_else(invalid_key_span)?;
+        let (_range, utf8_len) = self.key_span(doc_id)?;
+        Ok(KeyIdentityMeta { hash, utf8_len })
+    }
+
+    /// Borrowed, fully revalidated raw logical key.
+    ///
+    /// Called only for a confirmed retained-hash collision, an equal numeric
+    /// sort value, or a competitive materialization. Never called per losing
+    /// candidate.
+    pub(crate) fn key_str(&self, doc_id: u64) -> SegmentResult<&'a str> {
+        #[cfg(test)]
+        B3_RAW_KEY_BORROWS.with(|cell| cell.set(cell.get() + 1));
+        let (range, utf8_len) = self.key_span(doc_id)?;
+        let body: &'a [u8] = self.body;
+        let slice = body.get(range).ok_or_else(invalid_key_span)?;
+        let mut bytes = ByteReader::new(slice);
+        let key_bytes = bytes.len_prefixed_u16("doc key")?;
+        let prefix_len = u64::try_from(key_bytes.len()).map_err(|_| invalid_key_span())?;
+        if prefix_len != utf8_len {
+            return Err(invalid_key_span());
+        }
+        let key_ref = std::str::from_utf8(key_bytes)
+            .map_err(|_| SegmentError::InvalidUtf8 { context: "doc key" })?;
+        if key_ref.is_empty() || key_ref.len() > DocumentKey::MAX_BYTES {
+            return Err(SegmentError::Corrupt {
+                context: "doc key",
+                detail: "invalid document key".to_owned(),
+            });
+        }
+        bytes.expect_end("doc keys")?;
+        Ok(key_ref)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static B3_PROBE: std::cell::RefCell<Option<(B3Probe, B3ProbeCallback)>> =
+        const { std::cell::RefCell::new(None) };
+    static B3_BUILD_ATTEMPTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static B3_DIRECTORY_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static B3_META_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static B3_RAW_KEY_BORROWS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static B3_PREFLIGHT_FALLBACKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static B3_CACHE_WAIT_STARTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// PERF-06-B3: frozen zero-data discriminator for the scoped test probes.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum B3Probe {
+    BeforeHashAllocation,
+    AfterHashAllocation,
+    HashIndex256,
+    BeforeReadyPublish,
+    BeforeUnavailablePublish,
+}
+
+/// PERF-06-B3: what a test probe asks the builder to do next.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum B3ProbeOutcome {
+    Continue,
+    RefuseAllocation,
+}
+
+#[cfg(test)]
+pub(crate) type B3ProbeCallback = Box<dyn FnOnce() -> SegmentResult<B3ProbeOutcome>>;
+
+/// Install a one-shot probe callback for `point`.
+#[cfg(test)]
+pub(crate) fn set_b3_probe(
+    point: B3Probe,
+    callback: impl FnOnce() -> SegmentResult<B3ProbeOutcome> + 'static,
+) {
+    B3_PROBE.with(|cell| *cell.borrow_mut() = Some((point, Box::new(callback))));
+}
+
+/// Clear any pending probe callback.
+#[cfg(test)]
+pub(crate) fn clear_b3_probe() {
+    B3_PROBE.with(|cell| *cell.borrow_mut() = None);
+}
+
+/// Reset every B3 structural counter for this thread.
+#[cfg(test)]
+pub(crate) fn reset_b3_counters() {
+    B3_BUILD_ATTEMPTS.with(|cell| cell.set(0));
+    B3_DIRECTORY_BUILDS.with(|cell| cell.set(0));
+    B3_META_READS.with(|cell| cell.set(0));
+    B3_RAW_KEY_BORROWS.with(|cell| cell.set(0));
+    B3_PREFLIGHT_FALLBACKS.with(|cell| cell.set(0));
+    B3_CACHE_WAIT_STARTS.with(|cell| cell.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn b3_build_attempts() -> u64 {
+    B3_BUILD_ATTEMPTS.with(std::cell::Cell::get)
+}
+#[cfg(test)]
+pub(crate) fn b3_directory_builds() -> u64 {
+    B3_DIRECTORY_BUILDS.with(std::cell::Cell::get)
+}
+#[cfg(test)]
+pub(crate) fn b3_meta_reads() -> u64 {
+    B3_META_READS.with(std::cell::Cell::get)
+}
+#[cfg(test)]
+pub(crate) fn b3_raw_key_borrows() -> u64 {
+    B3_RAW_KEY_BORROWS.with(std::cell::Cell::get)
+}
+#[cfg(test)]
+pub(crate) fn b3_preflight_fallbacks() -> u64 {
+    B3_PREFLIGHT_FALLBACKS.with(std::cell::Cell::get)
+}
+#[cfg(test)]
+pub(crate) fn b3_cache_wait_starts() -> u64 {
+    B3_CACHE_WAIT_STARTS.with(std::cell::Cell::get)
+}
+
+/// Process-wide waiter witness so a test thread can observe another thread's
+/// parking without inspecting private state.
+#[cfg(test)]
+static B3_GLOBAL_WAIT_STARTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+pub(crate) fn b3_global_wait_starts() -> u64 {
+    B3_GLOBAL_WAIT_STARTS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Run the registered one-shot probe when its point matches.
+///
+/// The `RefCell` borrow is released before the callback runs, and the callback
+/// never executes while the cache mutex is held.
+#[cfg(test)]
+fn b3_probe(point: B3Probe) -> SegmentResult<B3ProbeOutcome> {
+    let callback = B3_PROBE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        match slot.as_ref() {
+            Some((registered, _)) if *registered == point => slot.take(),
+            _ => None,
+        }
+    });
+    match callback {
+        Some((_, callback)) => callback(),
+        None => Ok(B3ProbeOutcome::Continue),
+    }
+}
+
+/// Map a cooperative cancellation poll to the typed segment outcome.
+#[inline]
+fn poll_cancel(cancel: &dyn Cancellation) -> SegmentResult<()> {
+    if cancel.is_cancelled() {
+        Err(SegmentError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+/// Fire the `HashIndex256` probe (test builds only) and then poll cancellation.
+#[cfg(test)]
+#[inline]
+fn poll_hash_index(cancel: &dyn Cancellation) -> SegmentResult<()> {
+    b3_probe(B3Probe::HashIndex256)?;
+    poll_cancel(cancel)
+}
+
+#[cfg(not(test))]
+#[inline]
+fn poll_hash_index(cancel: &dyn Cancellation) -> SegmentResult<()> {
+    poll_cancel(cancel)
+}
+
+/// Fire the `BeforeReadyPublish` probe (test builds only) and poll cancellation.
+#[cfg(test)]
+#[inline]
+fn poll_before_ready_publish(cancel: &dyn Cancellation) -> SegmentResult<()> {
+    b3_probe(B3Probe::BeforeReadyPublish)?;
+    poll_cancel(cancel)
+}
+
+#[cfg(not(test))]
+#[inline]
+fn poll_before_ready_publish(cancel: &dyn Cancellation) -> SegmentResult<()> {
+    poll_cancel(cancel)
+}
+
+/// Fire the `BeforeUnavailablePublish` probe (test builds only) then poll.
+#[cfg(test)]
+#[inline]
+fn poll_before_unavailable_publish(cancel: &dyn Cancellation) -> SegmentResult<()> {
+    b3_probe(B3Probe::BeforeUnavailablePublish)?;
+    poll_cancel(cancel)
+}
+
+#[cfg(not(test))]
+#[inline]
+fn poll_before_unavailable_publish(cancel: &dyn Cancellation) -> SegmentResult<()> {
+    poll_cancel(cancel)
 }
 
 impl ValidatedOffsets {
@@ -313,6 +705,8 @@ pub(crate) struct VerifiedSegmentState {
     stored_blocks_init: Mutex<()>,
     /// Metadata account used only to retain optional lazy offset directories.
     access_budget: Option<Arc<MetadataBudget>>,
+    /// PERF-06-B3: lazy, separately metered runtime key-fingerprint directory.
+    key_fingerprints: KeyFingerprintCache,
     /// Retained-metadata reservation, released when the last `Arc` drops.
     metadata: Option<MetadataReservation>,
 }
@@ -440,6 +834,7 @@ impl VerifiedSegmentState {
             stored_blocks: OnceLock::new(),
             stored_blocks_init: Mutex::new(()),
             access_budget: None,
+            key_fingerprints: KeyFingerprintCache::new(),
             metadata: None,
         }
     }
@@ -512,6 +907,33 @@ impl VerifiedSegmentState {
     #[cfg(test)]
     pub(crate) fn has_access_budget(&self) -> bool {
         self.access_budget.is_some()
+    }
+
+    /// PERF-06-B3 test-only state code: `0` empty, `1` building, `2` ready,
+    /// `3` unavailable.
+    #[cfg(test)]
+    pub(crate) fn key_fingerprints_state_code(&self) -> u8 {
+        match self.key_fingerprints.state.lock() {
+            Ok(state) => match &*state {
+                KeyFingerprintState::Empty => 0,
+                KeyFingerprintState::Building => 1,
+                KeyFingerprintState::Ready(_) => 2,
+                KeyFingerprintState::Unavailable => 3,
+            },
+            Err(_) => u8::MAX,
+        }
+    }
+
+    /// PERF-06-B3 test-only identity of the published hash directory.
+    #[cfg(test)]
+    pub(crate) fn key_fingerprints_ptr(&self) -> Option<usize> {
+        match self.key_fingerprints.state.lock() {
+            Ok(state) => match &*state {
+                KeyFingerprintState::Ready(owner) => Some(owner.hashes.as_ptr() as usize),
+                _ => None,
+            },
+            Err(_) => None,
+        }
     }
 
     #[cfg(test)]
@@ -649,6 +1071,204 @@ impl VerifiedSegmentState {
             _reservation: reservation,
         }));
         Ok(true)
+    }
+
+    /// PERF-06-B3: bind, building at most once per verified segment state, the
+    /// optional runtime key-fingerprint directory.
+    ///
+    /// All cancellation callbacks and test probes run outside the cache mutex.
+    /// `Cancelled` and genuine corruption are never cached; only a published
+    /// directory or a documented optional capacity refusal is sticky.
+    fn ensure_key_fingerprints(
+        &self,
+        body: &[u8],
+        offsets: &ValidatedOffsets,
+        budget: &Arc<MetadataBudget>,
+        cancel: &dyn Cancellation,
+    ) -> SegmentResult<Option<Arc<KeyFingerprints>>> {
+        loop {
+            poll_cancel(cancel)?;
+            enum Next {
+                Build,
+                Wait,
+                Ready(Arc<KeyFingerprints>),
+                Unavailable,
+            }
+            let next = {
+                let mut state = self.key_fingerprints.lock()?;
+                match &mut *state {
+                    KeyFingerprintState::Empty => {
+                        *state = KeyFingerprintState::Building;
+                        #[cfg(test)]
+                        B3_BUILD_ATTEMPTS.with(|cell| cell.set(cell.get() + 1));
+                        Next::Build
+                    }
+                    KeyFingerprintState::Building => Next::Wait,
+                    KeyFingerprintState::Ready(owner) => Next::Ready(Arc::clone(owner)),
+                    KeyFingerprintState::Unavailable => Next::Unavailable,
+                }
+            };
+            match next {
+                Next::Ready(owner) => return Ok(Some(owner)),
+                Next::Unavailable => return Ok(None),
+                Next::Wait => {
+                    poll_cancel(cancel)?;
+                    let state = self.key_fingerprints.lock()?;
+                    if !matches!(&*state, KeyFingerprintState::Building) {
+                        continue;
+                    }
+                    #[cfg(test)]
+                    {
+                        B3_CACHE_WAIT_STARTS.with(|cell| cell.set(cell.get() + 1));
+                        B3_GLOBAL_WAIT_STARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    let (state, _timeout) = self
+                        .key_fingerprints
+                        .ready
+                        .wait_timeout(state, KEY_FINGERPRINT_WAIT_INTERVAL)
+                        .map_err(|_| fingerprint_lock_poisoned())?;
+                    drop(state);
+                }
+                Next::Build => {
+                    let guard = KeyFingerprintBuildGuard::new(&self.key_fingerprints);
+                    match self.build_key_fingerprints(body, offsets, budget, cancel) {
+                        Ok(Some(owner)) => {
+                            poll_before_ready_publish(cancel)?;
+                            self.publish_key_fingerprints(KeyFingerprintState::Ready(Arc::clone(
+                                &owner,
+                            )))?;
+                            guard.disarm();
+                            self.key_fingerprints.ready.notify_all();
+                            return Ok(Some(owner));
+                        }
+                        Ok(None) => {
+                            poll_before_unavailable_publish(cancel)?;
+                            self.publish_key_fingerprints(KeyFingerprintState::Unavailable)?;
+                            guard.disarm();
+                            self.key_fingerprints.ready.notify_all();
+                            return Ok(None);
+                        }
+                        Err(error) => {
+                            // RAII restores `Building -> Empty` and wakes waiters.
+                            drop(guard);
+                            return Err(error);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// PERF-06-B3: record one documented optional capacity refusal.
+    fn refuse_key_fingerprints(&self) -> SegmentResult<Option<Arc<KeyFingerprints>>> {
+        #[cfg(test)]
+        B3_PREFLIGHT_FALLBACKS.with(|cell| cell.set(cell.get() + 1));
+        Ok(None)
+    }
+
+    /// PERF-06-B3: construct one charged `Vec<u64>` of validated key hashes.
+    ///
+    /// Every refusal is a documented optional capacity outcome (`Ok(None)`);
+    /// invalid UTF-8, framing, count or key spans stay authoritative typed
+    /// errors and are never downgraded.
+    fn build_key_fingerprints(
+        &self,
+        body: &[u8],
+        offsets: &ValidatedOffsets,
+        budget: &Arc<MetadataBudget>,
+        cancel: &dyn Cancellation,
+    ) -> SegmentResult<Option<Arc<KeyFingerprints>>> {
+        let count = self.doc_count;
+        self.limits.check_entries(count)?;
+        let Ok(count_usize) = usize::try_from(count) else {
+            return Err(SegmentError::LimitExceeded {
+                limit: self.limits.max_single_allocation(),
+                requested: count,
+            });
+        };
+        if self.limits.check_alloc::<u64>(count).is_err() {
+            return self.refuse_key_fingerprints();
+        }
+        let hash_allowance = element_bytes::<u64>(count)?;
+        if self.limits.check_allocation_bytes(hash_allowance).is_err() {
+            return self.refuse_key_fingerprints();
+        }
+        let owner_bytes = std::mem::size_of::<KeyFingerprints>() as u64;
+        if self.limits.check_allocation_bytes(owner_bytes).is_err() {
+            return self.refuse_key_fingerprints();
+        }
+        let mut meter = match MetadataMeter::reserve(budget, hash_allowance) {
+            Ok(meter) => meter,
+            Err(SegmentError::LimitExceeded { .. }) => return self.refuse_key_fingerprints(),
+            Err(error) => return Err(error),
+        };
+        meter.charge_vec::<u64>(count)?;
+        #[cfg(test)]
+        match b3_probe(B3Probe::BeforeHashAllocation)? {
+            B3ProbeOutcome::Continue => {}
+            B3ProbeOutcome::RefuseAllocation => return self.refuse_key_fingerprints(),
+        }
+        let mut hashes: Vec<u64> = Vec::new();
+        if hashes.try_reserve_exact(count_usize).is_err() || hashes.capacity() < count_usize {
+            return self.refuse_key_fingerprints();
+        }
+        let measured_capacity = capacity_bytes::<u64>(hashes.capacity())?;
+        if self
+            .limits
+            .check_allocation_bytes(measured_capacity)
+            .is_err()
+            || measured_capacity > hash_allowance
+        {
+            return self.refuse_key_fingerprints();
+        }
+        #[cfg(test)]
+        {
+            let _unused = b3_probe(B3Probe::AfterHashAllocation)?;
+        }
+        for doc_id in 0..count {
+            if doc_id % KEY_FINGERPRINT_POLL_ROWS == 0 {
+                poll_cancel(cancel)?;
+            }
+            hashes.push(hash_one_doc_key(body, offsets, doc_id)?);
+            if (doc_id + 1) % KEY_FINGERPRINT_POLL_ROWS == 0 {
+                poll_hash_index(cancel)?;
+            }
+        }
+        if hashes.len() != count_usize {
+            return Err(identity_size_mismatch());
+        }
+        if meter.extend(owner_bytes).is_err() || meter.charge_arc::<KeyFingerprints>().is_err() {
+            return self.refuse_key_fingerprints();
+        }
+        let measured = match measured_capacity.checked_add(owner_bytes) {
+            Some(measured) => measured,
+            None => return self.refuse_key_fingerprints(),
+        };
+        let reservation = match meter.finalize(measured) {
+            Ok(reservation) => reservation,
+            Err(SegmentError::LimitExceeded { .. }) => return self.refuse_key_fingerprints(),
+            Err(error) => return Err(error),
+        };
+        #[cfg(test)]
+        B3_DIRECTORY_BUILDS.with(|cell| cell.set(cell.get() + 1));
+        Ok(Some(Arc::new(KeyFingerprints {
+            hashes,
+            _reservation: reservation,
+        })))
+    }
+
+    /// PERF-06-B3: publish a completed fingerprint candidate under the cache lock.
+    fn publish_key_fingerprints(&self, next: KeyFingerprintState) -> SegmentResult<()> {
+        let mut state = self.key_fingerprints.lock()?;
+        if !matches!(&*state, KeyFingerprintState::Building) {
+            return Err(SegmentError::Corrupt {
+                context: "doc key identity",
+                detail: "fingerprint cache publication state changed".to_owned(),
+            });
+        }
+        *state = next;
+        drop(state);
+        Ok(())
     }
 }
 
@@ -1047,6 +1667,57 @@ impl SegmentReader {
     #[cfg(test)]
     pub(crate) fn doc_keys_cache_is_populated(&self) -> bool {
         self.doc_keys_cache.borrow().is_some()
+    }
+
+    /// PERF-06-B3: bind the per-segment compact key-fingerprint directory.
+    ///
+    /// Called only for the first matched, scored candidate of an eligible B2
+    /// ordinal-`Ready` segment, exactly where the collector would otherwise
+    /// resolve its owned `DocumentKey`. `Ok(None)` means "use the original owned
+    /// B2 key path for this whole segment": no metadata budget, an optional
+    /// validated-offsets refusal, or a documented optional fingerprint-directory
+    /// capacity refusal. Genuine corruption, a poisoned cache lock and
+    /// cancellation stay typed errors and are never a silent fallback.
+    pub(crate) fn bind_key_identity(
+        &self,
+        cancel: &dyn Cancellation,
+    ) -> SegmentResult<Option<BoundKeyIdentity<'_>>> {
+        poll_cancel(cancel)?;
+        let body = self
+            .body(SectionKind::DocKeys)
+            .ok_or(SegmentError::MissingSection {
+                kind: SectionKind::DocKeys as u16,
+            })?;
+        let shared = &self.shared;
+        let Some(budget) = shared.access_budget.as_ref() else {
+            #[cfg(test)]
+            B3_PREFLIGHT_FALLBACKS.with(|cell| cell.set(cell.get() + 1));
+            return Ok(None);
+        };
+        let directory = shared
+            .key_offsets
+            .get_or_init(|| try_build_key_directory(shared, body, budget).ok());
+        let Some(offsets) = directory.as_ref() else {
+            #[cfg(test)]
+            B3_PREFLIGHT_FALLBACKS.with(|cell| cell.set(cell.get() + 1));
+            return Ok(None);
+        };
+        let count_usize =
+            usize::try_from(shared.doc_count).map_err(|_| identity_size_mismatch())?;
+        if offsets.ends.len().checked_sub(1) != Some(count_usize) {
+            return Err(identity_size_mismatch());
+        }
+        let Some(hashes) = shared.ensure_key_fingerprints(body, offsets, budget, cancel)? else {
+            return Ok(None);
+        };
+        if hashes.hashes.len() != count_usize {
+            return Err(identity_size_mismatch());
+        }
+        Ok(Some(BoundKeyIdentity {
+            body,
+            offsets,
+            hashes,
+        }))
     }
 
     /// Lazily decode and cache the live-doc bitmap.
@@ -3531,5 +4202,460 @@ mod column_geometry_tests {
         );
         assert_eq!(reader.shared_state().key_offsets_state(), Some(false));
         assert!(reader.doc_key_selected(0).is_err());
+    }
+}
+
+/// PERF-06-B3: verified key-fingerprint directory, metadata admission,
+/// cancellation, retention and corruption tests.
+#[cfg(test)]
+mod b3_key_identity_tests {
+    use super::column_geometry_tests::{doc, fixture_schema, rebuild_section};
+    use super::*;
+    use crate::analysis::{AnalyzerRegistry, CancellationFlag, NeverCancel};
+    use crate::segment::{Layout, SegmentBuilder};
+
+    fn bytes_with(count: usize) -> Vec<u8> {
+        let mut builder = SegmentBuilder::new(fixture_schema(), AnalyzerRegistry::builtin())
+            .expect("builder")
+            .with_layout(Layout::Insertion)
+            .with_limits(SegmentLimits::default());
+        for index in 0..count {
+            builder
+                .add_document(doc(&format!("v{index:06}")))
+                .expect("add");
+        }
+        builder.build().expect("build").bytes
+    }
+
+    /// Admit a verified state from a generous budget, then swap in the budget the
+    /// access path under test must actually live with.
+    fn state_with_access_budget(
+        bytes: Vec<u8>,
+        budget: Arc<MetadataBudget>,
+    ) -> Arc<VerifiedSegmentState> {
+        let generous = MetadataBudget::new(u64::MAX / 4);
+        let mut state = VerifiedSegmentState::build_cached(
+            Arc::new(bytes),
+            SegmentLimits::default(),
+            &generous,
+        )
+        .expect("candidate")
+        .expect("admitted");
+        Arc::get_mut(&mut state).expect("unique").access_budget = Some(budget);
+        state
+    }
+
+    #[test]
+    fn b3_u01_invalid_empty_key_is_rejected_before_publication() {
+        let limits = SegmentLimits::default();
+        let standalone = SegmentReader::open(bytes_with(4), limits).expect("reader");
+        let body = standalone
+            .body(SectionKind::DocKeys)
+            .expect("keys body")
+            .to_vec();
+        let mut offsets = Vec::new();
+        super::validate_doc_keys_and_capture_offsets(
+            standalone.shared_state(),
+            &body,
+            &mut offsets,
+        )
+        .expect("offsets");
+        // Record 1 currently holds a non-empty key: make its length prefix zero.
+        let corrupt = rebuild_section(standalone.bytes(), SectionKind::DocKeys, |body| {
+            let at = offsets[1] as usize;
+            body[at] = 0;
+            body[at + 1] = 0;
+        });
+        reset_b3_counters();
+        let (state, budget) = super::column_geometry_tests::admitted_state(corrupt);
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        assert!(
+            reader
+                .bind_key_identity(&NeverCancel)
+                .expect("optional fallback")
+                .is_none()
+        );
+        assert_eq!(state.key_fingerprints_state_code(), 0, "nothing published");
+        assert_eq!(b3_directory_builds(), 0);
+        assert!(budget.used() > 0, "the admitted state keeps its charge");
+        let error = reader.doc_key(1).expect_err("empty key is corrupt");
+        assert!(
+            matches!(
+                error,
+                SegmentError::Corrupt {
+                    context: "doc key",
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        // The 1025-byte rejection remains the contract constructor's.
+        assert!(DocumentKey::new("x".repeat(DocumentKey::MAX_BYTES + 1)).is_err());
+        assert!(DocumentKey::new("x".repeat(DocumentKey::MAX_BYTES)).is_ok());
+    }
+
+    #[test]
+    fn b3_u03_bound_directory_matches_the_authoritative_decoder() {
+        reset_b3_counters();
+        let (state, _budget) = super::column_geometry_tests::admitted_state(bytes_with(8));
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        let bound = reader
+            .bind_key_identity(&NeverCancel)
+            .expect("bind")
+            .expect("ready");
+        assert_eq!(state.key_fingerprints_state_code(), 2);
+        assert_eq!(b3_directory_builds(), 1);
+        for doc_id in 0..8u64 {
+            let expected = reader.doc_key(doc_id).expect("authoritative key");
+            let meta = bound.meta(doc_id).expect("meta");
+            assert_eq!(meta.hash, runtime_doc_key_hash(expected.as_str()));
+            assert_eq!(meta.utf8_len, expected.as_str().len() as u64);
+        }
+        // `meta` never decodes a per-row string.
+        assert_eq!(b3_raw_key_borrows(), 0);
+        assert_eq!(b3_meta_reads(), 8);
+        for doc_id in 0..8u64 {
+            let expected = reader.doc_key(doc_id).expect("authoritative key");
+            assert_eq!(bound.key_str(doc_id).expect("borrow"), expected.as_str());
+        }
+        assert_eq!(b3_raw_key_borrows(), 8);
+        for doc_id in [8u64, 99, u64::MAX] {
+            assert!(matches!(
+                bound.meta(doc_id),
+                Err(SegmentError::Corrupt { .. })
+            ));
+            assert!(matches!(
+                bound.key_str(doc_id),
+                Err(SegmentError::Corrupt { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn b3_u10_directory_is_retained_once_per_verified_state() {
+        reset_b3_counters();
+        let (state, _budget) = super::column_geometry_tests::admitted_state(bytes_with(6));
+        let first = SegmentReader::from_shared(Arc::clone(&state));
+        let one = first
+            .bind_key_identity(&NeverCancel)
+            .expect("bind")
+            .expect("ready");
+        let ptr_one = state.key_fingerprints_ptr().expect("published owner");
+        assert_eq!(b3_directory_builds(), 1);
+        drop(one);
+        let second = SegmentReader::from_shared(Arc::clone(&state));
+        let _two = second
+            .bind_key_identity(&NeverCancel)
+            .expect("bind")
+            .expect("ready");
+        assert_eq!(
+            state.key_fingerprints_ptr(),
+            Some(ptr_one),
+            "same owner on repeat"
+        );
+        assert_eq!(b3_directory_builds(), 1, "no rescan");
+        // A distinct verified state of the same bytes is independent.
+        let (other, _other_budget) = super::column_geometry_tests::admitted_state(bytes_with(6));
+        let other_reader = SegmentReader::from_shared(Arc::clone(&other));
+        other_reader
+            .bind_key_identity(&NeverCancel)
+            .expect("bind")
+            .expect("ready");
+        assert_eq!(b3_directory_builds(), 2);
+        assert_ne!(other.key_fingerprints_ptr(), Some(ptr_one));
+    }
+
+    #[test]
+    fn b3_u11_corrupt_doc_keys_stays_authoritative_and_unbound() {
+        let standalone = SegmentReader::open(bytes_with(6), SegmentLimits::default()).expect("r");
+        let body = standalone
+            .body(SectionKind::DocKeys)
+            .expect("keys body")
+            .to_vec();
+        let mut offsets = Vec::new();
+        super::validate_doc_keys_and_capture_offsets(
+            standalone.shared_state(),
+            &body,
+            &mut offsets,
+        )
+        .expect("offsets");
+        // Corrupt an *unselected* key: record 3's first payload byte.
+        let corrupt = rebuild_section(standalone.bytes(), SectionKind::DocKeys, |body| {
+            body[offsets[3] as usize + 2] ^= 0xFF;
+        });
+        reset_b3_counters();
+        let (state, _budget) = super::column_geometry_tests::admitted_state(corrupt);
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        // No matched candidate yet: nothing is validated or built.
+        assert_eq!(state.key_fingerprints_state_code(), 0);
+        assert_eq!(state.key_offsets_state(), None);
+        assert!(
+            reader
+                .bind_key_identity(&NeverCancel)
+                .expect("optional offsets refusal")
+                .is_none()
+        );
+        assert_eq!(state.key_offsets_state(), Some(false));
+        assert_eq!(state.key_fingerprints_state_code(), 0);
+        assert_eq!(b3_directory_builds(), 0);
+        let error = reader.doc_key(0).expect_err("authoritative corruption");
+        assert!(
+            matches!(error, SegmentError::InvalidUtf8 { context: "doc key" }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn b3_u12_exact_cap_one_under_and_injected_refusal() {
+        let count = 6u64;
+        // Phase 1: measure the total retained access charge.
+        let generous = MetadataBudget::new(u64::MAX / 4);
+        let state = state_with_access_budget(bytes_with(count as usize), Arc::clone(&generous));
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        assert!(
+            reader
+                .bind_key_identity(&NeverCancel)
+                .expect("bind")
+                .is_some()
+        );
+        let total = generous.used();
+        assert!(total > 0);
+
+        // Phase 2: the exact cap admits.
+        let exact = MetadataBudget::new(total);
+        reset_b3_counters();
+        let state = state_with_access_budget(bytes_with(count as usize), Arc::clone(&exact));
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        assert!(
+            reader
+                .bind_key_identity(&NeverCancel)
+                .expect("bind")
+                .is_some(),
+            "exact metadata cap admits"
+        );
+        assert_eq!(state.key_fingerprints_state_code(), 2);
+
+        // Phase 3: one byte under refuses the fingerprint directory only.
+        let tight = MetadataBudget::new(total - 1);
+        reset_b3_counters();
+        let state = state_with_access_budget(bytes_with(count as usize), Arc::clone(&tight));
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        assert!(
+            reader
+                .bind_key_identity(&NeverCancel)
+                .expect("optional refusal")
+                .is_none()
+        );
+        assert_eq!(state.key_fingerprints_state_code(), 3, "sticky Unavailable");
+        assert_eq!(b3_directory_builds(), 0);
+        let retained = state.access_budget_used().expect("budget");
+        assert!(retained > 0 && retained < total, "offsets kept, hashes not");
+        // Sticky: no retry in the same verified state.
+        let attempts = b3_build_attempts();
+        assert!(
+            reader
+                .bind_key_identity(&NeverCancel)
+                .expect("sticky refusal")
+                .is_none()
+        );
+        assert_eq!(b3_build_attempts(), attempts);
+        assert_eq!(state.access_budget_used(), Some(retained));
+        // The original owned key path still works.
+        assert_eq!(
+            reader.doc_key(1).expect("owned fallback").as_str(),
+            "v000001"
+        );
+    }
+
+    #[test]
+    fn b3_u12_injected_allocation_refusal_keeps_the_old_path() {
+        clear_b3_probe();
+        let (state, budget) = super::column_geometry_tests::admitted_state(bytes_with(300));
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        set_b3_probe(B3Probe::BeforeHashAllocation, || {
+            Ok(B3ProbeOutcome::RefuseAllocation)
+        });
+        assert!(
+            reader
+                .bind_key_identity(&NeverCancel)
+                .expect("optional refusal")
+                .is_none()
+        );
+        clear_b3_probe();
+        assert_eq!(state.key_fingerprints_state_code(), 3);
+        assert_eq!(b3_directory_builds(), 0);
+        assert_eq!(state.access_budget_used(), Some(budget.used()));
+        assert_eq!(
+            reader.doc_key(0).expect("owned fallback").as_str(),
+            "v000000"
+        );
+    }
+
+    #[test]
+    fn b3_u13_cancellation_resets_and_retries() {
+        clear_b3_probe();
+        // Cancelled at entry.
+        let (state, _budget) = super::column_geometry_tests::admitted_state(bytes_with(300));
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        let flag = CancellationFlag::new();
+        flag.cancel();
+        assert!(matches!(
+            reader.bind_key_identity(&flag),
+            Err(SegmentError::Cancelled)
+        ));
+        assert_eq!(state.key_fingerprints_state_code(), 0);
+
+        // Cancelled immediately after the hash vector allocation. The probe owns
+        // its own flag because the callback cannot borrow the caller's.
+        let inner = Arc::new(CancellationFlag::new());
+        let inner_for_probe = Arc::clone(&inner);
+        set_b3_probe(B3Probe::AfterHashAllocation, move || {
+            inner_for_probe.cancel();
+            Ok(B3ProbeOutcome::Continue)
+        });
+        assert!(matches!(
+            reader.bind_key_identity(inner.as_ref()),
+            Err(SegmentError::Cancelled)
+        ));
+        assert_eq!(
+            state.key_fingerprints_state_code(),
+            0,
+            "no cached cancellation"
+        );
+
+        // Cancelled after 256 validated rows.
+        let inner = Arc::new(CancellationFlag::new());
+        let inner_for_probe = Arc::clone(&inner);
+        set_b3_probe(B3Probe::HashIndex256, move || {
+            inner_for_probe.cancel();
+            Ok(B3ProbeOutcome::Continue)
+        });
+        assert!(matches!(
+            reader.bind_key_identity(inner.as_ref()),
+            Err(SegmentError::Cancelled)
+        ));
+        assert_eq!(state.key_fingerprints_state_code(), 0);
+
+        // Cancelled immediately before publication.
+        let inner = Arc::new(CancellationFlag::new());
+        let inner_for_probe = Arc::clone(&inner);
+        set_b3_probe(B3Probe::BeforeReadyPublish, move || {
+            inner_for_probe.cancel();
+            Ok(B3ProbeOutcome::Continue)
+        });
+        assert!(matches!(
+            reader.bind_key_identity(inner.as_ref()),
+            Err(SegmentError::Cancelled)
+        ));
+        assert_eq!(state.key_fingerprints_state_code(), 0);
+
+        // A valid retry on the same verified state succeeds.
+        clear_b3_probe();
+        let bound = reader
+            .bind_key_identity(&NeverCancel)
+            .expect("retry")
+            .expect("ready");
+        assert_eq!(bound.meta(299).expect("meta").utf8_len, 7);
+        assert_eq!(state.key_fingerprints_state_code(), 2);
+        // A post-publication cancellation cannot erase the shared owner.
+        let flag = CancellationFlag::new();
+        flag.cancel();
+        assert!(matches!(
+            reader.bind_key_identity(&flag),
+            Err(SegmentError::Cancelled)
+        ));
+        assert_eq!(state.key_fingerprints_state_code(), 2);
+        assert!(state.key_fingerprints_ptr().is_some());
+    }
+
+    #[test]
+    fn b3_u14_error_and_panic_restore_empty() {
+        clear_b3_probe();
+        let (state, _budget) = super::column_geometry_tests::admitted_state(bytes_with(300));
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        set_b3_probe(B3Probe::AfterHashAllocation, || {
+            Err(SegmentError::Corrupt {
+                context: "doc key identity",
+                detail: "injected".to_owned(),
+            })
+        });
+        assert!(matches!(
+            reader.bind_key_identity(&NeverCancel),
+            Err(SegmentError::Corrupt { .. })
+        ));
+        assert_eq!(state.key_fingerprints_state_code(), 0, "RAII restored");
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            set_b3_probe(B3Probe::AfterHashAllocation, || {
+                panic!("injected fingerprint panic");
+            });
+            let _ = reader.bind_key_identity(&NeverCancel);
+        }));
+        clear_b3_probe();
+        assert_eq!(state.key_fingerprints_state_code(), 0, "panic restored");
+        assert!(
+            reader
+                .bind_key_identity(&NeverCancel)
+                .expect("retry")
+                .is_some()
+        );
+        assert_eq!(state.key_fingerprints_state_code(), 2);
+    }
+
+    #[test]
+    fn b3_u21_concurrent_binders_share_one_owner() {
+        clear_b3_probe();
+        let (state, _budget) = super::column_geometry_tests::admitted_state(bytes_with(400));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let builder_state = Arc::clone(&state);
+        let builder = std::thread::spawn(move || {
+            reset_b3_counters();
+            let holder = SegmentReader::from_shared(builder_state);
+            set_b3_probe(B3Probe::AfterHashAllocation, move || {
+                entered_tx.send(()).expect("signal");
+                release_rx.lock().expect("lock").recv().expect("release");
+                Ok(B3ProbeOutcome::Continue)
+            });
+            let bound = holder
+                .bind_key_identity(&NeverCancel)
+                .expect("bind")
+                .is_some();
+            (bound, b3_build_attempts(), b3_directory_builds())
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("builder entered");
+        let waiter_state = Arc::clone(&state);
+        let waiter = std::thread::spawn(move || {
+            reset_b3_counters();
+            let reader = SegmentReader::from_shared(waiter_state);
+            let bound = reader
+                .bind_key_identity(&NeverCancel)
+                .expect("waiter bind")
+                .is_some();
+            (bound, b3_cache_wait_starts(), b3_directory_builds())
+        });
+        // Wait until the competing binder is actually parked on the condvar. This
+        // observes the real wait entry, it does not substitute a sleep for a race.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while b3_global_wait_starts() == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no competing binder observed"
+            );
+            std::thread::yield_now();
+        }
+        release_tx.send(()).expect("release");
+        let (builder_bound, attempts, builder_builds) = builder.join().expect("builder");
+        let (waiter_bound, waiter_waits, waiter_builds) = waiter.join().expect("waiter");
+        clear_b3_probe();
+        assert!(builder_bound, "builder published");
+        assert!(waiter_bound, "waiter reused the publication");
+        assert_eq!(attempts, 1, "exactly one builder claimed the state");
+        assert_eq!(builder_builds, 1);
+        assert_eq!(waiter_builds, 0, "the waiter never rescanned");
+        assert_eq!(waiter_waits, 1, "the waiter parked exactly once");
+        assert_eq!(state.key_fingerprints_state_code(), 2);
     }
 }

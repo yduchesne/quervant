@@ -1066,3 +1066,25 @@ without owning a string. Retained hits still own canonical string sort tuples, s
 the first-page cursor, batch, aggregation and projection contracts are unchanged.
 This is a collector representation only: no persisted rank, no cross-snapshot
 identity and no warm-performance claim (B4 owns qualification).
+
+**Compact document-key fingerprints and deferred owned identity (PERF-06-B3).**
+*Implementation pending independent acceptance.* The B2 numeric collector
+previously resolved an owned `DocumentKey` for **every** matched candidate,
+including numeric losers. B3 adds a per-verified-segment-state, separately
+metered, runtime-only `Vec<u64>` of key hashes (one per physical `doc_id`) built
+lazily on the first matched candidate of an eligible segment and retained with
+its own `MetadataBudget` reservation. `hash[doc_id]` is exactly
+`DefaultHasher::new()` over `str::Hash` of the raw key — the same value the
+accepted duplicate prefilter already used — and is **never** an identity: a hash
+match is always confirmed with the full raw UTF-8 key bytes. Eligibility is
+narrowed to the resolved `Linear`/`Prefilter` duplicate modes inside B2's existing
+`Ready` branch; resolved `ExactSet` keeps its unchanged `HashSet<DocumentKey>`
+path, and any metadata/capacity refusal downgrades the whole segment to the
+original owned-key path. A numeric-value tie borrows the candidate key once for
+the ascending raw-byte `tie-break`; only a competitive candidate performs one
+fallible owned `String`/`DocumentKey` allocation. Losing `Single` candidates own
+no key, string or sort value, and no per-candidate prefix/UTF-8 decode occurs.
+The on-disk `DOC_KEYS` bytes, segment format, writer, manifest, reader public API,
+`ReaderSnapshot`/PIT identity, cursor and projection contracts are unchanged, and
+no hash is ever persisted. This is a structural correctness and resource change
+only; PERF-06-B4 owns any performance qualification.

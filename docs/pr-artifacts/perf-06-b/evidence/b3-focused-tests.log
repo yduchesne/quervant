@@ -1,0 +1,55 @@
+### b3 lib filter
+running 23 tests
+test search::execute::budget_tests::b3_u01_scorer_accepts_tree_and_vec_iterators ... ok
+test search::execute::budget_tests::b3_u02_positive_bm25_tree_and_vec_score_bits_match ... ok
+test search::unified::b3_tests::b3_u01_hash_parity_with_the_original_d3c_formula ... ok
+test search::unified::b3_tests::b3_u02_numeric_order_matches_the_b2_owned_path_and_a_byte_oracle ... ok
+test search::unified::b3_tests::b3_u04_u23_fingerprints_are_prefilters_never_identity ... ok
+test search::unified::b3_tests::b3_u05_u15_compact_policy_matches_the_owned_policy ... ok
+test search::unified::b3_tests::b3_u06_u18_losing_candidates_own_no_key ... ok
+test search::unified::b3_tests::b3_u07_reverse_order_and_multi_one_losers ... ok
+test search::unified::b3_tests::b3_u08_u19_seeded_differential_oracle ... ok
+test search::unified::b3_tests::b3_u09_mode_gating_and_ineligible_shapes ... ok
+test search::unified::b3_tests::b3_u16_mixed_ready_and_unavailable_segments ... ok
+test search::unified::b3_tests::b3_u17_key_lengths_and_budget_failure ... ok
+test search::unified::b3_tests::b3_u20_u22_empty_no_match_and_ineligible_paths ... ok
+test search::unified::phase4_tests::phase4_b3_u03_ordered_unified_matches_preserve_results ... ok
+test segment::reader::b3_key_identity_tests::b3_u01_invalid_empty_key_is_rejected_before_publication ... ok
+test segment::reader::b3_key_identity_tests::b3_u03_bound_directory_matches_the_authoritative_decoder ... ok
+test segment::reader::b3_key_identity_tests::b3_u10_directory_is_retained_once_per_verified_state ... ok
+test segment::reader::b3_key_identity_tests::b3_u11_corrupt_doc_keys_stays_authoritative_and_unbound ... ok
+test segment::reader::b3_key_identity_tests::b3_u12_exact_cap_one_under_and_injected_refusal ... ok
+test segment::reader::b3_key_identity_tests::b3_u12_injected_allocation_refusal_keeps_the_old_path ... ok
+test segment::reader::b3_key_identity_tests::b3_u13_cancellation_resets_and_retries ... ok
+test segment::reader::b3_key_identity_tests::b3_u14_error_and_panic_restore_empty ... ok
+test segment::reader::b3_key_identity_tests::b3_u21_concurrent_binders_share_one_owner ... ok
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 1146 filtered out; finished in 14.22s
+
+### b3 integration
+running 8 tests
+test b3_i01_filesystem_corpus_full_order_projection_and_scores ... ok
+test b3_i02_sequential_keys_repeat_queries_are_stable ... ok
+test b3_i03_held_pits_and_immutable_objects_across_mutation ... ok
+test b3_i04_genuine_v1_fixture_then_compaction ... ok
+test b3_i05_cursor_pages_pinned_batch_and_ineligible_shapes ... ok
+test b3_i06_rustfs_suite_registration_is_unchanged ... ok
+test b3_i07_corrupt_doc_keys_is_authoritative ... ok
+test b3_i08_resource_limits_and_exact_set_fallback ... ok
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.87s
+
+### b2 lib filter
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 1139 filtered out; finished in 1.41s
+### b2 integration
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
+### b1 lib filter
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 1105 filtered out; finished in 1.74s
+### b1 integration
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.02s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.02s
+test result: ok. 9 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.98s
+### d3c_tests:: (feature pr15i-d3c-experiment)
+test result: ok. 41 passed; 0 failed; 1 ignored; 0 measured; 1169 filtered out; finished in 0.06s
+### adapter query_session contract (untimed)
+running 1 test
+test session_tests::query_session_constructs_exactly_one_snapshot_for_the_whole_session ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.05s
