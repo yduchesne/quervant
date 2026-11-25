@@ -440,3 +440,22 @@ publication unqualified, and no warm/RSS/footprint claim. The audit is a
 one-time proof plus inductive construction invariant; it is not a
 memory-corruption detector for arbitrary post-proof mutation outside the approved
 query code.
+
+## F1 hosted CI (G7/G8)
+
+Run `45662385666` (`pull_request`, head `cd4abd061a10f89e522fb0cf93849925c28099f1`)
+is terminal **success** with exactly the five existing jobs: `rust` 22m16s,
+`msrv` 10m40s, `rustfs` 2m45s, `benchmark-adapter-contract` 1m42s,
+`python-benchmark-framework` 3m25s. The hosted real-RustFS job actually executed
+`cargo test -p quervant-core --all-features --test perf06_b1_rustfs -- --ignored`
+and `b1_r01_cold_shared_ordinals_and_pit ... ok`
+(`evidence/b2-f1-ci-status.txt`, `evidence/b2-f1-ci-rustfs-extract.txt`).
+`TESTED (7218d5e)..cd4abd0` is empty for `crates/`, `.github/`, `benchmarks/`
+and `Cargo.*`; the only delta is the F1 plan/report/evidence. No workflow edit,
+manual dispatch, cancellation or rerun occurred. A later evidence-only commit
+keeps the same executable/test tree; the agent records the actual final branch
+tip and its CI run in its final response.
+
+**F1 disposition:** `PERF06_B2_F1_READY_FOR_INDEPENDENT_REVIEW` once the
+docs-only final-head CI is terminal green; G10 remains maintainer-owned. No B3/B4
+work was started and no performance claim is made.

@@ -1,0 +1,3 @@
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T17:14:19.8751316Z cargo test -p quervant-core --all-features --test perf06_b1_rustfs -- --ignored --test-threads=1
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T17:15:09.2703628Z      Running tests/perf06_b1_rustfs.rs (target/debug/build/quervant-core/ab1751408d2681fc/out/perf06_b1_rustfs-ab1751408d2681fc)
+rustfs	Core remote acceptance (real RustFS)	2026-11-25T17:15:09.6296279Z test b1_r01_cold_shared_ordinals_and_pit ... ok
