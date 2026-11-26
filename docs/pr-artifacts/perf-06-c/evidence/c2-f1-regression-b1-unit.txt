@@ -1,0 +1,100 @@
+warning: variable does not need to be mutable
+     --> crates/quervant-core/src/search/unified.rs:13553:13
+      |
+13553 |         let mut run_row = |row: U12Row| {
+      |             ----^^^^^^^
+      |             |
+      |             help: remove this `mut`
+      |
+      = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `forced_legacy_pre_route` is never used
+     --> crates/quervant-core/src/search/unified.rs:11812:8
+      |
+11812 |     fn forced_legacy_pre_route(
+      |        ^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `body` is never used
+     --> crates/quervant-core/src/search/unified.rs:11864:12
+      |
+11838 |     impl CopiedSegment {
+      |     ------------------ method in this implementation
+...
+11864 |         fn body(&self, kind: crate::segment::SectionKind) -> &[u8] {
+      |            ^^^^
+
+warning: `quervant-core` (lib test) generated 3 warnings (run `cargo fix --lib -p quervant-core --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/quervant_core-4bce05dee4e4fed4)
+
+running 65 tests
+test index::keyword_ordinals::b1_ordinals_tests::b1_g04_raw_bytes_not_normalized ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g03_multiple_empty_dictionaries_have_no_terms ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g02_single_segment_is_identity_and_empty_is_supported ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g07_packed_width_uses_the_upper_bound ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g08_deleted_only_terms_remain_in_the_physical_map ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g01_cross_segment_translation_matches_byte_order ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g09_bindings_are_snapshot_scoped ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g11_field_identity_is_independent ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g12_f2_field_ready_cancel_before_publish ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g12_f2_registry_ready_cancel_before_publish ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g06_identical_and_disjoint_dictionaries ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g12_cancellation_is_checked_everywhere ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g13_cancelled_waiter_does_not_disturb_the_builder ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g10_concurrent_requests_publish_one_map ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g14_f2_field_failure_wakes_real_waiter ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g12_f2_registry_optional_cancel_before_publish ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g12_f2_field_optional_cancel_before_publish ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g14_f2_field_after_buffer_error_and_panic ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g17_legacy_segments_return_sticky_unavailable ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g14_f2_registry_failure_wakes_real_waiter ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g14_f2_registry_after_entries_error_and_panic ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g19_last_map_reference_owns_the_reservation ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g14_failure_and_poisoning_fail_closed ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g12_cancellation_across_registry_and_build ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g20_preparation_is_explicit_and_emits_exactly_t_entries ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g18_codec_corruption_is_preserved ... ok
+test segment::column::b1_tests::b1_u01_empty_and_stateless_documents_are_exact ... ok
+test segment::column::b1_tests::b1_u02_literal_wire_witness_is_exact ... ok
+test segment::column::b1_tests::b1_u02_standalone_parser_accepts_both_known_versions ... ok
+test segment::column::b1_tests::b1_u03_dictionary_order_is_raw_and_duplicate_free ... ok
+test segment::column::b1_tests::b1_u05_dictionary_corruption_is_rejected_at_open ... ok
+test segment::column::b1_tests::b1_u05_early_term_error_precedes_later_offset_error ... ok
+test segment::column::b1_tests::b1_u05_geometry_helper_is_checked ... ok
+test segment::column::b1_tests::b1_u05_hostile_dictionary_count_is_typed_not_a_panic ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g15_exact_peak_allowance_and_sticky_budget ... ok
+test segment::column::b1_tests::b1_u06_row_state_and_extent_corruption_is_rejected ... ok
+test segment::column::b1_tests::b1_u04_packed_width_and_block_boundaries ... ok
+test segment::column::b1_tests::b1_u07_illegal_source_shapes_are_typed ... ok
+test segment::column::b1_tests::b1_u05_overlong_dictionary_term_is_rejected ... ok
+test segment::column::b1_tests::b1_u08_ordinary_accessors_match_input ... ok
+test segment::column::b1_tests::b1_u11_reference_and_slice_encoders_agree ... ok
+test segment::column::b1_tests::b1_u13_ordinal_branch_budgets_and_fallback_copy ... ok
+test segment::column::b1_tests::b1_u13_single_and_multi_one_shapes_and_budgets ... ok
+test segment::column::b1_tests::b1_u15_size_formula_witnesses ... ok
+test segment::column::b1_tests::b1_u16_bound_lookup_is_document_n ... ok
+test search::unified::phase4_tests::phase4_b1_u03_absent_and_singleton_term_lookups ... ok
+test segment::json_paths::tests::b1_member_bytes_and_array_boundaries ... ok
+test segment::json_paths::tests::b1_multi_root_prefixes_and_duplicates ... ok
+test segment::json_paths::tests::b1_nested_mixed_matches_manual_expected ... ok
+test search::unified::phase4_tests::phase4_b1_u04_ineligible_shapes_keep_membership_lookup ... ok
+test segment::json_paths::tests::b1_stack_capacity_preflight ... ok
+test segment::json_paths::tests::b1_depth_boundary_at_and_over ... ok
+test search::unified::phase4_tests::phase4_b1_u01_u02_proven_term_skips_relookup_with_fallback_parity ... ok
+test segment::json_paths::tests::b1_wide_array_frontier_is_bounded ... ok
+test segment::json_paths::tests::b1_wide_shallow_survives_modest_frontier_budget ... ok
+test segment::column::b1_tests::b1_u10_frozen_codec_differential_families ... ok
+test search::unified::c2_tests::c2_u23_b1_b2_b3_reuse_witness ... ok
+test segment::json_paths::tests::b1_wide_object_frontier_is_bounded ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g16_every_allocation_site_is_sticky ... ok
+test search::typed::legacy_json_tests::b1_legacy_source_fallback_wide_field ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g12_f2_registry_scan_periodic_cancellation ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g13_wait_predicate_avoids_gratuitous_waits ... ok
+test index::keyword_ordinals::b1_ordinals_tests::b1_g05_frozen_differential_families ... ok
+test segment::column::b1_tests::b1_u09_ordinary_retained_backings_are_checked_individually ... ok
+test segment::json_paths::tests::b1_property_vs_recursive_reference ... ok
+
+test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 1137 filtered out; finished in 1.39s
+

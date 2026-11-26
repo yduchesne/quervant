@@ -1,0 +1,14 @@
+   Compiling quervant-core v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.49s
+     Running tests/pr15h_a_candidate_materialization.rs (target/debug/deps/pr15h_a_candidate_materialization-f4631dd376ac934a)
+
+running 6 tests
+test h_a_i04_pit_refresh_delete_upsert ... ok
+test h_a_i06_corruption_injection ... ok
+test h_a_i05_limits_and_cancellation ... ok
+test h_a_i01_local_commit_reopen_term_query ... ok
+test h_a_i03_mixed_fallback_shapes ... ok
+test h_a_i02_two_segment_differential ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+

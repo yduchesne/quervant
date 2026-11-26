@@ -17,9 +17,9 @@
 | Fresh main / accepted C1 | `bc726420cede2e26681d6e8192b45a5d0169abbf` |
 | BASE | `46ccab0a606a56a8b9034ab4db5c9c4df969d098` (= `origin/dev/perf06-c2` at admission) |
 | START | `46ccab0a606a56a8b9034ab4db5c9c4df969d098` |
-| TESTED | see §11 (committed source/test/plan state) |
-| FINAL | see §11 (documentation-only commit after TESTED) |
-| Remote-verified SHA | see §11 |
+| TESTED | `564fd7853d41adc77c84c766f59e29bae113d7b0` (source, tests, verbatim plan) |
+| FINAL | `_to be recorded_` — documentation-only commit after TESTED; see §11 |
+| Remote-verified SHA | `_to be recorded_` — see §11 |
 | Toolchains | stable `1.98.1` (pinned by CI), MSRV `1.85.0` |
 | Worktree at admission | clean except the foreign untracked `docs/pr-artifacts/perf-06-b/evidence/f2-ci-status.txt` (D07: recorded, untouched) |
 

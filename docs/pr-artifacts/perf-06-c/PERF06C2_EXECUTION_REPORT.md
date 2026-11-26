@@ -483,3 +483,58 @@ inside one already-owned allocation, published only after every score succeeded)
   `benchmark-adapter-contract` and `rustfs` jobs are the regression evidence. The
   new `perf06_c2_physical` FsDirectory suite is the C2 feature acceptance and is
   independent of those jobs.
+
+## PERF-06-C2-F1 review corrections and superseding status (2026-11-26)
+
+The original report's "Current disposition", its branch identity
+(`dev/perf06-c2-physical-executor`) and its coverage/test-count claims are
+**historical and superseded** by this section and by
+[PERF06C2F1_EXECUTION_REPORT.md](PERF06C2F1_EXECUTION_REPORT.md). The raw logs and
+the original wording above are preserved unchanged.
+
+### Corrected facts
+
+- **Test-function counts.** The original new PERF-06 C2 inventory was **28 unit +
+  9 integration = 37** functions, not 38. The historical broad `--lib c2_` selection
+  of 38 contained 10 **older, pre-existing** accounting tests
+  (`execute::budget_tests::c2_*` ×9 and `memory::tests::c2_memory_*` ×1). After F1
+  the inventory is **29 unit + 9 integration = 38** and the broad filter selects 39.
+- **Actual branch.** `dev/perf06-c2` (the earlier `dev/perf06-c2-physical-executor`
+  entry was wrong). See the F1 report for the current immutable revision identities.
+- **C2-U17 "refusal".** The original test never armed a refusal; it ran an ordinary
+  search and only compared output. F1 installs the existing `BeforeHashAllocation`
+  refusal probe and observes the actual refusal, fallback and direction counters.
+- **C2-U21 and C2-I08.** The original U21 only required that *some* limit fails, and
+  I08 accepted success at a scanned cap of 30 for 23 occurrences. Those assertions
+  proved neither an exact boundary nor a failure after a prior segment completed.
+  F1 replaces the I08 side with exact `scanned 22 -> ResourceLimit { 22, 23 }` and
+  `scanned 23 -> success`, plus same-snapshot retries. The internal U21 boundary
+  remains **open** (see the D14 stop below).
+- **C2-U12.** The matrix was absent. F1 adds
+  `search::unified::c2_tests::c2_u12_corrupt_selected_unselected_and_multi_fault`;
+  six of its nine prescribed rows execute and pass. The three posting-mutation rows
+  are blocked (see below).
+- **P05 / I08 success branches removed from failure rows.** P05 now requires exact
+  `ResourceLimit` payloads and exact `total_used()` values on six rows; I08 never
+  accepts success where a failure is required.
+- **Deprecated claim.** The disposition below comes from the executed gates, not from
+  the historical "ready for independent review" prose.
+
+### Superseded evidence limits
+
+Two prescribed fixtures are contradicted by the accepted source, so the affected
+rows are **not executed** and are disclosed as a HARD STOP:
+
+1. **Physical segment order is content-addressed.** `support::meta_from_bytes`
+   derives `segment_id = "s-{sha256}"` and `IndexWriter::commit` sorts manifest
+   references by `segment_id`, so query segment order does not follow commit order.
+   For the prescribed `body_documents(6)` + `body_documents(40).skip(6)` pair the
+   34-document slice is always segment 0. Evidence:
+   `evidence/c2-f1-d14-segment-order-stop.txt`.
+2. **`grp/common` postings are compact-short *positional*.** The payload is 218
+   bytes with marker `7` and a 150-byte position stream, not the plan's 67-byte
+   doc-only payload, so `postings_offset + 66` is not the final frequency byte.
+   Evidence: `evidence/c2-f1-d14-postings-layout-stop.txt`.
+
+Both are recorded as `PERF06_C2_F1_STOPPED_PLAN_AMENDMENT_REQUIRED` items with the
+smallest requested amendment; no expectation, byte offset or fixture was rewritten.

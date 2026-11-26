@@ -359,3 +359,23 @@ C2 is **not merged**, **not performance-qualified** and makes no claim about war
 latency or low-hit codegen neutrality. C3 has not started; C4 remains the only
 stage authorized to run the incremental warm qualification against the accepted
 A+B baseline. Independent review and maintainer merge remain open (G10).
+
+## PERF-06-C2-F1 test/evidence fixup (2026-11-26)
+
+C2 remains **implemented on draft PR [#131](https://github.com/yduchesne/quervant/pull/131)**
+(branch `dev/perf06-c2`), unmerged. The independent-review follow-up
+[PERF06C2F1_DETAILED_FIXUP_PLAN.md](pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md)
+was executed and its results are in
+[PERF06C2F1_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C2F1_EXECUTION_REPORT.md):
+the actual B3 allocation refusal, the exact P05/I08 resource boundaries, the new
+C2-U12 corruption/precedence test and the corrected test inventory are verified,
+while three prescribed fixtures are contradicted by the accepted source (physical
+segment order is content-addressed; `grp/common` postings are compact-short
+positional), so the C2-U21 boundary table, the U17 no-eager-binding refinement and
+the U12 posting-mutation rows are blocked pending a maintainer fixture amendment.
+Disposition: `PERF06_C2_F1_STOPPED_PLAN_AMENDMENT_REQUIRED`.
+
+Production execution semantics are unchanged, local stable/MSRV QA and both
+coverage gates pass, and **no performance claim** is made. C3 has not started; C4
+remains the only stage authorized to run the incremental warm qualification against
+the accepted A+B baseline. Independent review and maintainer merge remain open.

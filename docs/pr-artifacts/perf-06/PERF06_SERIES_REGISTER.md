@@ -227,3 +227,31 @@ limitations are in
 - **Unchanged:** no persisted format, writer/storage/reader API, dependency,
   feature flag, benchmark asset, CI workflow or historical negative evidence was
   modified. C2 performs no durable writes.
+
+## PERF-06-C2-F1 test/evidence fixup status (2026-11-26)
+
+PR [#131](https://github.com/yduchesne/quervant/pull/131) (branch `dev/perf06-c2`)
+carried the C2 implementation. Independent review raised five test/evidence
+findings, and the follow-up plan
+[PERF06C2F1_DETAILED_FIXUP_PLAN.md](../perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md)
+was executed with results in
+[PERF06C2F1_EXECUTION_REPORT.md](../perf-06-c/PERF06C2F1_EXECUTION_REPORT.md).
+
+- **Closed:** the actual per-segment B3 allocation refusal (five exact probe rows),
+  the exact P05 evaluator work/scanned table with same-budget recovery, the exact
+  public I08 resource boundaries with same-snapshot retries, the new C2-U12
+  corruption/precedence test (6 of 9 prescribed rows), and the corrected
+  inventory/identity/evidence attribution (28 unit + 9 integration at START;
+  29 + 9 after F1).
+- **Blocked (`PERF06_C2_F1_STOPPED_PLAN_AMENDMENT_REQUIRED`):** three prescribed
+  fixtures are contradicted by the accepted source — physical segment order is
+  content-addressed (`s-{sha256}`) rather than commit order, and the `grp/common`
+  postings payload is compact-short *positional* (218 bytes) rather than the plan's
+  67-byte doc-only form. The C2-U21 boundary table, the U17 no-eager-binding
+  refinement and the U12 posting-mutation rows therefore did not execute; no
+  expectation or byte offset was rewritten.
+- **Unchanged:** production execution semantics (normal-build source equality
+  verified), persisted formats, storage, benchmark assets and CI workflows. Local
+  stable/MSRV QA and both coverage gates pass (93.24 % / 92.82 % lines).
+- PR #131 remains **draft and unmerged**; G10 independent review/maintainer
+  acceptance stays open; C3/C4 are unstarted and no performance claim is made.

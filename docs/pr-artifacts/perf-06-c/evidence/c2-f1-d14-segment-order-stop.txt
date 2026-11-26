@@ -1,0 +1,45 @@
+# C2-F1 D14 HARD STOP — physical segment order is content-addressed, not commit order
+#
+# Guard that failed (plan section 7B / 7A.1 fixture prerequisites):
+#   Fixture::new(&[body_documents(6), body_documents(40).into_iter().skip(6)...])
+#   expected query segment 0 = the 6-document slice (docs 0..5, frequencies
+#   1,2,3,4,1,2, scanned total 13), segment 1 = the 34-document slice (docs 6..39).
+#
+# Observed at START 46ccab0a606a56a8b9034ab4db5c9c4df969d098 (three consecutive runs,
+# identical output), command:
+#   env -u QUERVANT_PR15I_D3C_STRATEGY -u QUERVANT_PR15I_D3C_PREFILTER_PROFILE \
+#     cargo +1.98.1 test -p quervant-core --lib \
+#     search::unified::c2_tests::c2_u17_ordinal_unavailable_and_b3_refusal \
+#     -- --exact --nocapture --test-threads=1
+#
+DEBUG seg0 id=s-920b6e02921926f20ee4e865aecf1a4d0ca69e17e39cdd09fee6bd6ff0f7c097 docs=34 first_keys=["doc000006", "doc000007", "doc000008"]
+DEBUG seg1 id=s-f915efbfc5652be3911bb2cddbacadee03d9466c68dd5fbd9bef28d7957fd495 docs=6 first_keys=["doc000000", "doc000001", "doc000002"]
+# -> query segment 0 is the 34-document slice; the prescribed `collected`
+#    `[(0, 3, 6), (1, 3, 40)]`, `membership observations 6` and U21 cap-13
+#    `ResourceLimit { limit: 13, requested: 16 }` rows cannot hold.
+#
+# Source cause (read-only inspection, no production change):
+#   crates/quervant-core/src/index/support.rs: `.segment_id = format!("s-{hex}")`
+#     (sha256 of the immutable segment bytes -> content-addressed)
+#   crates/quervant-core/src/index/writer.rs:
+#     `refs.sort_by(|left, right| left.segment_id.cmp(&right.segment_id));`
+#   `Index::open_existing`/`Index::snapshot` preserve that ascending
+#   `segment_id` order, so query segment order is deterministic but independent
+#   of commit/insertion order. Re-committing the same slices in the opposite
+#   order cannot change it, because each segment's bytes (and therefore its id)
+#   depend only on that slice's own content.
+#
+# Impact:
+#   * plan section 7B (C2-U21 frozen four-row table): BLOCKED.
+#   * plan section 7A.1 (C2-U17 "no-eager-binding" scenario, whose expected
+#     `strict_membership_observations() == 6` and `collected_segments()` order
+#     also assume the 6-document slice is segment 0): BLOCKED.
+#   * C2-U17's five refusal rows and C2-I08 are order-insensitive and are
+#     implemented (see the F1 execution report).
+#
+# Requested maintainer decision (smallest amendment):
+#   Either (a) restate sections 7A.1/7B with the actual content-addressed order
+#   (`(34, 6)`: cap 13 -> `ResourceLimit { limit: 13, requested: 17 }`,
+#   `collected [(0, 3, 34)]`, no-eager-binding `membership observations 34`), or
+#   (b) prescribe a corpus whose 6-document segment sorts first.
+#   No expectation was rewritten by the agent.

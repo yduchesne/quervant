@@ -1,0 +1,20 @@
+# `git diff --check` classification (plan section 12.1)
+#
+# 1) F1 delta (worktree, i.e. exactly the F1 change set):
+#    $ git diff --check
+#    exit 0  (no whitespace errors introduced by F1)
+#
+# 2) Full PR range:
+#    $ git diff --check origin/main...HEAD
+#    exit 2  -> 25 whitespace entries
+#
+# 3) Baseline proof that (2) is pre-existing at START:
+#    $ git diff --check origin/main...46ccab0a606a56a8b9034ab4db5c9c4df969d098
+#    exit 2  -> the same 25 entries
+#    (all from commits that already existed at START: the verbatim
+#    PERF06C2_DETAILED_PLAN.md markdown hard line breaks and previously committed
+#    evidence logs with trailing blank lines)
+#
+# Classification: deterministic pre-existing (D29). The F1 delta is clean. Note that
+# this plan itself mandates committing PERF06C2F1_DETAILED_FIXUP_PLAN.md verbatim,
+# so the same markdown hard-line-break style is inherited by that file by design.

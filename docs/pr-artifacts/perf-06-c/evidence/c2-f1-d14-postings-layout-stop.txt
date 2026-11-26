@@ -1,0 +1,38 @@
+# C2-F1 D14 HARD STOP — `grp/common` postings payload is compact-short POSITIONAL
+#
+# Frozen guard that failed (plan section 8A, recipe "P: zero frequency in final
+# matching posting (doc29)"):
+#   "Assert target payload is exactly 67 bytes: seven-byte header
+#    [6,1,30,30,30,30,0] ... Set only POSTINGS body byte postings_offset + 66"
+#
+# Observed on the prescribed U12 corpus (`documents(30)` + `other_documents(2, 30)`,
+# one committed MemoryDirectory segment) at START
+# 46ccab0a606a56a8b9034ab4db5c9c4df969d098:
+#   POSTINGS entry for grp/common: postings_length = 218, doc_freq = 30
+#   payload head = [7, 1, 30, 30, 30, 30, 0x96, 0x01, 0, 1, 1, 1]
+#   marker 7 = COMPACT_SHORT_POSITIONAL (not 6 = COMPACT_SHORT_DOC_ONLY)
+#   header = marker, version, doc_count 30, freq_total 30,
+#            docs_len 30, freqs_len 30, positions_len 150 (0x96 0x01)
+#   layout  = 8-byte header + 30 doc bytes + 30 frequency bytes + 150 position bytes
+#
+# Consequence: the plan's `postings_offset + 66` byte is the second-to-last
+# frequency byte under the real layout (the final one is at +67), so the
+# prescribed single-byte mutation cannot produce the prescribed
+# `ZeroFrequency { doc_id: 29 }`. The plan's header assertion and its byte offset
+# are both contradicted by the accepted adaptive postings encoder for this
+# fixture.
+#
+# Impact (rows of plan section 8A):
+#   * P29            BLOCKED
+#   * P29+D0         BLOCKED
+#   * C29+P29+D0     BLOCKED
+#   * D0, D29, D31, C0, C29, S29+D0 are implemented and pass (see the F1 report).
+#
+# The agent did not relocate the mutated byte, did not switch the corruption
+# target, and did not relax the expected error.
+#
+# Requested maintainer decision (smallest amendment): restate the P recipe against
+# the real settled layout, i.e. assert marker 7, the 8-byte header and
+# position length 150, then zero the final frequency byte at
+# `postings_offset + header_len + docs_len + freqs_len - 1` (= +67), or prescribe a
+# fixture whose `grp` postings encode doc-only.

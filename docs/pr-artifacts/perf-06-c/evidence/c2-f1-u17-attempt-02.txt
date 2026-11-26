@@ -1,0 +1,14 @@
+   Compiling quervant-core v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.72s
+     Running unittests src/lib.rs (target/debug/deps/quervant_core-4bce05dee4e4fed4)
+
+running 1 test
+test search::unified::c2_tests::c2_u17_ordinal_unavailable_and_b3_refusal ... C2-F1 U17 refusal: segments=1 attempts=1 directories=0 refusals=1 fallbacks=[0] collected=[(0, 4, 40)]
+C2-F1 U17 refusal: segments=2 attempts=2 directories=1 refusals=1 fallbacks=[0] collected=[(0, 4, 20), (1, 4, 40)]
+C2-F1 U17 refusal: segments=2 attempts=2 directories=1 refusals=1 fallbacks=[1] collected=[(0, 4, 20), (1, 4, 40)]
+C2-F1 U17 refusal: segments=2 attempts=2 directories=2 refusals=0 fallbacks=[] collected=[(0, 4, 20), (1, 4, 40)]
+C2-F1 U17 refusal: segments=2 attempts=0 directories=0 refusals=0 fallbacks=[0, 1] collected=[(0, 4, 20), (1, 4, 40)]
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1201 filtered out; finished in 0.12s
+

@@ -1,0 +1,9 @@
+# Bounded summary of the full `cargo llvm-cov` run (per-file rows trimmed).
+# Totals and the two changed modules are reproduced verbatim.
+
+Filename                                        Regions    Missed Regions     Cover   Functions  Missed Functions  Executed       Lines      Missed Lines     Cover    Branches   Missed Branches     Cover
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+quervant-core/src/search/execute.rs                7108               288    95.95%         303                19    93.73%        4220               138    96.73%           0                 0         -
+quervant-core/src/search/unified.rs               16389               773    95.28%         691                68    90.16%        9483               471    95.03%           0                 0         -
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+TOTAL                                            122911              7864    93.60%        6038               727    87.96%       74113              5010    93.24%           0                 0         -
