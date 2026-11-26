@@ -20,7 +20,7 @@
 | BASE | `bc726420cede2e26681d6e8192b45a5d0169abbf` |
 | TESTED | `cc2691bb9ff061cd149b990ab987a4db9b2ab400` (source + tests + plan) |
 | FINAL (docs/evidence) | `9fd2411752f91038d0180446054c9dc25016a685` — `git diff TESTED..FINAL -- crates/ Cargo.toml Cargo.lock .github/ benchmarks/ rust-toolchain.toml` is **empty** |
-| Remote-verified SHA | recorded in the delivery note at the end of §11 |
+| Remote-verified SHA | `be3603baf0ad0a1cf76836592ce5dbe2cc708bb0` = `origin/dev/perf06-c2` HEAD (verified locally with `git rev-parse HEAD origin/dev/perf06-c2`) |
 
 ### P0 / G0 source admission
 
@@ -452,8 +452,9 @@ inside one already-owned allocation, published only after every score succeeded)
 
 ## 11. Handoff
 
-- **Draft PR:** `PERF-06-C2: integrate exact-count strict-term Top-K execution`
-  (branch `dev/perf06-c2-physical-executor` → `main`).
+- **Draft PR:** [#131](https://github.com/yduchesne/quervant/pull/131) —
+  `PERF-06-C2: integrate exact-count strict-term Top-K execution`
+  (branch `dev/perf06-c2` → `main`, draft).
 - **Gate status:** G0 PASS, G1 PASS, G2 PASS, G3 PASS, G4 PASS, G5 PASS, G6 PASS,
   G7 PASS, G8 `CI_PENDING` (hosted CI not yet observed for this head), G9 PASS,
   **G10 OPEN (maintainer-owned)**.
