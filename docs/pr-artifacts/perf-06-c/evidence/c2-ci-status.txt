@@ -1,0 +1,30 @@
+# Hosted CI on the C2 pull request (source-equivalent head)
+# PR: https://github.com/yduchesne/quervant/pull/131 (draft, base main)
+# Workflow: "Rust CI" (existing .github/workflows/ci.yml; C2 adds/modifies no workflow)
+# Run: https://github.com/yduchesne/quervant/actions/runs/45742879600
+# headSha: 2d899debf6762c45d0e3e653381e8a7964c7dfdb
+# status: completed   conclusion: success
+#
+# job                          conclusion  duration
+benchmark-adapter-contract     pass        1m16s    job 139651911980
+msrv                           pass        12m31s   job 139651912166
+python-benchmark-framework     pass        3m22s    job 139651912091
+rust                           pass        23m25s   job 139651912062
+rustfs                         pass        2m57s    job 139651911562
+#
+# `rustfs` executed real-service test bodies (not ignored placeholders), e.g.:
+#   S3 adapter acceptance (real RustFS):            8 passed / 0 failed
+#   S3 adapter acceptance (real RustFS):            5 passed / 0 failed
+#   Core remote acceptance (real RustFS):           5 passed (+5 filtered) / 0 failed
+#   Core remote acceptance (real RustFS):           1 passed x 6 suites / 0 failed
+#   M1 atomic batch acceptance (real RustFS):       1 passed (+14 filtered) / 0 failed
+#   PR 15I-A compact mutation-state (real RustFS):  4 passed, then 6 passed / 0 failed
+#   M2 lossless patch acceptance (real RustFS):     1 passed (+10 filtered) / 0 failed
+#   M3 delete-by-query (real RustFS, three runs):   1 passed x 3 / 0 failed
+#   M5 mutation qualification (real RustFS, x3):    1 passed x 3 / 0 failed
+#   Fault proxy and crash acceptance (real RustFS): 7 passed, then 5 passed / 0 failed
+#   Critical race/interrupt repetitions (10x):      1 passed / 0 failed
+#
+# The C2 public FsDirectory acceptance suite (`perf06_c2_physical`) is part of the
+# `rust` job's `cargo test --workspace --all-targets --all-features` run; it is C2
+# feature acceptance and is independent of the RustFS regression job.

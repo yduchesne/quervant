@@ -4,10 +4,10 @@
 > append-only. Sections are filled in execution order and never rewritten to hide a
 > failure.
 >
-> **Current disposition:** `PERF06_C2_IMPLEMENTED_LOCAL_QA_PASS_CI_PENDING` — code
-> and local QA gates pass at `TESTED`; hosted CI not yet observed; independent
-> review and maintainer merge (G10) remain **open**; no performance claim; C3 not
-> started. See §8–§11.
+> **Current disposition:** `PERF06_C2_READY_FOR_INDEPENDENT_REVIEW` — code, local
+> QA gates and the five hosted CI jobs pass on the source-equivalent head;
+> independent review and maintainer merge (G10) remain **open**; no performance
+> claim; C3 not started. See §8–§11.
 
 ## 1. Identity
 
@@ -456,9 +456,18 @@ inside one already-owned allocation, published only after every score succeeded)
   `PERF-06-C2: integrate exact-count strict-term Top-K execution`
   (branch `dev/perf06-c2` → `main`, draft).
 - **Gate status:** G0 PASS, G1 PASS, G2 PASS, G3 PASS, G4 PASS, G5 PASS, G6 PASS,
-  G7 PASS, G8 `CI_PENDING` (hosted CI not yet observed for this head), G9 PASS,
-  **G10 OPEN (maintainer-owned)**.
-- **Disposition:** `PERF06_C2_IMPLEMENTED_LOCAL_QA_PASS_CI_PENDING`.
+  G7 PASS, **G8 PASS**, G9 PASS, **G10 OPEN (maintainer-owned)**.
+- **G8 evidence:** hosted CI run
+  [45742879600](https://github.com/yduchesne/quervant/actions/runs/45742879600) on
+  head `2d899debf6762c45d0e3e653381e8a7964c7dfdb` — all five existing jobs
+  (`rust`, `msrv`, `python-benchmark-framework`, `benchmark-adapter-contract`,
+  `rustfs`) `conclusion: success`, and the `rustfs` job executed real-service test
+  bodies (8/5/5/1x6/1/4/6/1/1x3/1x3/7/5/1 passed, 0 failed), not ignored
+  placeholders. Log: `docs/pr-artifacts/perf-06-c/evidence/c2-ci-status.txt`.
+  The protected-path diff from that head to the final docs head is empty, so the
+  CI result applies to the source-equivalent final content (D56).
+- **Disposition:** `PERF06_C2_READY_FOR_INDEPENDENT_REVIEW` (draft, unmerged;
+  G10 open; **not** a performance result).
 - No merge, no baseline promotion, no C3 start, no C4 or performance claim.
 
 ### Delivery note
