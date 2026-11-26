@@ -19,8 +19,8 @@
 | START | `bc726420cede2e26681d6e8192b45a5d0169abbf` |
 | BASE | `bc726420cede2e26681d6e8192b45a5d0169abbf` |
 | TESTED | `cc2691bb9ff061cd149b990ab987a4db9b2ab400` (source + tests + plan) |
-| FINAL | `_filled after the final docs-only commit_` |
-| Remote-verified SHA | `_pending_` — see the delivery note at the end of §11 |
+| FINAL (docs/evidence) | `9fd2411752f91038d0180446054c9dc25016a685` — `git diff TESTED..FINAL -- crates/ Cargo.toml Cargo.lock .github/ benchmarks/ rust-toolchain.toml` is **empty** |
+| Remote-verified SHA | recorded in the delivery note at the end of §11 |
 
 ### P0 / G0 source admission
 
@@ -459,3 +459,17 @@ inside one already-owned allocation, published only after every score succeeded)
   **G10 OPEN (maintainer-owned)**.
 - **Disposition:** `PERF06_C2_IMPLEMENTED_LOCAL_QA_PASS_CI_PENDING`.
 - No merge, no baseline promotion, no C3 start, no C4 or performance claim.
+
+### Delivery note
+
+- `TESTED` = `cc2691bb9ff061cd149b990ab987a4db9b2ab400` (source, tests, plan).
+- `FINAL` = `9fd2411752f91038d0180446054c9dc25016a685` (docs/evidence only). The
+  protected-path diff `TESTED..FINAL` is empty, so the §8 QA results remain valid
+  for `FINAL`.
+- The identity block above was completed in a follow-up docs-only commit; that
+  commit changes this report only.
+- Hosted CI: see the draft PR status. C2 adds no workflow and does not modify
+  `.github/**`; the existing `rust`, `msrv`, `python-benchmark-framework`,
+  `benchmark-adapter-contract` and `rustfs` jobs are the regression evidence. The
+  new `perf06_c2_physical` FsDirectory suite is the C2 feature acceptance and is
+  independent of those jobs.
