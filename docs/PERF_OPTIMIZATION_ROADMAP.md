@@ -343,3 +343,19 @@ B4 is **accepted and merged** in [PR #129](https://github.com/yduchesne/quervant
 The maintainer selected a **documentation-only C1 PR**, rather than a coding-agent plan for a non-implementation stage. [The C1 physical-execution contract](architecture/PERF06C_PHYSICAL_EXECUTION_CONTRACT.md) freezes strict-term/keyword Top-K eligibility, request-local dispatch, B1–B3 reuse, exact-count and score obligations, virtual accounting/error ordering, optional-fallback rules, and the safe-deferred-scoring proof boundary. [The C1 source audit](pr-artifacts/perf-06-c/PERF06C1_SOURCE_AUDIT.md) reconciles the current accepted strict-postings path against rejected PR 15H-A/A2 and 15I-C. **No C1 runtime/test change or warm benchmark is claimed.**
 
 C2 remains the first executor implementation PR, C3 is a separate guarded scoring implementation, and C4 is the next performance qualification. C1 approval/merge is maintainer-owned; the C1 draft does not authorize a coding agent to implement C2 or C3 without separate detailed plans and acceptance.
+
+## PERF-06-C2 implementation status (2026-11-25)
+
+C2 is **implemented on a draft branch** (`dev/perf06-c2-physical-executor`) from
+the approved plan [PERF06C2_DETAILED_PLAN.md](pr-artifacts/perf-06-c/PERF06C2_DETAILED_PLAN.md),
+with the executed evidence in
+[PERF06C2_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C2_EXECUTION_REPORT.md).
+The strict-term physical route, the in-place scored-posting handoff, the preserved
+virtual memory admissions, the B1/B2/B3 reuse and the K+1 cursor behavior are
+implemented and covered by new crate unit tests, a new `FsDirectory`
+integration suite and the retained B1/B2/B3 regressions.
+
+C2 is **not merged**, **not performance-qualified** and makes no claim about warm
+latency or low-hit codegen neutrality. C3 has not started; C4 remains the only
+stage authorized to run the incremental warm qualification against the accepted
+A+B baseline. Independent review and maintainer merge remain open (G10).

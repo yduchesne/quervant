@@ -1,0 +1,11 @@
+# Baseline flake reproduction on pristine main@bc726420cede2e26681d6e8192b45a5d0169abbf
+# (git worktree of origin/main, no C2 changes, C2 absent)
+# command: cargo test -p quervant-core --lib -- --test-threads=64
+# result: 1171 passed; 1 failed (same test as the observed C2-tree run)
+failures:
+---- segment::reader::stored_blocks_reader_tests::certificate_retains_flat_offsets_and_hot_path_is_direct stdout ----
+thread 'segment::reader::stored_blocks_reader_tests::certificate_retains_flat_offsets_and_hot_path_is_direct' (4090190) panicked at crates/quervant-core/src/segment/reader.rs:2874:9:
+  left: 2
+ right: 1
+failures:
+test result: FAILED. 1171 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 12.80s

@@ -201,3 +201,29 @@ no merge, no baseline promotion, no PERF-06-C1 start.
 The C1 PR changes **docs only**. It creates no physical-plan type in Rust, no unit/integration tests, no benchmark acquisition or code changes, and no implementation plan for a coding agent. Approval of C1 documentation is **not** approval to run C2. C2 and C3 each require a separate prescriptive detailed plan and correctness/CI acceptance; C4 requires a separately frozen warm benchmark against the accepted A+B baseline and an independent adoption decision. No PR stage may bypass the historical low-hit regression evidence or assume that non-scoring sort allows loser's BM25 errors to be ignored.
 
 **C1 acceptance state:** independent document review and maintainer merge **OPEN**. After merge, use merged main for the C2 base, not this C1 branch.
+
+## PERF-06-C2 implementation status amendment (2026-11-25)
+
+**Baseline:** merged C1 `main@bc726420cede2e26681d6e8192b45a5d0169abbf`.
+C2 was implemented on the draft branch `dev/perf06-c2-physical-executor` from the
+approved prescriptive plan
+[PERF06C2_DETAILED_PLAN.md](../perf-06-c/PERF06C2_DETAILED_PLAN.md) (committed
+verbatim). The executed evidence ledger, invariant trace and disclosed
+limitations are in
+[PERF06C2_EXECUTION_REPORT.md](../perf-06-c/PERF06C2_EXECUTION_REPORT.md).
+
+- **C2 scope delivered:** one request-local `StrictTermOrdinalTopK` route for a
+  standalone single-analyzed-term query with one sortable `Keyword` column and a
+  proven `M > K+1`; a new private in-place scored-posting evaluator that reuses the
+  single validated `(doc_id, freq)` posting allocation and rewrites its frequency
+  word to `f64::to_bits()` after eagerly scoring **every** match; the accepted
+  B1/B2/B3 candidate handlers, duplicate policy and K+1 cursor finalization reused
+  unchanged; the accepted legacy per-segment loop moved out of line mechanically
+  with no per-document dispatch.
+- **Still open:** C2 is **not merged**, **not performance-qualified** and makes no
+  warm-latency claim. Independent review (G10) and maintainer merge are
+  maintainer-owned. **C3 has not started.** C4 owns every warm measurement,
+  including the low-hit/absent/rare guard.
+- **Unchanged:** no persisted format, writer/storage/reader API, dependency,
+  feature flag, benchmark asset, CI workflow or historical negative evidence was
+  modified. C2 performs no durable writes.

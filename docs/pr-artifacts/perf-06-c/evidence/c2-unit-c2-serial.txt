@@ -1,0 +1,45 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (target/debug/deps/quervant_core-4bce05dee4e4fed4)
+
+running 38 tests
+test search::execute::budget_tests::c2_cancel_phrase_cleanup ... ok
+test search::execute::budget_tests::c2_local_reject_no_batch_change ... ok
+test search::execute::budget_tests::c2_phrase_scratch_exact_and_one_over ... ok
+test search::execute::budget_tests::c2_postings_exact_and_one_over ... ok
+test search::execute::budget_tests::c2_release_underflow_no_mutation ... ok
+test search::execute::budget_tests::c2_scored_map_exact_and_one_over ... ok
+test search::execute::budget_tests::c2_segment_exact_and_one_over_atomic ... ok
+test search::execute::budget_tests::c2_standalone_none_parity ... ok
+test search::execute::budget_tests::c2_two_segment_reuse_single_scope ... ok
+test search::execute::c2_physical_tests::c2_p01_shape_mismatch_fails_closed ... ok
+test search::execute::c2_physical_tests::c2_p02_inplace_reuse_and_callback_order ... ok
+test search::execute::c2_physical_tests::c2_p03_corrupt_postings_precede_every_callback ... ok
+test search::execute::c2_physical_tests::c2_p04_late_score_fault_precedes_corrupt_doc_keys ... ok
+test search::execute::c2_physical_tests::c2_p05_n_examination_and_scanned_frequency ... ok
+test search::memory::tests::c2_memory_preflight_release_balances ... ok
+test search::unified::c2_tests::c2_u01_static_dispatch_matrix ... ok
+test search::unified::c2_tests::c2_u02_cardinality_boundary ... ok
+test search::unified::c2_tests::c2_u03_validation_precedence ... ok
+test search::unified::c2_tests::c2_u04_runtime_shape_and_decoder ... ok
+test search::unified::c2_tests::c2_u05_n_work_and_scanned_freq ... ok
+test search::unified::c2_tests::c2_u06_exact_total_hits ... ok
+test search::unified::c2_tests::c2_u07_late_score_error_beats_key_error ... ok
+test search::unified::c2_tests::c2_u08_score_bit_parity ... ok
+test search::unified::c2_tests::c2_u09_inplace_allocation_identity ... ok
+test search::unified::c2_tests::c2_u10_virtual_ledger_exact_boundaries ... ok
+test search::unified::c2_tests::c2_u11_preflight_atomic_and_raii ... ok
+test search::unified::c2_tests::c2_u13_cancellation_progress ... ok
+test search::unified::c2_tests::c2_u14_numeric_rank_null_missing_multione ... ok
+test search::unified::c2_tests::c2_u15_duplicate_collision_and_loser ... ok
+test search::unified::c2_tests::c2_u16_cursor_sentinel_and_legacy_continuation ... ok
+test search::unified::c2_tests::c2_u17_ordinal_unavailable_and_b3_refusal ... ok
+test search::unified::c2_tests::c2_u18_pit_mutation_and_mixed_segments ... ok
+test search::unified::c2_tests::c2_u19_sibling_paths_untouched ... ok
+test search::unified::c2_tests::c2_u20_generic_hot_loop_isolation ... ok
+test search::unified::c2_tests::c2_u21_work_budget_exhaustion_after_prior_segment ... ok
+test search::unified::c2_tests::c2_u22_seeded_differential_matrix ... ok
+test search::unified::c2_tests::c2_u23_b1_b2_b3_reuse_witness ... ok
+test search::unified::c2_tests::c2_u24_zero_effect_and_error_repetition ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 1163 filtered out; finished in 3.49s
+

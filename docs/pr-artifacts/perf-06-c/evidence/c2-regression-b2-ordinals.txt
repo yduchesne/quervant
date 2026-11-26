@@ -1,0 +1,15 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/perf06_b2_ordinals.rs (target/debug/deps/perf06_b2_ordinals-48477f7f5988673c)
+
+running 8 tests
+test b2_i01_filesystem_corpus_full_order_and_projection ... ok
+test b2_i02_cursor_pagination_reassembles_the_complete_order ... ok
+test b2_i03_genuine_v1_fixture_falls_back_then_compacts ... ok
+test b2_i04_held_pits_keep_old_ranks_across_append_delete_compact ... ok
+test b2_i05_identity_absent_null_empty_and_multi_one ... ok
+test b2_i06_ineligible_shapes_keep_existing_behavior ... ok
+test b2_i07_losing_long_value_and_container_wrapped_corruption ... ok
+test b2_i08_adapter_session_keeps_one_snapshot_per_session ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.68s
+
