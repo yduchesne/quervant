@@ -111,6 +111,37 @@ pub(crate) mod idf_observation {
     }
 }
 
+/// PERF-06-C3: test-only observation of the actual number of
+/// [`FieldStats::bm25_score`] invocations on this thread.
+///
+/// This counts real calls through the one accepted scorer, including eager and
+/// reference calls. It never estimates candidates from M or the page length, and
+/// it is compiled out of every non-test build (no production counter, metric or
+/// synchronization primitive).
+#[cfg(test)]
+pub(crate) mod c3_score_observation {
+    use std::cell::Cell;
+
+    thread_local! {
+        static BM25_CALLS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Reset the current thread's counter.
+    pub(crate) fn reset() {
+        BM25_CALLS.with(|value| value.set(0));
+    }
+
+    /// Read the current thread's counter.
+    pub(crate) fn calls() -> usize {
+        BM25_CALLS.with(Cell::get)
+    }
+
+    /// Record one actual `bm25_score` invocation.
+    pub(crate) fn record_call() {
+        BM25_CALLS.with(|value| value.set(value.get() + 1));
+    }
+}
+
 /// How one segment's lengths for one field are sourced.
 pub(crate) enum SegmentLengths<'a> {
     /// Immutable persisted norms (physical-doc order).
@@ -183,6 +214,8 @@ impl FieldStats<'_> {
     /// error, then the anomalous zero-frequency fallback, and only then the prepared
     /// arithmetic. No logarithm is evaluated on the prepared path.
     pub(crate) fn bm25_score(&self, term: &str, tf: u64, dl: u64) -> SearchResult<f64> {
+        #[cfg(test)]
+        c3_score_observation::record_call();
         let Some(stat) = self.df.get(term) else {
             return bm25(tf, 0, self.n, dl, self.avgdl);
         };

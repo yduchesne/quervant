@@ -14505,5 +14505,29 @@ mod c2_tests {
     fn request_response(response: &UnifiedResponse) -> UnifiedResponse {
         response.clone()
     }
+
+    // -----------------------------------------------------------------------
+    // PERF-06-C3 — certified deferred BM25
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c3_u01_winner_score_count() {
+        let fixture = Fixture::new(&[body_documents(40)]);
+        let request = request_asc(term_body(), 3);
+        reset_witnesses();
+        crate::search::score::c3_score_observation::reset();
+        let actual = run_with(&fixture, &request, SearchLimits::default(), linear_config())
+            .expect("strict lexical request");
+        assert_eq!(actual.total_hits, 40);
+        assert_eq!(
+            keys(&actual),
+            vec![bounded_key(0), bounded_key(1), bounded_key(2)]
+        );
+        assert!(actual.next_cursor.is_some());
+        assert_eq!(c2_observation::strict_routes(), 1);
+        let calls = crate::search::score::c3_score_observation::calls();
+        eprintln!("C3 U01 BM25 calls={calls} expected=3");
+        assert_eq!(calls, 3, "only returned hits are scored");
+    }
 }
 // C2_TESTS_CLOSE_MARKER
