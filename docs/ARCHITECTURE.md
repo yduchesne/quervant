@@ -1088,3 +1088,10 @@ The on-disk `DOC_KEYS` bytes, segment format, writer, manifest, reader public AP
 `ReaderSnapshot`/PIT identity, cursor and projection contracts are unchanged, and
 no hash is ever persisted. This is a structural correctness and resource change
 only; PERF-06-B4 owns any performance qualification.
+
+
+## Integrated lexical physical execution (PERF-06-C1 design)
+
+The [PERF-06-C physical execution contract](architecture/PERF06C_PHYSICAL_EXECUTION_CONTRACT.md) defines the proposed narrow standalone strict-term / keyword-sort Top-K physical operator on the **accepted A+B source**, its exact-count and eager-score requirements, the nonnegotiable error/budget/PIT/fallback semantics, and C3's formal winner-only scoring proof boundary. The [C1 source reconciliation](pr-artifacts/perf-06-c/PERF06C1_SOURCE_AUDIT.md) explains the difference from the current PERF-05/B1–B3 collector and historical rejected physical-operator approaches.
+
+**C1 is documentation only**; no physical operator or runtime dispatch is implemented by this architectural section. C2, C3 and C4 require separate review, implementation, tests and qualification.
