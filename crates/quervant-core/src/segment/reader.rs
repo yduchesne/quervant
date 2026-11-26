@@ -1082,7 +1082,7 @@ impl VerifiedSegmentState {
             Err(error) => return Err(error),
         };
         #[cfg(test)]
-        super::stored_blocks::CERTIFICATE_BUILDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        super::stored_blocks::record_certificate_build();
         let _ = self.stored_blocks.set(Arc::new(ValidatedStoredBlocks {
             parsed,
             record_ends: offsets,
@@ -2859,18 +2859,44 @@ mod stored_blocks_reader_tests {
     #[test]
     fn certificate_retains_flat_offsets_and_hot_path_is_direct() {
         use crate::segment::stored::test_observation;
+        use crate::segment::stored_blocks::certificate_builds;
         let _serial = serial();
         let bytes = v2_bytes(300);
-        let (state, _budget) = admitted_state(bytes);
+        let (state, _budget) = admitted_state(bytes.clone());
         let reader = SegmentReader::from_shared(Arc::clone(&state));
         test_observation::reset();
-        let builds_before = crate::segment::stored_blocks::CERTIFICATE_BUILDS
-            .load(std::sync::atomic::Ordering::SeqCst);
+        let builds_before = certificate_builds();
+
+        let sibling_delta = std::thread::scope(|scope| {
+            scope
+                .spawn(move || {
+                    // The parent holds serial(); the worker must not acquire it.
+                    let (sibling_state, _sibling_budget) = admitted_state(bytes);
+                    let sibling_reader = SegmentReader::from_shared(Arc::clone(&sibling_state));
+                    let sibling_before = certificate_builds();
+                    let selected = sibling_reader
+                        .stored_docs_selected(&[0, 299])
+                        .expect("sibling first access");
+                    assert_eq!(selected.len(), 2);
+                    assert_eq!(sibling_state.stored_blocks_offset_len(), Some(300 + 3));
+                    let sibling_after = certificate_builds();
+                    assert_eq!(sibling_after - sibling_before, 1);
+                    sibling_after - sibling_before
+                })
+                .join()
+                .expect("sibling certificate build")
+        });
+        assert_eq!(sibling_delta, 1);
+        assert_eq!(
+            certificate_builds() - builds_before,
+            0,
+            "a different thread's real certificate build must not change this thread's count"
+        );
+
         let first = reader.stored_docs_selected(&[0, 299]).expect("first");
         assert_eq!(first.len(), 2);
         assert_eq!(state.stored_blocks_offset_len(), Some(300 + 3));
-        let builds_after = crate::segment::stored_blocks::CERTIFICATE_BUILDS
-            .load(std::sync::atomic::Ordering::SeqCst);
+        let builds_after = certificate_builds();
         assert_eq!(builds_after - builds_before, 1);
         // Warm direct access: one touched block, one selected record, no full scan.
         test_observation::reset();
@@ -2904,6 +2930,11 @@ mod stored_blocks_reader_tests {
         assert_eq!(test_observation::direct_records(), 0);
         assert_eq!(test_observation::hot_block_lookups(), 0);
         assert_eq!(test_observation::full_scan_records(), 0);
+        assert_eq!(
+            certificate_builds(),
+            builds_after,
+            "warm selected access must reuse the existing certificate"
+        );
     }
 
     #[test]
