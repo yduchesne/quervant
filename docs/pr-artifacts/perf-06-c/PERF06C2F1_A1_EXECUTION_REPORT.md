@@ -258,8 +258,17 @@ Local acceptance uses the real path in every case: schema → analyzer → write
 committed `MemoryDirectory`/`FsDirectory` bytes → snapshot → `UnifiedSearcher` → real
 collectors; `ReaderSnapshot::for_test` only supplies ownership/identity for the
 copied-and-rebuilt U12 containers. No mock decoder, scorer or directory substitutes
-for it. Ordinary CI for the A1 head is recorded in §11; no workflow, trigger or
-branch filter changed.
+for it.
+
+Ordinary CI on the A1 head: run
+[45881618721](https://github.com/yduchesne/quervant/actions/runs/45881618721) at
+`f373d06a25066797876ee7cb788b2633b9f2bfe0` — all five required jobs (`rust`, `msrv`,
+`python-benchmark-framework`, `benchmark-adapter-contract`, `rustfs`) `pass`,
+`conclusion: success`; the `rustfs` job executed 32 real-service test bodies with 0
+failures. GitHub checked out the PR merge ref `8c3a9cb` (merge of the head into
+`bc726420…`), which is recorded separately from the PR-head identity. Receipt:
+`evidence/c2-f1-a1-ci-status.txt`. No workflow, trigger or branch filter changed.
+Runs 45828518258 and 45825576316 are pre-A1 regression baselines only.
 
 ## 9. Failures, diagnostics and open gates
 

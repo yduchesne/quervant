@@ -1,0 +1,26 @@
+RECEIPT c2-f1-a1-ci-status
+SOURCE: PR #131 head f373d06a25066797876ee7cb788b2633b9f2bfe0 (= A1_FINAL)
+WORKFLOW: Rust CI (unchanged; A1 modifies no workflow/trigger)
+START: 2026-11-26T19:31:49Z
+BEGIN RAW OUTPUT
+run:          https://github.com/yduchesne/quervant/actions/runs/45881618721
+headSha:      f373d06a25066797876ee7cb788b2633b9f2bfe0
+conclusion:   success
+merge checkout (GitHub PR merge ref, distinct from the PR head):
+              HEAD is now at 8c3a9cb Merge f373d06a25066797876ee7cb788b2633b9f2bfe0 into bc726420cede2e26681d6e8192b45a5d0169abbf
+jobs:
+  benchmark-adapter-contract  pass  1m15s   job 140122089985
+  msrv                        pass  12m19s  job 140122089596
+  python-benchmark-framework  pass  3m56s   job 140122090100
+  rust                        pass  21m7s   job 140122089923
+  rustfs                      pass  2m59s   job 140122089973
+rustfs required bodies actually executed: 32 'test result: ok' lines, 0 failed
+  (S3 adapter acceptance 8 and 5 passed; core remote acceptance 5 passed +5 filtered
+   and 1 passed per suite; mutation/compact/fault suites as before)
+F1/A1 feature acceptance (c2_tests, c2_physical_tests, perf06_c2_physical) ran in
+  the 'rust' job's workspace test step.
+END RAW OUTPUT
+HISTORICAL: run 45828518258 (head 2bf9539…) and run 45825576316 (head 19cf038…) are
+  pre-A1 regression baselines only; they do not attest the A1 test changes.
+END: 2026-11-26T19:31:49Z
+END RECEIPT
