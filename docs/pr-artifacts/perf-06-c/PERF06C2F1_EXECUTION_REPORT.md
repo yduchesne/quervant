@@ -484,3 +484,23 @@ preceding byte of this report is preserved unchanged.
 
 **Current disposition:** `PERF06_C2_F1_A1_ACCEPTANCE_EXECUTED_G7_BLOCKED_WHITESPACE_DECISION`
 — every prescribed A1 case executes; G7 has two maintainer-owned blockers; G10 open.
+
+## PERF-06-C2-F1-A2 correction and pointer (2026-11-26)
+
+This section is append-only. Two F1 statements need correction, and the current
+record is the [A2 report](PERF06C2F1_A2_EXECUTION_REPORT.md).
+
+1. **Actual B3 refusal was already fixed by F1.** F1's U17 installed the real
+   `BeforeHashAllocation` probe and asserted the refusal/fallback/directory counters;
+   what A1 added was **complete-response parity** (whole cursor and aggregation, not
+   presence). Describing the F1 state as "refusal unarmed" is historical shorthand for
+   the original pre-F1 defect, not an F1-start fact.
+2. **The certificate-counter failure was process-global counter interference**, not a
+   thread-local counter race. A2 publishes a test-only thread-local observation repair
+   with a deterministic real-reader sibling-thread regression and a red-first proof of
+   the retired mechanism; the historical FAIL-then-PASS stays recorded.
+
+Whitespace: F1's "25 pre-existing / F1 delta clean" conclusion was wrong (the check
+ran while new files were untracked). Current arithmetic: F1_START range 62, A1_START
+range 26, A2 range 0, `main` range 81 (55 frozen Appendix A diagnostics in 40
+artifacts + 26 in the A1 self-quoting receipt). No exception has been granted.

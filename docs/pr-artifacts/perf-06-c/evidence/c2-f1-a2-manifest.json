@@ -1,0 +1,5725 @@
+{
+  "schema": "quervant-perf06-c2-f1-a2-manifest-v1",
+  "A2_START": "cdffd5b486ce46312abf4c45c80b9d33ecbf657d",
+  "A2_TESTED": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+  "recorded_catalog_receipts": 42,
+  "final_counter_receipts_t02_t07": 6,
+  "expected_red_receipts": 1,
+  "coverage_receipts_present": [
+    "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-q06-attempt-01.json",
+    "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-q07-attempt-01.json"
+  ],
+  "artifacts": [
+    {
+      "label": "A2 plan (verbatim)",
+      "path": "docs/pr-artifacts/perf-06-c/PERF06C2F1_A2_CLOSEOUT_PLAN.md",
+      "sha256": "92d079b104f2c150929e73feab7aa0ca69f05beb377dff4f74afb6893c9cc100"
+    },
+    {
+      "label": "recorder script",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-record.py",
+      "sha256": "d1f71971f261d8591bc335ee6f63208b9e4043f26c3231377d8a16b60f0e50f0"
+    },
+    {
+      "label": "source-freeze/red verifier",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-source-freeze.py",
+      "sha256": "1fdd7fdcb46049d883ece1c40090932fd9460eb60bc1c57b7a038910f67d619b"
+    },
+    {
+      "label": "preflight identity record",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-preflight.json",
+      "sha256": "828ab8f7b23bf8264bc7c3ec635b9f66778c10aaa51ad92fce9d7f9c088c549a"
+    },
+    {
+      "label": "worktree final implementation check",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-worktree-final-attempt-01.json",
+      "sha256": "3bfb229b68dec5e5b4afdad8410e43de3b1b7d339fe56629d36134e48b488b0a"
+    },
+    {
+      "label": "immutable-source freeze receipt",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-sanity-freeze-attempt-01.json",
+      "sha256": "75d43b987338d7dcfac02323a4de2ca70097f5602fb9a5b3fc80faae1a9382d3"
+    }
+  ],
+  "receipts": [
+    {
+      "id": "t01",
+      "label": "counter-target-expected-red",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-t01-red-attempt-01.json",
+      "sha256": "101e5daaea7c0ac2956242254ec820f2e69f325f24f143f9c669b1f619bd68e0",
+      "source_commit": "cdffd5b486ce46312abf4c45c80b9d33ecbf657d",
+      "mode": "red",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "segment::reader::stored_blocks_reader_tests::certificate_retains_flat_offsets_and_hot_path_is_direct",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "command_exit_code": 101,
+      "source_identity_valid": true,
+      "source_patch_sha256": "d9b0ba5aacc646c0f2ebf254df518e266ffd323e06d7dd20cac391a535e0e139",
+      "combined_output_sha256": "6143d18e4d4bb0dbe50e5102d6ade982b1af043152d11fe9100808f9278a1beb",
+      "expected_failure": "parent-isolation assertion left 1 / right 0",
+      "classification": "EXPECTED_RED (feature-acceptance evidence for the retired global mechanism)"
+    },
+    {
+      "id": "i01",
+      "label": "inventory-unified",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-i01-attempt-01.json",
+      "sha256": "5b7837831d4bfce09f0995f0899ac066edd72331ba6acb14aea67b26b4ddd09a",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::",
+        "--",
+        "--list",
+        "--format",
+        "terse"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "1dc8b46db073f8d78fcb855d3ff11fcb1eec1c9a51471540c8e194fd82de760d",
+      "listed_tests": 24,
+      "passed_tests": 0,
+      "test_results": [],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "i02",
+      "label": "inventory-physical",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-i02-attempt-01.json",
+      "sha256": "257af32356b514042bda4028c9261c9bd80295132f5b0e87abeab5e9d4d91198",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::execute::c2_physical_tests::",
+        "--",
+        "--list",
+        "--format",
+        "terse"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "f0e4f6c394bc8c1419dc0d2f712a1d6c6a85af378e13114d0362ab09c21226f5",
+      "listed_tests": 5,
+      "passed_tests": 0,
+      "test_results": [],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "i03",
+      "label": "inventory-integration",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-i03-attempt-01.json",
+      "sha256": "f1d60c807049851a4ebb7953c3ce5dc1acb272d26b85a0d357df6cd930bb684d",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "perf06_c2_physical",
+        "--",
+        "--list",
+        "--format",
+        "terse"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "579891ef1681ca3cb5a11b2fc5a42e28ecbbf3089ca4c61a900aa14ffcd4ae34",
+      "listed_tests": 9,
+      "passed_tests": 0,
+      "test_results": [],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "i04",
+      "label": "inventory-broad",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-i04-attempt-01.json",
+      "sha256": "03c0cb8b5fc7166def4cdca04a3d5f148533dc767975d4d2af0a515469ebbbbf",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "c2_",
+        "--",
+        "--list",
+        "--format",
+        "terse"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "30ce8ba7f8c5e527e8559e325d4ebdf025b713e6c1017e417a36bb01d7e525dc",
+      "listed_tests": 39,
+      "passed_tests": 0,
+      "test_results": [],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "f01",
+      "label": "focused-u17",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-f01-attempt-01.json",
+      "sha256": "d004d57e033a7af5428eb0271045a89a2fb1c498c85bbf736ad2076babeca508",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c2_u17_ordinal_unavailable_and_b3_refusal",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "f071a2e92dd229c7f2eef21bc5c95f6c88152e8047c17e1f24ea5efe116234cf",
+      "listed_tests": 0,
+      "passed_tests": 1,
+      "test_results": [
+        [
+          "ok",
+          1,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "f02",
+      "label": "focused-u21",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-f02-attempt-01.json",
+      "sha256": "bbe529d52ba9987e9bdf4da6973f5f23656a8a879e3265f070f48382a5cbe1d8",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c2_u21_work_budget_exhaustion_after_prior_segment",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "2e24d2f235cae01c3863afd55ce4bea0c82c65126deed0799326ab73ccae2461",
+      "listed_tests": 0,
+      "passed_tests": 1,
+      "test_results": [
+        [
+          "ok",
+          1,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "f03",
+      "label": "focused-u12",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-f03-attempt-01.json",
+      "sha256": "70d92341abc032ccaae3c97c00bc2cfb18a6c6a3ba07ecfc863f52cc3e97c2f3",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c2_u12_corrupt_selected_unselected_and_multi_fault",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "7f313afd4e9d1e8a64ab68f7fa4c642c3e8bb5c814bd7fd32120634f031a1a01",
+      "listed_tests": 0,
+      "passed_tests": 1,
+      "test_results": [
+        [
+          "ok",
+          1,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "f04",
+      "label": "focused-p05",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-f04-attempt-01.json",
+      "sha256": "8d6a5baa786e496d2f05d8409c95b270e9d71bef9d059c5d50025bfecba478d1",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::execute::c2_physical_tests::c2_p05_n_examination_and_scanned_frequency",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "8bd3a2a482b8c51950176909331373416c8758ec6cc9e501a937b15d8a344f66",
+      "listed_tests": 0,
+      "passed_tests": 1,
+      "test_results": [
+        [
+          "ok",
+          1,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "f05",
+      "label": "focused-i08",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-f05-attempt-01.json",
+      "sha256": "48786a9c393dca0f44546ce01cf8766b98b98541b917e2bb90de33e0c89ef198",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "perf06_c2_physical",
+        "c2_i08_resource_cancellation_atomicity",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "0cc3e8ca65bc84b69ca5a6eeebc358b3b21ac77f0c0f19ec0f35476d87af3fae",
+      "listed_tests": 0,
+      "passed_tests": 1,
+      "test_results": [
+        [
+          "ok",
+          1,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "c01",
+      "label": "suite-unified-serial",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-c01-attempt-01.json",
+      "sha256": "81981c216e2246c0c45aed76a3bfef2e599f3068beb852fc01b941dd19637f99",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::",
+        "--",
+        "--test-threads=1"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "87121a52650ca7b4fed2e85bce61250a615ee1d99a0a5a6a1a6ab28c4eb341f7",
+      "listed_tests": 0,
+      "passed_tests": 24,
+      "test_results": [
+        [
+          "ok",
+          24,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "c02",
+      "label": "suite-physical-serial",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-c02-attempt-01.json",
+      "sha256": "a4cbe45057475fbfbeb3fcdb2103f4dc50d9fa891ffdad0cf1f96267baf38fb2",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::execute::c2_physical_tests::",
+        "--",
+        "--test-threads=1"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "764fd3d1bbd87d407ebeaac4d9ed76835858d1396ccd85e4ca6e8c17f2dc1541",
+      "listed_tests": 0,
+      "passed_tests": 5,
+      "test_results": [
+        [
+          "ok",
+          5,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "c03",
+      "label": "suite-unified-parallel",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-c03-attempt-01.json",
+      "sha256": "4cc16265a0d1d693b449279da3cdef49837392567ce09831ca7ff1184aec8e67",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::",
+        "--",
+        "--test-threads=8"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "c44bac51200a70525890391ad7f3a6c922f61f6cf0dcd03898c56dc644636d85",
+      "listed_tests": 0,
+      "passed_tests": 24,
+      "test_results": [
+        [
+          "ok",
+          24,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "c04",
+      "label": "suite-physical-parallel",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-c04-attempt-01.json",
+      "sha256": "1434cf6a43ab02149f8c9e18e5e32a275a32ccfb37cb21f70d90b2e309322e67",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::execute::c2_physical_tests::",
+        "--",
+        "--test-threads=8"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "f646f13ad578430b130b96b2a91b7c61b1d53910c42c0e695b32c5ead296f2af",
+      "listed_tests": 0,
+      "passed_tests": 5,
+      "test_results": [
+        [
+          "ok",
+          5,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "c05",
+      "label": "suite-integration",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-c05-attempt-01.json",
+      "sha256": "f437082d72a6266ee03f7c3a593aaa752eea294abd2f0f49b2417dfb1a5d3661",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "perf06_c2_physical",
+        "--",
+        "--test-threads=1"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "7d50623f8b21e051a4931557c4fc4abcf06b86d285dbaa443f30fe8f67779222",
+      "listed_tests": 0,
+      "passed_tests": 9,
+      "test_results": [
+        [
+          "ok",
+          9,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "r01",
+      "label": "regression-b1-unit",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-r01-attempt-01.json",
+      "sha256": "87e97b17736930a9146ebaec96318b0ffa67e14bd4c0fb091132851f8776a50c",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "b1_"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "fbb5cdb285e3154f767a922fb851f766c6c8ba9815d2a53f44d3b223371c90b3",
+      "listed_tests": 0,
+      "passed_tests": 65,
+      "test_results": [
+        [
+          "ok",
+          65,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "r02",
+      "label": "regression-b2-unit",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-r02-attempt-01.json",
+      "sha256": "fa211c59f66b199982e8e78f8d008987f260cd993e9c105607938ab97491b7f9",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "b2_"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "ceaa8f426755502ee7076494ff8c4cb773a1529f5ec7b5dfdb6266c04eaf20f0",
+      "listed_tests": 0,
+      "passed_tests": 31,
+      "test_results": [
+        [
+          "ok",
+          31,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "r03",
+      "label": "regression-b3-unit",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-r03-attempt-01.json",
+      "sha256": "00500c43d8889e4740ca9ee4fd2aa72c7ca86eb94790e874f8ef6917309ac60f",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "b3_"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "3985693866fba7d98af3aaeb96c999d8abd32468a84c6e1ce70ca615df4bbb55",
+      "listed_tests": 0,
+      "passed_tests": 29,
+      "test_results": [
+        [
+          "ok",
+          29,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "r04",
+      "label": "regression-b1-ordinals",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-r04-attempt-01.json",
+      "sha256": "081ecf52a285929822695a903d54524fc72501e132a03895372afc09aa1d9bf5",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "perf06_b1_ordinals"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "8e85ab8811c22dd6ca9ced7a6ca267d1b8b07a93911877762896707613235627",
+      "listed_tests": 0,
+      "passed_tests": 11,
+      "test_results": [
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          9,
+          0,
+          2
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "r05",
+      "label": "regression-b2-ordinals",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-r05-attempt-01.json",
+      "sha256": "1527cd7a1dd34e8b92347199bb67724d762a5bf4a4ca1881e7d07a49e66fe4d7",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "perf06_b2_ordinals"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "8cc4853a684d63c9426b2deaf6deb2d30632ccf7dab7dd2c3acdb7920e519183",
+      "listed_tests": 0,
+      "passed_tests": 8,
+      "test_results": [
+        [
+          "ok",
+          8,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "r06",
+      "label": "regression-b3-keys",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-r06-attempt-01.json",
+      "sha256": "a924cebbb22191d54064b8859940baccecfe82d0ed6cc78de60907e82ab3ac17",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "perf06_b3_keys"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "9c065e07111fceca37d19de287cd73200e2ba0f12d87bed9a4bd64f7ad0a30b1",
+      "listed_tests": 0,
+      "passed_tests": 8,
+      "test_results": [
+        [
+          "ok",
+          8,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "r07",
+      "label": "regression-15h-a",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-r07-attempt-01.json",
+      "sha256": "1a99372c6e4f597f4f793dda6f418dfaa847cb88529e6d0c5feb906ef6c2ea9e",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "pr15h_a_candidate_materialization"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "071b7ce64cca2457913ed8f320e18febe26359f4daf3075c34f12ff81edc5775",
+      "listed_tests": 0,
+      "passed_tests": 6,
+      "test_results": [
+        [
+          "ok",
+          6,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "r08",
+      "label": "regression-15h-a2",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-r08-attempt-01.json",
+      "sha256": "39b6ff8a0637c3635dc9929ab0b60657831185fa990d615778e21864a90b4dd5",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "pr15h_a2_dispatch"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "4aed994f6d6fd0e50c5a7386c387fdea09cc9007de5d4f71964349376f32c148",
+      "listed_tests": 0,
+      "passed_tests": 8,
+      "test_results": [
+        [
+          "ok",
+          8,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "q01",
+      "label": "qa-fmt-stable",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-q01-attempt-01.json",
+      "sha256": "5eeea29dde3fd22e54f78c3da2b53d115a002be0ae8145395c795b6e4c8bc0ac",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "listed_tests": 0,
+      "passed_tests": 0,
+      "test_results": [],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "q02",
+      "label": "qa-clippy-stable",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-q02-attempt-01.json",
+      "sha256": "03d7dbd2689e3bb8338a53ba723b452238fc9ae67a9c7972489bdb111af538c6",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "4506de3e33317d3e46550ce9527ff9ee0727a24eadfef9c9cd1382fca61f2208",
+      "listed_tests": 0,
+      "passed_tests": 0,
+      "test_results": [],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "q03",
+      "label": "qa-clippy-stable-all-features",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-q03-attempt-01.json",
+      "sha256": "222bb19ab08ab33070f947dc4848b8e167fe13fd5e413950dd12c4aa446e08c5",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "de362d2fd3d87d0a64066399362140914934c0571b0665fde446565ffee3bfa1",
+      "listed_tests": 0,
+      "passed_tests": 0,
+      "test_results": [],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "q04",
+      "label": "qa-test-workspace",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-q04-attempt-01.json",
+      "sha256": "73c7d84bff3fd932414d7e0fd08057c89e174c9906d211c63384e34d7762f34d",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "--workspace",
+        "--all-targets"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "aec5bd2bae807f8d7d79f15e9e712897cded020275aaf57a2488842594fd86de",
+      "listed_tests": 0,
+      "passed_tests": 2739,
+      "test_results": [
+        [
+          "ok",
+          1201,
+          0,
+          1
+        ],
+        [
+          "ok",
+          21,
+          0,
+          0
+        ],
+        [
+          "ok",
+          30,
+          0,
+          0
+        ],
+        [
+          "ok",
+          27,
+          0,
+          0
+        ],
+        [
+          "ok",
+          45,
+          0,
+          0
+        ],
+        [
+          "ok",
+          56,
+          0,
+          0
+        ],
+        [
+          "ok",
+          55,
+          0,
+          0
+        ],
+        [
+          "ok",
+          55,
+          0,
+          0
+        ],
+        [
+          "ok",
+          19,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          0
+        ],
+        [
+          "ok",
+          10,
+          0,
+          0
+        ],
+        [
+          "ok",
+          29,
+          0,
+          0
+        ],
+        [
+          "ok",
+          34,
+          0,
+          0
+        ],
+        [
+          "ok",
+          29,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          9,
+          0,
+          2
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          9,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          16,
+          0,
+          1
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          1
+        ],
+        [
+          "ok",
+          17,
+          0,
+          0
+        ],
+        [
+          "ok",
+          18,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          3
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          15,
+          0,
+          0
+        ],
+        [
+          "ok",
+          10,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          18,
+          0,
+          0
+        ],
+        [
+          "ok",
+          15,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          21,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          9,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          1
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          10,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          25,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          2,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          31,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          24,
+          0,
+          0
+        ],
+        [
+          "ok",
+          23,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          0
+        ],
+        [
+          "ok",
+          26,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          1
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          3,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          0
+        ],
+        [
+          "ok",
+          16,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          17,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          20,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          26,
+          0,
+          1
+        ],
+        [
+          "ok",
+          10,
+          0,
+          0
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          29,
+          0,
+          0
+        ],
+        [
+          "ok",
+          24,
+          0,
+          0
+        ],
+        [
+          "ok",
+          22,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          17,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          1
+        ],
+        [
+          "ok",
+          16,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          7,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          30,
+          0,
+          0
+        ],
+        [
+          "ok",
+          16,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "q05",
+      "label": "qa-test-workspace-all-features",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-q05-attempt-01.json",
+      "sha256": "18e9f875ae3f7744dd77fca51d587e3b7c88e5ba892ed75583b56e6fda6cb7fb",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "--workspace",
+        "--all-targets",
+        "--all-features"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "09f7c11e4e4fd587eea07f727c4d86c5287a5059252a1f3f10196545b4b31789",
+      "listed_tests": 0,
+      "passed_tests": 2784,
+      "test_results": [
+        [
+          "ok",
+          1242,
+          0,
+          2
+        ],
+        [
+          "ok",
+          21,
+          0,
+          0
+        ],
+        [
+          "ok",
+          30,
+          0,
+          0
+        ],
+        [
+          "ok",
+          27,
+          0,
+          0
+        ],
+        [
+          "ok",
+          45,
+          0,
+          0
+        ],
+        [
+          "ok",
+          56,
+          0,
+          0
+        ],
+        [
+          "ok",
+          55,
+          0,
+          0
+        ],
+        [
+          "ok",
+          55,
+          0,
+          0
+        ],
+        [
+          "ok",
+          19,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          1
+        ],
+        [
+          "ok",
+          10,
+          0,
+          1
+        ],
+        [
+          "ok",
+          29,
+          0,
+          1
+        ],
+        [
+          "ok",
+          34,
+          0,
+          1
+        ],
+        [
+          "ok",
+          29,
+          0,
+          1
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          9,
+          0,
+          2
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          9,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          16,
+          0,
+          1
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          1
+        ],
+        [
+          "ok",
+          17,
+          0,
+          0
+        ],
+        [
+          "ok",
+          18,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          3
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          15,
+          0,
+          0
+        ],
+        [
+          "ok",
+          10,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          18,
+          0,
+          0
+        ],
+        [
+          "ok",
+          15,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          21,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          9,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          1
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          10,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          25,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          2
+        ],
+        [
+          "ok",
+          0,
+          0,
+          6
+        ],
+        [
+          "ok",
+          2,
+          0,
+          1
+        ],
+        [
+          "ok",
+          1,
+          0,
+          1
+        ],
+        [
+          "ok",
+          5,
+          0,
+          5
+        ],
+        [
+          "ok",
+          0,
+          0,
+          7
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          31,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          24,
+          0,
+          0
+        ],
+        [
+          "ok",
+          23,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          10
+        ],
+        [
+          "ok",
+          5,
+          0,
+          14
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          0
+        ],
+        [
+          "ok",
+          26,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          1
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          1
+        ],
+        [
+          "ok",
+          3,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          1
+        ],
+        [
+          "ok",
+          14,
+          0,
+          0
+        ],
+        [
+          "ok",
+          16,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          17,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          4
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          20,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          6
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          26,
+          0,
+          1
+        ],
+        [
+          "ok",
+          10,
+          0,
+          1
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          29,
+          0,
+          0
+        ],
+        [
+          "ok",
+          24,
+          0,
+          0
+        ],
+        [
+          "ok",
+          22,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          17,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          1
+        ],
+        [
+          "ok",
+          16,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          7,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          34,
+          0,
+          0
+        ],
+        [
+          "ok",
+          16,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          5
+        ],
+        [
+          "ok",
+          0,
+          0,
+          8
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "q06",
+      "label": "qa-coverage",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-q06-attempt-01.json",
+      "sha256": "e8ac1385ecd9b7cb88e9973ac83cce1c1f8a0745b17894cc28c620d72d605d7a",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "llvm-cov",
+        "--workspace",
+        "--all-targets",
+        "--fail-under-lines",
+        "85"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "6fb948ae36ec7599c11a9de37fe77e2feef34fe6ce1b17476b47c89e998fb740",
+      "listed_tests": 0,
+      "passed_tests": 2739,
+      "test_results": [
+        [
+          "ok",
+          1201,
+          0,
+          1
+        ],
+        [
+          "ok",
+          21,
+          0,
+          0
+        ],
+        [
+          "ok",
+          30,
+          0,
+          0
+        ],
+        [
+          "ok",
+          27,
+          0,
+          0
+        ],
+        [
+          "ok",
+          45,
+          0,
+          0
+        ],
+        [
+          "ok",
+          56,
+          0,
+          0
+        ],
+        [
+          "ok",
+          55,
+          0,
+          0
+        ],
+        [
+          "ok",
+          55,
+          0,
+          0
+        ],
+        [
+          "ok",
+          19,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          0
+        ],
+        [
+          "ok",
+          10,
+          0,
+          0
+        ],
+        [
+          "ok",
+          29,
+          0,
+          0
+        ],
+        [
+          "ok",
+          34,
+          0,
+          0
+        ],
+        [
+          "ok",
+          29,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          9,
+          0,
+          2
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          9,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          16,
+          0,
+          1
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          1
+        ],
+        [
+          "ok",
+          17,
+          0,
+          0
+        ],
+        [
+          "ok",
+          18,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          3
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          15,
+          0,
+          0
+        ],
+        [
+          "ok",
+          10,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          18,
+          0,
+          0
+        ],
+        [
+          "ok",
+          15,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          21,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          9,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          1
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          10,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          25,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          2,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          31,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          24,
+          0,
+          0
+        ],
+        [
+          "ok",
+          23,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          0
+        ],
+        [
+          "ok",
+          26,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          1
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          3,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          0
+        ],
+        [
+          "ok",
+          16,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          17,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          20,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          26,
+          0,
+          1
+        ],
+        [
+          "ok",
+          10,
+          0,
+          0
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          29,
+          0,
+          0
+        ],
+        [
+          "ok",
+          24,
+          0,
+          0
+        ],
+        [
+          "ok",
+          22,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          17,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          1
+        ],
+        [
+          "ok",
+          16,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          7,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          30,
+          0,
+          0
+        ],
+        [
+          "ok",
+          16,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": [
+        "TOTAL",
+        "123320",
+        "7778",
+        "93.69%",
+        "6047",
+        "722",
+        "88.06%",
+        "74398",
+        "4964",
+        "93.33%",
+        "0",
+        "0",
+        "-"
+      ],
+      "classification": "PASS"
+    },
+    {
+      "id": "q07",
+      "label": "qa-coverage-all-features",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-q07-attempt-01.json",
+      "sha256": "ba1357b4d619973667217ac56d2cfea5dcff393ddbacc66ab069c13b2725048e",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "llvm-cov",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--fail-under-lines",
+        "85"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "668f0be331825b7c356d13cf0ed449fedf3715743122125b81f8bd50fc62ed3c",
+      "listed_tests": 0,
+      "passed_tests": 2784,
+      "test_results": [
+        [
+          "ok",
+          1242,
+          0,
+          2
+        ],
+        [
+          "ok",
+          21,
+          0,
+          0
+        ],
+        [
+          "ok",
+          30,
+          0,
+          0
+        ],
+        [
+          "ok",
+          27,
+          0,
+          0
+        ],
+        [
+          "ok",
+          45,
+          0,
+          0
+        ],
+        [
+          "ok",
+          56,
+          0,
+          0
+        ],
+        [
+          "ok",
+          55,
+          0,
+          0
+        ],
+        [
+          "ok",
+          55,
+          0,
+          0
+        ],
+        [
+          "ok",
+          19,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          1
+        ],
+        [
+          "ok",
+          10,
+          0,
+          1
+        ],
+        [
+          "ok",
+          29,
+          0,
+          1
+        ],
+        [
+          "ok",
+          34,
+          0,
+          1
+        ],
+        [
+          "ok",
+          29,
+          0,
+          1
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          9,
+          0,
+          2
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          9,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          16,
+          0,
+          1
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          1
+        ],
+        [
+          "ok",
+          17,
+          0,
+          0
+        ],
+        [
+          "ok",
+          18,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          3
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          15,
+          0,
+          0
+        ],
+        [
+          "ok",
+          10,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          18,
+          0,
+          0
+        ],
+        [
+          "ok",
+          15,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          21,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          9,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          1
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          10,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          25,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          2
+        ],
+        [
+          "ok",
+          0,
+          0,
+          6
+        ],
+        [
+          "ok",
+          2,
+          0,
+          1
+        ],
+        [
+          "ok",
+          1,
+          0,
+          1
+        ],
+        [
+          "ok",
+          5,
+          0,
+          5
+        ],
+        [
+          "ok",
+          0,
+          0,
+          7
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          31,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          24,
+          0,
+          0
+        ],
+        [
+          "ok",
+          23,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          10
+        ],
+        [
+          "ok",
+          5,
+          0,
+          14
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          0
+        ],
+        [
+          "ok",
+          26,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          1
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          1
+        ],
+        [
+          "ok",
+          3,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          1
+        ],
+        [
+          "ok",
+          14,
+          0,
+          0
+        ],
+        [
+          "ok",
+          16,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          17,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          4
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          20,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          6
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          26,
+          0,
+          1
+        ],
+        [
+          "ok",
+          10,
+          0,
+          1
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          29,
+          0,
+          0
+        ],
+        [
+          "ok",
+          24,
+          0,
+          0
+        ],
+        [
+          "ok",
+          22,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          17,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          1
+        ],
+        [
+          "ok",
+          16,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          7,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          34,
+          0,
+          0
+        ],
+        [
+          "ok",
+          16,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          5
+        ],
+        [
+          "ok",
+          0,
+          0,
+          8
+        ]
+      ],
+      "coverage_total_line": [
+        "TOTAL",
+        "126077",
+        "8354",
+        "93.37%",
+        "6161",
+        "747",
+        "87.88%",
+        "75907",
+        "5380",
+        "92.91%",
+        "0",
+        "0",
+        "-"
+      ],
+      "classification": "PASS"
+    },
+    {
+      "id": "q08",
+      "label": "qa-doc",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-q08-attempt-01.json",
+      "sha256": "0ff83a87288e4fffc3c4c57965180e425fab8e8b307f3821c28d9873595e422d",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "doc",
+        "--workspace",
+        "--no-deps"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "c40be54f4899c50e7021a5b5e0c00cbc805e8ef4a7a450790631a76c2319d402",
+      "listed_tests": 0,
+      "passed_tests": 0,
+      "test_results": [],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "q09",
+      "label": "qa-doc-all-features",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-q09-attempt-01.json",
+      "sha256": "cdc943b5cfea08a16575835f5178d494ae3d9a86ec0f5e734eaa60e86e47ab9e",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "doc",
+        "--workspace",
+        "--all-features",
+        "--no-deps"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "b9326d4fe6aa3a586cfda03075d96a064b9632d3f3e47e4ef0968561ce9abb45",
+      "listed_tests": 0,
+      "passed_tests": 0,
+      "test_results": [],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "q10",
+      "label": "qa-bench-no-run",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-q10-attempt-01.json",
+      "sha256": "0b2b1992d6eeb5b86972311c577c4b6efdf5e84183d6e81ceab49f5a3a20790d",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "bench",
+        "--workspace",
+        "--no-run"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "9af48f49658454c019301476284df6143bd76f43225e431b150424879b3dbb10",
+      "listed_tests": 0,
+      "passed_tests": 0,
+      "test_results": [],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "q11",
+      "label": "qa-fmt-msrv",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-q11-attempt-01.json",
+      "sha256": "460d42b802c1070451e9d9668c44dde97192ddbcd162aa8c0cad27817bcfd6b7",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.85.0",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "listed_tests": 0,
+      "passed_tests": 0,
+      "test_results": [],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "q12",
+      "label": "qa-clippy-msrv-all-features",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-q12-attempt-01.json",
+      "sha256": "300c78307472f7caa369185c6e5a1614f16ab293a7c761ae1a88e6c44acd5c43",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.85.0",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "6b296cd89251dad1769e1047d4c8dafb04b429914d38abd43f7fb443d1ed6389",
+      "listed_tests": 0,
+      "passed_tests": 0,
+      "test_results": [],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "q13",
+      "label": "qa-test-msrv-all-features",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-q13-attempt-01.json",
+      "sha256": "855cfaea18a6d42180240869a9bfd9847a28275f88f59814f0d781596d5ce566",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.85.0",
+        "test",
+        "--workspace",
+        "--all-targets",
+        "--all-features"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "0c9c6bb5780d24527fdfaf1f67febf4a7596aa405373693c59c7b93708c59b02",
+      "listed_tests": 0,
+      "passed_tests": 2783,
+      "test_results": [
+        [
+          "ok",
+          1242,
+          0,
+          2
+        ],
+        [
+          "ok",
+          21,
+          0,
+          0
+        ],
+        [
+          "ok",
+          30,
+          0,
+          0
+        ],
+        [
+          "ok",
+          27,
+          0,
+          0
+        ],
+        [
+          "ok",
+          45,
+          0,
+          0
+        ],
+        [
+          "ok",
+          56,
+          0,
+          0
+        ],
+        [
+          "ok",
+          55,
+          0,
+          0
+        ],
+        [
+          "ok",
+          55,
+          0,
+          0
+        ],
+        [
+          "ok",
+          19,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          1
+        ],
+        [
+          "ok",
+          10,
+          0,
+          1
+        ],
+        [
+          "ok",
+          29,
+          0,
+          1
+        ],
+        [
+          "ok",
+          34,
+          0,
+          1
+        ],
+        [
+          "ok",
+          29,
+          0,
+          1
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          9,
+          0,
+          2
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          9,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          16,
+          0,
+          1
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          1
+        ],
+        [
+          "ok",
+          17,
+          0,
+          0
+        ],
+        [
+          "ok",
+          18,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          3
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          15,
+          0,
+          0
+        ],
+        [
+          "ok",
+          10,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          18,
+          0,
+          0
+        ],
+        [
+          "ok",
+          15,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          21,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          9,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          1
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          10,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          0
+        ],
+        [
+          "ok",
+          25,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          2
+        ],
+        [
+          "ok",
+          0,
+          0,
+          6
+        ],
+        [
+          "ok",
+          2,
+          0,
+          1
+        ],
+        [
+          "ok",
+          1,
+          0,
+          1
+        ],
+        [
+          "ok",
+          5,
+          0,
+          5
+        ],
+        [
+          "ok",
+          0,
+          0,
+          7
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          31,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          24,
+          0,
+          0
+        ],
+        [
+          "ok",
+          23,
+          0,
+          0
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          10
+        ],
+        [
+          "ok",
+          5,
+          0,
+          14
+        ],
+        [
+          "ok",
+          12,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          14,
+          0,
+          0
+        ],
+        [
+          "ok",
+          26,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          1
+        ],
+        [
+          "ok",
+          13,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          1
+        ],
+        [
+          "ok",
+          3,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          1
+        ],
+        [
+          "ok",
+          14,
+          0,
+          0
+        ],
+        [
+          "ok",
+          16,
+          0,
+          0
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          17,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          7,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          5,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          6,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          4
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          20,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          6
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          26,
+          0,
+          1
+        ],
+        [
+          "ok",
+          10,
+          0,
+          1
+        ],
+        [
+          "ok",
+          20,
+          0,
+          0
+        ],
+        [
+          "ok",
+          29,
+          0,
+          0
+        ],
+        [
+          "ok",
+          24,
+          0,
+          0
+        ],
+        [
+          "ok",
+          22,
+          0,
+          0
+        ],
+        [
+          "ok",
+          11,
+          0,
+          0
+        ],
+        [
+          "ok",
+          17,
+          0,
+          0
+        ],
+        [
+          "ok",
+          4,
+          0,
+          1
+        ],
+        [
+          "ok",
+          16,
+          0,
+          0
+        ],
+        [
+          "ok",
+          8,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          7,
+          0,
+          1
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          0
+        ],
+        [
+          "ok",
+          1,
+          0,
+          0
+        ],
+        [
+          "ok",
+          34,
+          0,
+          0
+        ],
+        [
+          "ok",
+          16,
+          0,
+          0
+        ],
+        [
+          "ok",
+          0,
+          0,
+          5
+        ],
+        [
+          "ok",
+          0,
+          0,
+          8
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "q14",
+      "label": "qa-script-tests",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-q14-attempt-01.json",
+      "sha256": "14fd4dec770163e984a2e7131b9e12a226f289200c1f08fa7afcd00f349e1e27",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "bash",
+        "benchmarks/scripts/test-scripts.sh"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "f9e8bb4ddea7c2964d89a901f3b7fecff8c7ee5658ad5e1fe4b55ef03f9e5b05",
+      "listed_tests": 0,
+      "passed_tests": 0,
+      "test_results": [],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "t02",
+      "label": "counter-target-stable",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-t02-attempt-01.json",
+      "sha256": "9049441f28766e4cc1bef224dc993a29b8309c07664b93a3e989a96330e695e0",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "segment::reader::stored_blocks_reader_tests::certificate_retains_flat_offsets_and_hot_path_is_direct",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "5f174c3c25715d588ff428782a852595d86c343d87d95a87946a422f6b80e9cd",
+      "listed_tests": 0,
+      "passed_tests": 1,
+      "test_results": [
+        [
+          "ok",
+          1,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "t03",
+      "label": "counter-target-msrv",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-t03-attempt-01.json",
+      "sha256": "c5e2fd70ff5010ccbac6a52bc41009c15fc7e28730fe14b82f30579aa0b7774c",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.85.0",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "segment::reader::stored_blocks_reader_tests::certificate_retains_flat_offsets_and_hot_path_is_direct",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "040fb76cb16cffe1ab29d6326380e62c1e3728262875dd8d37101a3d25be7820",
+      "listed_tests": 0,
+      "passed_tests": 1,
+      "test_results": [
+        [
+          "ok",
+          1,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "t04",
+      "label": "counter-target-msrv-all-features",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-t04-attempt-01.json",
+      "sha256": "e47828085c6c413e86aed66d86693e00d7a6224c8790f01c8860466a8a0c842d",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.85.0",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "--all-features",
+        "segment::reader::stored_blocks_reader_tests::certificate_retains_flat_offsets_and_hot_path_is_direct",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "bfb5d6e369843386fb8622cc470383928ad5958cbd7c00dd376520d716059868",
+      "listed_tests": 0,
+      "passed_tests": 1,
+      "test_results": [
+        [
+          "ok",
+          1,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "t05",
+      "label": "counter-module-serial",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-t05-attempt-01.json",
+      "sha256": "bc2fa2681e1c353163b7c78cca13d38ed48815f47333eafa9afbf15ebf987e77",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "segment::reader::stored_blocks_reader_tests::",
+        "--",
+        "--test-threads=1"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "a27128fdcc6262780b0303177fd9dbbace5eeeb4e8200226db4f5f9ba98a1fd6",
+      "listed_tests": 0,
+      "passed_tests": 9,
+      "test_results": [
+        [
+          "ok",
+          9,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "t06",
+      "label": "counter-module-parallel",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-t06-attempt-01.json",
+      "sha256": "1302f2f9949c75260e51b12ceac3c077bac3a84b420f90a8c66603b568571e32",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "segment::reader::stored_blocks_reader_tests::",
+        "--",
+        "--test-threads=8"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "856973e518da6856be0e5a422547bc02f1d0e5b142e4a9c2ed3a27e360ce3f61",
+      "listed_tests": 0,
+      "passed_tests": 9,
+      "test_results": [
+        [
+          "ok",
+          9,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    },
+    {
+      "id": "t07",
+      "label": "counter-module-msrv-all-features",
+      "path": "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-t07-attempt-01.json",
+      "sha256": "644dc4970ee21282a38af4c42d768faa3a88c9a45579cad6985db2db35501e35",
+      "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+      "command": [
+        "cargo",
+        "+1.85.0",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "--all-features",
+        "segment::reader::stored_blocks_reader_tests::",
+        "--",
+        "--test-threads=8"
+      ],
+      "command_exit_code": 0,
+      "source_identity_valid": true,
+      "combined_output_sha256": "09f7237d1ee9a55ede7aa29138933edb2cb3b594b4dc8ad52f79eb59abfa91a6",
+      "listed_tests": 0,
+      "passed_tests": 9,
+      "test_results": [
+        [
+          "ok",
+          9,
+          0,
+          0
+        ]
+      ],
+      "coverage_total_line": null,
+      "classification": "PASS"
+    }
+  ]
+}

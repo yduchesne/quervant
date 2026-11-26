@@ -1,0 +1,43 @@
+{
+  "schema": "quervant-perf06-c2-f1-a2-receipt-v1",
+  "mode": "pinned",
+  "receipt_location": "repository-evidence",
+  "command": [
+    "cargo",
+    "+1.98.1",
+    "test",
+    "-p",
+    "quervant-core",
+    "--lib",
+    "search::execute::c2_physical_tests::",
+    "--",
+    "--list",
+    "--format",
+    "terse"
+  ],
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+  "source_commit_after": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+  "source_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "source_patch_base64": "",
+  "helper_scripts_sha256": {
+    "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-record.py": "d1f71971f261d8591bc335ee6f63208b9e4043f26c3231377d8a16b60f0e50f0",
+    "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-source-freeze.py": "1fdd7fdcb46049d883ece1c40090932fd9460eb60bc1c57b7a038910f67d619b"
+  },
+  "known_foreign_artifact_sha256_before": "c286db999aeaf3943fdb3f731cf823a9336eedc79311fa77254a66976ea3e7c7",
+  "known_foreign_artifact_sha256_after": "c286db999aeaf3943fdb3f731cf823a9336eedc79311fa77254a66976ea3e7c7",
+  "environment_keys_removed": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE",
+    "RUST_TEST_THREADS"
+  ],
+  "started_utc": "2026-11-26T20:49:34.353872+00:00",
+  "ended_utc": "2026-11-26T20:49:34.437365+00:00",
+  "command_exit_code": 0,
+  "launch_error": null,
+  "source_identity_valid": true,
+  "source_identity_error": null,
+  "combined_output_encoding": "base64",
+  "combined_output_sha256": "f0e4f6c394bc8c1419dc0d2f712a1d6c6a85af378e13114d0362ab09c21226f5",
+  "combined_output_base64": "ICAgIEZpbmlzaGVkIGB0ZXN0YCBwcm9maWxlIFt1bm9wdGltaXplZCArIGRlYnVnaW5mb10gdGFyZ2V0KHMpIGluIDAuMDZzCiAgICAgUnVubmluZyB1bml0dGVzdHMgc3JjL2xpYi5ycyAodGFyZ2V0L2RlYnVnL2RlcHMvcXVlcnZhbnRfY29yZS00YmNlMDVkZWU0ZTRmZWQ0KQpzZWFyY2g6OmV4ZWN1dGU6OmMyX3BoeXNpY2FsX3Rlc3RzOjpjMl9wMDFfc2hhcGVfbWlzbWF0Y2hfZmFpbHNfY2xvc2VkOiB0ZXN0CnNlYXJjaDo6ZXhlY3V0ZTo6YzJfcGh5c2ljYWxfdGVzdHM6OmMyX3AwMl9pbnBsYWNlX3JldXNlX2FuZF9jYWxsYmFja19vcmRlcjogdGVzdApzZWFyY2g6OmV4ZWN1dGU6OmMyX3BoeXNpY2FsX3Rlc3RzOjpjMl9wMDNfY29ycnVwdF9wb3N0aW5nc19wcmVjZWRlX2V2ZXJ5X2NhbGxiYWNrOiB0ZXN0CnNlYXJjaDo6ZXhlY3V0ZTo6YzJfcGh5c2ljYWxfdGVzdHM6OmMyX3AwNF9sYXRlX3Njb3JlX2ZhdWx0X3ByZWNlZGVzX2NvcnJ1cHRfZG9jX2tleXM6IHRlc3QKc2VhcmNoOjpleGVjdXRlOjpjMl9waHlzaWNhbF90ZXN0czo6YzJfcDA1X25fZXhhbWluYXRpb25fYW5kX3NjYW5uZWRfZnJlcXVlbmN5OiB0ZXN0Cg=="
+}

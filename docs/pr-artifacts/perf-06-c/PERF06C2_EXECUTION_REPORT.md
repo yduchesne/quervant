@@ -547,3 +547,13 @@ PR #131 is open and unmerged, the strict-term executor and all amended F1/A1
 acceptance cases are implemented and verified, G7 remains blocked on two
 maintainer-owned decisions (frozen-artifact whitespace and a pre-existing test
 flake), and G10 (independent review/merge) is open. No performance claim is made.
+
+## Current status pointer (2026-11-26, A2)
+
+This report is historical. Current state, gates and evidence live in
+[PERF06C2F1_A2_EXECUTION_REPORT.md](PERF06C2F1_A2_EXECUTION_REPORT.md): PR #131 is
+open and unmerged, the strict-term executor and every amended acceptance case are
+implemented and verified, the pre-existing certificate test-counter interference is
+closed by a test-only thread-local repair, and G7 remains blocked solely on the
+human decision about exactly 81 whitespace diagnostics in 41 frozen artifacts. G10
+(independent review/merge) is open; no performance claim is made.

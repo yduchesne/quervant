@@ -282,3 +282,32 @@ query segment order (34-document slice first) and compact-short positional
   **unmerged** with its observed readiness flag preserved; G10 independent
   review/maintainer acceptance is open; C3/C4 are unstarted and no performance claim
   is made.
+
+## PERF-06-C2-F1-A2 closeout (2026-11-26)
+
+The approved
+[PERF06C2F1_A2_CLOSEOUT_PLAN.md](../perf-06-c/PERF06C2F1_A2_CLOSEOUT_PLAN.md) finished
+the F1/A1 closeout. Results:
+[PERF06C2F1_A2_EXECUTION_REPORT.md](../perf-06-c/PERF06C2F1_A2_EXECUTION_REPORT.md).
+
+- **Certificate counter interference CLOSED BY REPAIR.** Test-only observation is now
+  thread-local (`stored_blocks.rs` `Cell` in the existing `thread_local!` block), the
+  single real build site calls the helper, and the existing test gained a
+  deterministic sibling-thread regression: the worker builds a real certificate
+  (delta 1) while the parent observes delta 0 before its own first access (delta 1),
+  with every original hot-path assertion and the warm no-rebuild equality retained.
+  The retired global mechanism fails red-first (`exit 101`, left 1 / right 0); the
+  final state passes T02–T07 (stable, MSRV, MSRV+all-features, and the nine-test
+  module serial/8-thread/MSRV).
+- **Frozen C2 acceptance re-executed on immutable A2_TESTED:** U17 (five B3 rows +
+  structural), U21 (86/87/99/100 + three recoveries), U12 (nine rows, `completed=9`),
+  P05 (six exact rows), I08 (exact resources + complete retry parity); inventories
+  24/5/9/39 and nine reader tests; all local QA and both coverage gates pass
+  (93.33 % / 92.91 % lines).
+- **Normal builds unchanged:** `execute.rs`, `unified.rs` and the integration tests are
+  byte-identical to A2_START, verified by the supplied exact checker in both regimes.
+- **G7 remains BLOCKED** solely on the human decision about exactly 81 whitespace
+  diagnostics in 41 unchanged frozen artifacts (A2's own range is 0). Delivery,
+  reports and the PR body are corrected; PR #131 stays open and **unmerged** with its
+  observed readiness preserved; G10 is open; C3/C4 are unstarted and no performance
+  claim is made.

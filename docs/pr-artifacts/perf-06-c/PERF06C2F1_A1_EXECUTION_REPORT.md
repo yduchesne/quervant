@@ -343,3 +343,51 @@ prove performance (C4 owns it). C3/C4 unstarted.
   of the pre-existing `stored_blocks_reader_tests` counter flake; (3) independent
   review and merge (G10).
 - No benchmark, profiler, latency measurement or C3/C4 work was executed.
+
+## PERF-06-C2-F1-A2 correction and superseding status (2026-11-26)
+
+This section is append-only; every preceding byte of this report is preserved. It
+supersedes the A1 statements listed below. The current record is the
+[A2 report](PERF06C2F1_A2_EXECUTION_REPORT.md).
+
+1. **The delivered A1 implementation does complete the previously blocked cases.**
+   U17 (five B3 rows + structural row), U21 (caps 86/87/99/100 with three
+   recoveries) and U12 (nine rows, `completed=9`) all execute and pass on the A1 and
+   A2 sources; no D14 fixture amendment remains open.
+2. **Whitespace arithmetic corrected.** At the historical receipt SHA the first
+   range count was **36**, not 23 (the report's summary said 23). At A2_START the
+   three old ranges measure **62 / 26 / 81**, where the 81 is Appendix A's 55 frozen
+   diagnostics in 40 artifacts plus the 26 in this series' self-quoting
+   `c2-f1-a1-whitespace-range.txt`. Those 26 are a **separate frozen scope**:
+   approval of the original 55 alone does not close G7. A2's own range is **0**.
+3. **A1 coverage receipts.** The reported A1 totals were arithmetic-consistent but
+   their raw local receipts were never delivered and are now unavailable. Current
+   acceptance comes from the fresh A2 measurement (lines 74398 total / 69434 covered
+   / 4964 missed / 93.33 % default; 75907 / 70527 / 5380 / 92.91 % all features),
+   which is a new measurement, not a reconstruction of A1.
+4. **Source-freeze limits.** The A1 freeze receipt lacked its exact checker script
+   and a dirty-source hash. The new `c2-f1-a2-source-freeze.py` supplies both
+   regimes now; this does not invent the missing historical provenance.
+5. **G9 was partial, not PASS.** Until the report corrections, the delivered local
+   receipts, the live PR-body update and the outside-checkout terminal package were
+   corrected, G9 was partial/blocked. The A1 report's `G9 PASS` therefore overstated
+   delivery; §11 of the A2 report records the actual delivery evidence.
+6. **Terminal and baseline recovery.** The A1 terminal receipt was recovered from the
+   execution environment and is attached to the A2 terminal package (13 288 bytes,
+   SHA-256 `1482e2ea651bcad26a43de44fe57c983259a4410a5215d7f02d2e600fa3f7e5b`) with
+   its original generation timestamp; it was not regenerated. The A1
+   `c2-f1-a1-baseline-*` receipts are unavailable and are qualified rather than
+   backdated.
+7. **Counter flake reclassified.** The failure was interference in a **process-global
+   test counter** (`crt::segment::stored_blocks::CERTIFICATE_BUILDS`), not a
+   thread-local counter race. A2 repairs it (thread-local observation, deterministic
+   sibling-thread regression) and proves the retired mechanism's failure red-first;
+   the historical FAIL-then-PASS remains recorded and is not retroactively waived.
+8. **U12 wording.** The identical-Legacy-error claim applies to the real-byte rows
+   (D0/D29/D31/P29/P29+D0/C0/C29/C29+P29+D0). `S29+D0` is the synthetic
+   `INJECTED_C2_ONLY` row with unarmed shared-fault controls; it claims no equivalent
+   Legacy score injection. U21's three required post-failure recoveries are distinct
+   from its additional benign success follow-up call.
+9. **Readiness.** The PR's observed readiness is `draft=false`; earlier text implying a
+   draft state is historical. Workflow head, merge checkout, tested source,
+   intermediate documentation commits and the delivered H are separate identities.
