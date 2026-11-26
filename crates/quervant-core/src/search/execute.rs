@@ -3036,66 +3036,173 @@ mod c2_physical_tests {
                 *flag = false;
             }
         }
+        let expected_live: Vec<u64> = vec![1, 2, 4, 5, 7, 8, 10, 11, 13, 14, 16, 17, 19];
+        assert_eq!(
+            (0..live.len() as u64)
+                .filter(|doc| live[*doc as usize])
+                .collect::<Vec<u64>>(),
+            expected_live,
+            "the effective-live mask is the deterministic test input"
+        );
         let live_rows: Vec<Rc<Vec<bool>>> = vec![Rc::new(live.clone())];
         let readers = [reader];
         let inputs = strict_inputs(&readers, &live_rows[0]);
-        // Exact work/scanned boundaries: the N examination is the effective-live
-        // count, and each decoded posting charges its own frequency.
-        let scan_limit = 10u64;
-        let mut budget = make_budget();
-        let mut strict_meter = MixedWorkMeter::new(u64::MAX, u64::MAX, scan_limit, &NeverCancel);
-        let mut matched = 0usize;
-        let error = visit_strict_term_scored_with(
-            reader,
-            &inputs.leaves,
-            &inputs.expansion,
-            &inputs.stats,
-            &inputs.positive,
-            0,
-            &live,
-            &mut budget,
-            &mut strict_meter,
-            &NeverCancel,
-            |_, _, _, _| {
-                matched += 1;
-                Ok(())
-            },
-        )
-        .map(|()| matched);
-        // The scanned-positives cap is charged during decode, so this must fail
-        // before any callback regardless of the exact limit chosen.
-        match error {
-            Ok(count) => {
-                assert!(count > 0);
-            }
-            Err(SearchError::ResourceLimit { .. }) => {
-                assert_eq!(matched, 0, "decode failure precedes callbacks");
-            }
-            Err(other) => panic!("unexpected {other:?}"),
+
+        // Every direct evaluator call gets a fresh meter starting at zero; the
+        // prepared inputs above used their own, separate meter.
+        //   scanned postings: 20 physical postings of frequency 1
+        //   N examination:    13 effective-live documents
+        //   work units:       20 * (1 + 1) + 13 = 53
+        struct Row {
+            total: u64,
+            scanned: u64,
+            /// `None` means success; `Some((limit, requested))` is the exact
+            /// ResourceLimit payload.
+            failure: Option<(u64, u64)>,
+            callbacks: usize,
+            meter_total: u64,
         }
-        // A generous meter sees exactly the effective-live matches.
-        let mut budget = make_budget();
-        let mut meter = make_meter();
-        let mut count = 0usize;
-        visit_strict_term_scored_with(
-            reader,
-            &inputs.leaves,
-            &inputs.expansion,
-            &inputs.stats,
-            &inputs.positive,
-            0,
-            &live,
-            &mut budget,
-            &mut meter,
-            &NeverCancel,
-            |_, _, _, _| {
-                count += 1;
-                Ok(())
+        let rows = [
+            Row {
+                total: u64::MAX,
+                scanned: 10,
+                failure: Some((10, 11)),
+                callbacks: 0,
+                meter_total: 20,
             },
-        )
-        .expect("strict evaluation");
-        let expected = live.iter().filter(|flag| **flag).count();
-        assert_eq!(count, expected);
+            Row {
+                total: u64::MAX,
+                scanned: 19,
+                failure: Some((19, 20)),
+                callbacks: 0,
+                meter_total: 38,
+            },
+            Row {
+                total: u64::MAX,
+                scanned: 20,
+                failure: None,
+                callbacks: 13,
+                meter_total: 53,
+            },
+            Row {
+                total: u64::MAX,
+                scanned: 21,
+                failure: None,
+                callbacks: 13,
+                meter_total: 53,
+            },
+            Row {
+                total: 52,
+                scanned: 20,
+                failure: Some((52, 53)),
+                callbacks: 0,
+                meter_total: 40,
+            },
+            Row {
+                total: 53,
+                scanned: 20,
+                failure: None,
+                callbacks: 13,
+                meter_total: 53,
+            },
+        ];
+
+        for row in rows {
+            let mut budget = make_budget();
+            let mut meter = MixedWorkMeter::new(row.total, u64::MAX, row.scanned, &NeverCancel);
+            let mut observed: Vec<u64> = Vec::new();
+            let result = visit_strict_term_scored_with(
+                reader,
+                &inputs.leaves,
+                &inputs.expansion,
+                &inputs.stats,
+                &inputs.positive,
+                0,
+                &live,
+                &mut budget,
+                &mut meter,
+                &NeverCancel,
+                |doc_id, score, matched, _| {
+                    assert_eq!(matched, 13, "matched count is the live count");
+                    assert!(score.is_finite(), "the score is finite");
+                    observed.push(doc_id);
+                    Ok(())
+                },
+            );
+            assert_eq!(
+                meter.total_used(),
+                row.meter_total,
+                "total work for total={} scanned={}",
+                row.total,
+                row.scanned
+            );
+            assert_eq!(
+                observed.len(),
+                row.callbacks,
+                "completed callbacks for total={} scanned={}",
+                row.total,
+                row.scanned
+            );
+            match row.failure {
+                Some((limit, requested)) => {
+                    let error = result.expect_err("this row must be rejected");
+                    match error {
+                        SearchError::ResourceLimit {
+                            limit: got_limit,
+                            requested: got_requested,
+                        } => assert_eq!(
+                            (got_limit, got_requested),
+                            (limit, requested),
+                            "exact resource payload"
+                        ),
+                        other => {
+                            panic!("expected ResourceLimit {{{limit}, {requested}}}, got {other:?}")
+                        }
+                    }
+                }
+                None => {
+                    result.expect("this row must succeed");
+                    assert_eq!(observed, expected_live, "exact live doc-id order");
+                }
+            }
+            // The ledger returned to zero in every outcome.
+            assert_eq!(budget.segment_entries, 0, "segment entries released");
+            assert_eq!(budget.segment_bytes, 0, "segment bytes released");
+            assert_eq!(budget.global_bytes, 0, "global bytes released");
+            eprintln!(
+                "C2-F1 P05: total={} scanned={} failure={:?} callbacks={} work={}",
+                row.total, row.scanned, row.failure, row.callbacks, row.meter_total
+            );
+            // A rejected admission must leave the *same* budget reusable.
+            let mut recovery = make_meter_with(53, 20);
+            let mut recovered: Vec<u64> = Vec::new();
+            visit_strict_term_scored_with(
+                reader,
+                &inputs.leaves,
+                &inputs.expansion,
+                &inputs.stats,
+                &inputs.positive,
+                0,
+                &live,
+                &mut budget,
+                &mut recovery,
+                &NeverCancel,
+                |doc_id, _, _, _| {
+                    recovered.push(doc_id);
+                    Ok(())
+                },
+            )
+            .expect("the same budget admits the recovery run");
+            assert_eq!(recovered, expected_live, "recovery doc-id order");
+            assert_eq!(recovery.total_used(), 53, "recovery work");
+            assert_eq!(budget.segment_entries, 0);
+            assert_eq!(budget.segment_bytes, 0);
+            assert_eq!(budget.global_bytes, 0);
+        }
+    }
+
+    fn make_meter_with(total: u64, scanned: u64) -> MixedWorkMeter<'static> {
+        MixedWorkMeter::new(total, u64::MAX, scanned, &NeverCancel)
     }
 }
 

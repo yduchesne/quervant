@@ -1491,6 +1491,10 @@ fn collect_strict_term_ordinal_body<'a>(
                     } else {
                         KeyBinder::Fallback
                     };
+                    #[cfg(test)]
+                    if matches!(key_binder, KeyBinder::Fallback) {
+                        c2_observation::record_owned_key_fallback_segment(segment_index);
+                    }
                 }
                 let audit = ordinal_heap_audit
                     .as_mut()
@@ -1545,6 +1549,8 @@ fn collect_strict_term_ordinal_body<'a>(
                 )
             },
         )?;
+        #[cfg(test)]
+        c2_observation::record_collected_segment(segment_index, heap.len(), *total_hits);
         // Drop the geo allocations first; their batch reservations are released
         // only after the backing buffers are gone (accepted order).
         drop(typed_geo);
@@ -3775,18 +3781,49 @@ pub(crate) mod b3_observation {
 /// score and budgets against the accepted Legacy body.
 #[cfg(test)]
 pub(crate) mod c2_observation {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     thread_local! {
         static STRICT_ROUTES: Cell<usize> = const { Cell::new(0) };
         static LEGACY_ROUTES: Cell<usize> = const { Cell::new(0) };
         static FORCE_LEGACY: Cell<bool> = const { Cell::new(false) };
+        static OWNED_KEY_FALLBACK_SEGMENTS: RefCell<Vec<usize>> =
+            const { RefCell::new(Vec::new()) };
+        static COLLECTED_SEGMENTS: RefCell<Vec<(usize, usize, u64)>> =
+            const { RefCell::new(Vec::new()) };
     }
 
     pub(crate) fn reset() {
         STRICT_ROUTES.with(|value| value.set(0));
         LEGACY_ROUTES.with(|value| value.set(0));
         FORCE_LEGACY.with(|value| value.set(false));
+        OWNED_KEY_FALLBACK_SEGMENTS.with(|value| value.borrow_mut().clear());
+        COLLECTED_SEGMENTS.with(|value| value.borrow_mut().clear());
+    }
+
+    /// PERF-06-C2-F1: this segment's only key-identity attempt was refused, so the
+    /// accepted owned B2 key handler ran for it.
+    pub(crate) fn record_owned_key_fallback_segment(segment_index: usize) {
+        OWNED_KEY_FALLBACK_SEGMENTS.with(|value| value.borrow_mut().push(segment_index));
+    }
+
+    pub(crate) fn owned_key_fallback_segments() -> Vec<usize> {
+        OWNED_KEY_FALLBACK_SEGMENTS.with(|value| value.borrow().clone())
+    }
+
+    /// PERF-06-C2-F1: a segment completed collection with this heap length and
+    /// cumulative hit count. Recorded after the evaluator returned successfully and
+    /// before the segment's cleanup, never for a failed segment.
+    pub(crate) fn record_collected_segment(segment_index: usize, heap_len: usize, total_hits: u64) {
+        COLLECTED_SEGMENTS.with(|value| {
+            value
+                .borrow_mut()
+                .push((segment_index, heap_len, total_hits));
+        });
+    }
+
+    pub(crate) fn collected_segments() -> Vec<(usize, usize, u64)> {
+        COLLECTED_SEGMENTS.with(|value| value.borrow().clone())
     }
 
     pub(crate) fn strict_routes() -> usize {
@@ -11339,6 +11376,7 @@ mod c2_tests {
     use crate::contract::value::{FieldType, FieldValue, GeoPoint, JsonNumber, JsonValue};
     use crate::index::{Index, IndexLimits, ReaderSnapshot};
     use crate::storage::{Directory, MemoryDirectory};
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -11707,6 +11745,196 @@ mod c2_tests {
 
     fn expected_ascending_keys(count: usize, top_k: usize) -> Vec<String> {
         (0..count.min(top_k)).map(bounded_key).collect()
+    }
+
+    // -----------------------------------------------------------------------
+    // PERF-06-C2-F1 shared test helpers
+    // -----------------------------------------------------------------------
+
+    /// Thread-local B3 probe guard. Install it *before* arming a probe and keep it
+    /// until every counter assertion has run, so a panic cannot leave a stale probe
+    /// behind for another test on this worker.
+    struct B3ProbeReset;
+
+    impl B3ProbeReset {
+        fn new() -> Self {
+            crate::segment::reader::clear_b3_probe();
+            Self
+        }
+    }
+
+    impl Drop for B3ProbeReset {
+        fn drop(&mut self) {
+            crate::segment::reader::clear_b3_probe();
+        }
+    }
+
+    /// The explicit `Prefilter`/threshold-4 duplicate configuration. `K < 4`
+    /// resolves to the existing internal `Linear` mode, the only mode that attempts
+    /// the optional compact key directory.
+    fn linear_config() -> TopKDuplicateConfig {
+        TopKDuplicateConfig::new(
+            NonZeroUsize::new(4).expect("four"),
+            TopKDuplicateStrategy::Prefilter,
+        )
+    }
+
+    /// The distinct `ExactSet` control: it never attempts the key directory.
+    fn exact_set_config_threshold_one() -> TopKDuplicateConfig {
+        TopKDuplicateConfig::new(
+            NonZeroUsize::new(1).expect("one"),
+            TopKDuplicateStrategy::ExactSet,
+        )
+    }
+
+    /// The same request/snapshot/limits/config forced onto the accepted Legacy body.
+    fn forced_legacy_with(
+        fixture: &Fixture,
+        request: &UnifiedRequest,
+        limits: SearchLimits,
+        config: TopKDuplicateConfig,
+    ) -> SearchResult<UnifiedResponse> {
+        reset_witnesses();
+        let result = {
+            let _forced = c2_observation::ForceLegacy::apply();
+            run_with(fixture, request, limits, config)
+        };
+        assert_eq!(c2_observation::strict_routes(), 0, "forced legacy route");
+        assert_eq!(c2_observation::legacy_routes(), 1, "forced legacy body");
+        assert_eq!(
+            physical::strict_evaluator_calls(),
+            0,
+            "no C2 evaluator call"
+        );
+        result
+    }
+
+    // --- bounded copied-container fixtures -------------------------------
+
+    /// A validated copy of one committed segment used for byte-exact bounded
+    /// mutations. The original snapshot and committed storage are never touched.
+    struct CopiedSegment {
+        doc_count: u64,
+        required: Vec<(u16, u16)>,
+        optional: Vec<(u16, u16)>,
+        sections: Vec<(crate::segment::SectionKind, u16, u64, Vec<u8>)>,
+    }
+
+    impl CopiedSegment {
+        fn parse(pristine: &[u8]) -> Self {
+            let view = crate::segment::parse_container(
+                pristine,
+                &crate::segment::SegmentLimits::default(),
+            )
+            .expect("container");
+            Self {
+                doc_count: view.doc_count(),
+                required: view.required_features().to_vec(),
+                optional: view.optional_features().to_vec(),
+                sections: view
+                    .sections()
+                    .iter()
+                    .map(|entry| {
+                        (
+                            entry.kind,
+                            entry.flags,
+                            entry.aux,
+                            view.body(entry.kind).expect("section body").to_vec(),
+                        )
+                    })
+                    .collect(),
+            }
+        }
+
+        fn body_mut(&mut self, kind: crate::segment::SectionKind) -> &mut Vec<u8> {
+            &mut self
+                .sections
+                .iter_mut()
+                .find(|(section, _, _, _)| *section == kind)
+                .expect("section present")
+                .3
+        }
+
+        /// Rebuild a checksum-valid container preserving the kind, document count,
+        /// required/optional features, section order, flags and aux bytes; only the
+        /// section bodies the caller mutated differ.
+        fn rebuild(&self) -> Vec<u8> {
+            let mut builder = crate::segment::ContainerBuilder::new(
+                crate::segment::ContainerKind::Segment,
+                self.doc_count,
+            );
+            for (id, version) in &self.required {
+                builder.require_feature(*id, *version);
+            }
+            for (id, version) in &self.optional {
+                builder.optional_feature(*id, *version);
+            }
+            for (kind, flags, aux, body) in &self.sections {
+                builder.section(*kind, *flags, *aux, body.clone());
+            }
+            builder.build().expect("checksum-valid rebuild")
+        }
+    }
+
+    /// Wrap rebuilt bytes in a real in-memory snapshot with a deterministic per-row
+    /// identity.
+    fn c2_f1_snapshot(case_id: &str, copied: &CopiedSegment, rebuilt: Vec<u8>) -> ReaderSnapshot {
+        ReaderSnapshot::for_test(
+            vec![crate::index::SegmentSnapshot::new(
+                crate::index::SegmentMeta::new(
+                    format!("c2-f1-{case_id}"),
+                    format!("test/c2-f1-{case_id}"),
+                    quervant_objectstore::ContentDescriptor::of(&rebuilt),
+                    copied.required.clone(),
+                    copied.optional.clone(),
+                    None,
+                ),
+                Arc::new(rebuilt),
+                copied.doc_count,
+            )],
+            crate::segment::SegmentLimits::default(),
+            256 * 1024 * 1024,
+            256 * 1024 * 1024,
+        )
+    }
+
+    /// Run one request against an explicitly supplied snapshot through the real
+    /// searcher, sharing the fixture's schema and registry.
+    fn c2_f1_run_snapshot(
+        fixture: &Fixture,
+        snapshot: &ReaderSnapshot,
+        request: &UnifiedRequest,
+    ) -> SearchResult<UnifiedResponse> {
+        UnifiedSearcher::new(
+            snapshot,
+            &fixture.schema,
+            &fixture.registry,
+            SearchLimits::default(),
+        )
+        .with_topk_duplicate_config(TopKDuplicateConfig::default())
+        .search(request, &Budgets::new(), &NeverCancel)
+    }
+
+    /// The same request against an arbitrary snapshot, forced onto Legacy.
+    fn c2_f1_forced_legacy_on_snapshot(
+        fixture: &Fixture,
+        snapshot: &ReaderSnapshot,
+        request: &UnifiedRequest,
+        expect_route: bool,
+    ) -> SearchResult<UnifiedResponse> {
+        reset_witnesses();
+        let result = {
+            let _forced = c2_observation::ForceLegacy::apply();
+            c2_f1_run_snapshot(fixture, snapshot, request)
+        };
+        assert_eq!(c2_observation::strict_routes(), 0, "no strict route");
+        assert_eq!(
+            c2_observation::legacy_routes(),
+            usize::from(expect_route),
+            "legacy route expectation"
+        );
+        assert_eq!(physical::strict_evaluator_calls(), 0, "no evaluator");
+        result
     }
 
     // -----------------------------------------------------------------------
@@ -12760,6 +12988,10 @@ mod c2_tests {
     #[test]
     fn c2_u17_ordinal_unavailable_and_b3_refusal() {
         use crate::index::KeywordOrdinalUnavailable;
+        use crate::segment::reader::{
+            B3Probe, B3ProbeOutcome, b3_build_attempts, b3_directory_builds,
+            b3_preflight_fallbacks, reset_b3_counters, set_b3_probe,
+        };
 
         // The physical route requires a `Ready` request-wide map: every documented
         // optional outcome maps to `None`, which can never satisfy the route's
@@ -12777,33 +13009,238 @@ mod c2_tests {
                 "{reason:?} must not produce a map"
             );
         }
-
         // A genuine B1 error is never converted into `NotAvailable`.
         let mapped = ordinal_preparation_error(crate::index::IndexError::Cancelled);
         assert!(matches!(mapped, SearchError::Cancelled), "{mapped:?}");
         let mapped = ordinal_preparation_error(crate::index::IndexError::WriterBusy);
         assert!(matches!(mapped, SearchError::Index(_)), "{mapped:?}");
 
-        // B3 optional refusal keeps C2 and downgrades only that segment to the
-        // owned B2 key handler; the public answer is unchanged.
-        let fixture = Fixture::new(&[documents(40)]);
-        let request = request_asc(term_common(), 3);
-        reset_witnesses();
-        let refused = run_ineligible(&fixture, &request).expect("search");
-        assert_eq!(c2_observation::strict_routes(), 1);
-        let reference = forced_legacy(&fixture, &request);
-        assert_eq!(projected(&refused), projected(&reference));
+        // -------------------------------------------------------------------
+        // F1-I02: an actual, injected per-segment B3 allocation refusal.
+        // -------------------------------------------------------------------
 
-        // ExactSet duplicate mode forces the owned B2 path for every segment.
-        let config = TopKDuplicateConfig::new(
-            std::num::NonZeroUsize::new(1).expect("nonzero"),
-            TopKDuplicateStrategy::ExactSet,
-        );
-        reset_witnesses();
-        let exact_set = run_with(&fixture, &request, SearchLimits::default(), config)
-            .expect("exact-set search");
-        assert_eq!(c2_observation::strict_routes(), 1, "ExactSet stays C2");
-        assert_eq!(projected(&exact_set), projected(&reference));
+        #[allow(clippy::too_many_arguments)]
+        fn assert_refusal_response(
+            fixture: &Fixture,
+            request: &UnifiedRequest,
+            config: TopKDuplicateConfig,
+            segments: usize,
+            builds: u64,
+            directories: u64,
+            refusals: u64,
+            fallbacks: Vec<usize>,
+            collected: Vec<(usize, usize, u64)>,
+            response: &UnifiedResponse,
+        ) {
+            assert_eq!(
+                c2_observation::strict_routes(),
+                1,
+                "the request stays on C2"
+            );
+            assert_eq!(c2_observation::legacy_routes(), 0, "no Legacy replay");
+            assert_eq!(
+                physical::strict_evaluator_calls(),
+                segments,
+                "one evaluator call per segment"
+            );
+            assert_eq!(physical::converted_rows(), 40);
+            assert_eq!(physical::callbacks(), 40, "every match completed");
+            assert_eq!(b2_observation::numeric_candidates(), 40);
+            assert_eq!(b2_observation::bound_columns(), segments);
+            assert_eq!(b3_build_attempts(), builds, "directory build attempts");
+            assert_eq!(b3_directory_builds(), directories, "published directories");
+            assert_eq!(b3_preflight_fallbacks(), refusals, "optional refusals");
+            assert_eq!(
+                c2_observation::owned_key_fallback_segments(),
+                fallbacks,
+                "recorded owned-key fallback segments"
+            );
+            assert_eq!(c2_observation::collected_segments(), collected);
+            assert_eq!(response.total_hits, 40);
+            assert_eq!(
+                keys(response),
+                vec![bounded_key(0), bounded_key(1), bounded_key(2)]
+            );
+            assert!(response.next_cursor.is_some());
+            eprintln!(
+                "C2-F1 U17 refusal: segments={segments} attempts={builds} directories={directories} refusals={refusals} fallbacks={fallbacks:?} collected={collected:?}"
+            );
+            // Complete-response parity against forced Legacy of the same request,
+            // snapshot and duplicate configuration.
+            let reference = forced_legacy_with(fixture, request, SearchLimits::default(), config)
+                .expect("forced Legacy reference");
+            assert_eq!(projected(response), projected(&reference));
+            assert_eq!(response.total_hits, reference.total_hits);
+            assert_eq!(response.generation, reference.generation);
+            assert_eq!(response.view_ordinal, reference.view_ordinal);
+            assert_eq!(
+                response.next_cursor.is_some(),
+                reference.next_cursor.is_some()
+            );
+            assert_eq!(response.aggregation, reference.aggregation);
+        }
+
+        let two_segments =
+            || Fixture::new(&[documents(20), documents(40).into_iter().skip(20).collect()]);
+
+        // Case 1: a single segment refuses. Fresh, never-searched fixture so the
+        // sticky key-directory cache cannot mask the probe.
+        {
+            let fixture = Fixture::new(&[documents(40)]);
+            let request = request_asc(term_common(), 3);
+            let config = linear_config();
+            reset_witnesses();
+            b2_observation::reset();
+            b3_observation::reset();
+            reset_b3_counters();
+            let _probe = B3ProbeReset::new();
+            let fired = std::rc::Rc::new(std::cell::Cell::new(0usize));
+            let counter = std::rc::Rc::clone(&fired);
+            set_b3_probe(B3Probe::BeforeHashAllocation, move || {
+                counter.set(counter.get() + 1);
+                Ok(B3ProbeOutcome::RefuseAllocation)
+            });
+            let response = run_with(&fixture, &request, SearchLimits::default(), config)
+                .expect("a refused segment keeps the C2 route");
+            assert_eq!(fired.get(), 1, "the refusal callback fired exactly once");
+            assert_refusal_response(
+                &fixture,
+                &request,
+                config,
+                1,
+                1,
+                0,
+                1,
+                vec![0],
+                vec![(0, 4, 40)],
+                &response,
+            );
+        }
+
+        // Case 2: the first of two segments refuses; the second still publishes.
+        {
+            let fixture = two_segments();
+            let request = request_asc(term_common(), 3);
+            let config = linear_config();
+            reset_witnesses();
+            b2_observation::reset();
+            b3_observation::reset();
+            reset_b3_counters();
+            let _probe = B3ProbeReset::new();
+            let fired = std::rc::Rc::new(std::cell::Cell::new(0usize));
+            let counter = std::rc::Rc::clone(&fired);
+            set_b3_probe(B3Probe::BeforeHashAllocation, move || {
+                counter.set(counter.get() + 1);
+                Ok(B3ProbeOutcome::RefuseAllocation)
+            });
+            let response = run_with(&fixture, &request, SearchLimits::default(), config)
+                .expect("the second segment stays on C2");
+            assert_eq!(fired.get(), 1);
+            assert_refusal_response(
+                &fixture,
+                &request,
+                config,
+                2,
+                2,
+                1,
+                1,
+                vec![0],
+                vec![(0, 4, 20), (1, 4, 40)],
+                &response,
+            );
+        }
+
+        // Case 3: the first segment publishes, the second refuses.
+        {
+            let fixture = two_segments();
+            let request = request_asc(term_common(), 3);
+            let config = linear_config();
+            reset_witnesses();
+            b2_observation::reset();
+            b3_observation::reset();
+            reset_b3_counters();
+            let _probe = B3ProbeReset::new();
+            let fired = std::rc::Rc::new(std::cell::Cell::new(0usize));
+            let counter = std::rc::Rc::clone(&fired);
+            let rearm = std::rc::Rc::clone(&fired);
+            set_b3_probe(B3Probe::BeforeHashAllocation, move || {
+                counter.set(counter.get() + 1);
+                let inner = std::rc::Rc::clone(&rearm);
+                set_b3_probe(B3Probe::BeforeHashAllocation, move || {
+                    inner.set(inner.get() + 1);
+                    Ok(B3ProbeOutcome::RefuseAllocation)
+                });
+                Ok(B3ProbeOutcome::Continue)
+            });
+            let response = run_with(&fixture, &request, SearchLimits::default(), config)
+                .expect("only the second segment falls back");
+            assert_eq!(fired.get(), 2, "both probes fired");
+            assert_refusal_response(
+                &fixture,
+                &request,
+                config,
+                2,
+                2,
+                1,
+                1,
+                vec![1],
+                vec![(0, 4, 20), (1, 4, 40)],
+                &response,
+            );
+        }
+
+        // Case 4: no refusal at all — both segments publish a directory.
+        {
+            let fixture = two_segments();
+            let request = request_asc(term_common(), 3);
+            let config = linear_config();
+            reset_witnesses();
+            b2_observation::reset();
+            b3_observation::reset();
+            reset_b3_counters();
+            let _probe = B3ProbeReset::new();
+            let response = run_with(&fixture, &request, SearchLimits::default(), config)
+                .expect("ready segments stay on C2");
+            assert_refusal_response(
+                &fixture,
+                &request,
+                config,
+                2,
+                2,
+                2,
+                0,
+                Vec::new(),
+                vec![(0, 4, 20), (1, 4, 40)],
+                &response,
+            );
+        }
+
+        // Case 5: the distinct ExactSet control never attempts the directory, so
+        // both segments take the owned B2 key path without any directory build.
+        {
+            let fixture = two_segments();
+            let request = request_asc(term_common(), 3);
+            let config = exact_set_config_threshold_one();
+            reset_witnesses();
+            b2_observation::reset();
+            b3_observation::reset();
+            reset_b3_counters();
+            let _probe = B3ProbeReset::new();
+            let response = run_with(&fixture, &request, SearchLimits::default(), config)
+                .expect("ExactSet stays on C2");
+            assert_refusal_response(
+                &fixture,
+                &request,
+                config,
+                2,
+                0,
+                0,
+                0,
+                vec![0, 1],
+                vec![(0, 4, 20), (1, 4, 40)],
+                &response,
+            );
+        }
 
         // No eager all-segment ordinal binding: the multi-segment precedence case
         // (later-segment error must not overtake an earlier segment's failure) is
@@ -12818,6 +13255,506 @@ mod c2_tests {
             2,
             "one binding per segment"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U12 — selected/unselected key corruption and multi-fault precedence
+    // -----------------------------------------------------------------------
+
+    #[derive(Clone, Copy, Debug)]
+    enum U12Expected {
+        DocKey,
+        ZeroFrequency,
+        SortColumn,
+        InjectedScore,
+    }
+
+    /// Structural match on the complete variant/wrapper and every specified field.
+    fn assert_u12_error(error: SearchError, expected: U12Expected, row: &str) {
+        match expected {
+            U12Expected::DocKey => assert!(
+                matches!(
+                    error,
+                    SearchError::Segment(crate::segment::SegmentError::InvalidUtf8 {
+                        context: "doc key"
+                    })
+                ),
+                "{row}: {error:?}"
+            ),
+            U12Expected::ZeroFrequency => assert!(
+                matches!(
+                    error,
+                    SearchError::Segment(crate::segment::SegmentError::ZeroFrequency {
+                        doc_id: 29
+                    })
+                ),
+                "{row}: {error:?}"
+            ),
+            U12Expected::SortColumn => assert!(
+                matches!(
+                    error,
+                    SearchError::Index(crate::index::IndexError::Segment(
+                        crate::segment::SegmentError::InvalidUtf8 { context: "keyword" }
+                    ))
+                ),
+                "{row}: {error:?}"
+            ),
+            U12Expected::InjectedScore => assert!(
+                matches!(
+                    error,
+                    SearchError::InvalidScore { detail } if detail == "injected C2 score failure"
+                ),
+                "{row}: {error:?}"
+            ),
+        }
+    }
+
+    /// DOC_KEYS layout guard plus one-byte invalid UTF-8 at record `record`.
+    fn u12_corrupt_doc_key(copied: &mut CopiedSegment, record: usize) {
+        let body = copied.body_mut(crate::segment::SectionKind::DocKeys);
+        assert_eq!(body.len(), 10 + 32 * 11, "DOC_KEYS layout");
+        assert_eq!(&body[0..2], &1u16.to_le_bytes(), "DOC_KEYS version");
+        assert_eq!(&body[2..10], &32u64.to_le_bytes(), "DOC_KEYS count");
+        for index in 0..32usize {
+            let start = 10 + 11 * index;
+            assert_eq!(
+                &body[start..start + 2],
+                &9u16.to_le_bytes(),
+                "record {index} length"
+            );
+            assert_eq!(
+                &body[start + 2..start + 11],
+                bounded_key(index).as_bytes(),
+                "record {index} payload"
+            );
+        }
+        let at = 12 + 11 * record;
+        assert_eq!(body[at], b'd', "target byte is record {record}'s first 'd'");
+        body[at] = 0xFF;
+    }
+
+    /// POSTINGS payload guard plus one-byte zero frequency in the final matching
+    /// posting (`grp/common`, doc 29).
+    fn u12_corrupt_final_posting(copied: &mut CopiedSegment, offset: u64, length: u64) {
+        assert_eq!(length, 67, "grp/common compact payload length");
+        let start = usize::try_from(offset).expect("postings offset");
+        let end = start + 67;
+        let body = copied.body_mut(crate::segment::SectionKind::Postings);
+        assert!(end <= body.len(), "postings payload inside the body");
+        assert_eq!(
+            &body[start..start + 7],
+            &[6u8, 1, 30, 30, 30, 30, 0],
+            "compact-short doc-only header"
+        );
+        assert_eq!(body[start + 7], 0, "first document delta");
+        assert!(
+            body[start + 8..start + 37].iter().all(|byte| *byte == 1),
+            "remaining document deltas"
+        );
+        assert!(
+            body[start + 37..end].iter().all(|byte| *byte == 1),
+            "frequency stream"
+        );
+        assert_eq!(body[end - 1], 1, "final frequency byte is one");
+        body[end - 1] = 0;
+    }
+
+    /// COLUMNS guard plus one-byte invalid UTF-8 in the sortable `doc_id` value of
+    /// logical document `record`.
+    fn u12_corrupt_sort_column(copied: &mut CopiedSegment, record: usize) {
+        let needle = bounded_key(record);
+        let body = copied.body_mut(crate::segment::SectionKind::Columns);
+        let hits: Vec<usize> = body
+            .windows(needle.len())
+            .enumerate()
+            .filter(|(_, window)| *window == needle.as_bytes())
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(hits.len(), 1, "exactly one literal {needle} payload");
+        let at = hits[0];
+        assert_eq!(body[at], b'd', "target byte is the value's first 'd'");
+        body[at] = 0xFF;
+    }
+
+    /// Direct decoder probe: the rebuilt container opens lazily, the key decoder
+    /// rejects the corrupted record, and the pristine bytes stay untouched.
+    fn u12_probe_doc_keys(rebuilt: &[u8]) {
+        let reader = crate::segment::SegmentReader::open(
+            rebuilt.to_vec(),
+            crate::segment::SegmentLimits::default(),
+        )
+        .expect("key payload validation is lazy");
+        let error = reader.doc_key(0).expect_err("corrupt doc keys");
+        assert!(
+            matches!(
+                error,
+                crate::segment::SegmentError::InvalidUtf8 { context: "doc key" }
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// Direct decoder probe: docs 0..28 decode, then the zero frequency surfaces as
+    /// the exact `ZeroFrequency` error for doc 29.
+    fn u12_probe_final_posting(rebuilt: &[u8]) {
+        let reader = crate::segment::SegmentReader::open(
+            rebuilt.to_vec(),
+            crate::segment::SegmentLimits::default(),
+        )
+        .expect("postings validation is lazy");
+        let field_id = reader.schema().field_id("grp").expect("grp field id");
+        let mut postings = reader
+            .postings(field_id, "common")
+            .expect("postings lookup")
+            .expect("postings present")
+            .into_doc_freq();
+        let mut seen = Vec::new();
+        loop {
+            match postings.next_with(&NeverCancel) {
+                Ok(Some(posting)) => seen.push(posting.doc_id),
+                Ok(None) => panic!("the corrupt final posting must not decode"),
+                Err(error) => {
+                    assert!(
+                        matches!(
+                            error,
+                            crate::segment::SegmentError::ZeroFrequency { doc_id: 29 }
+                        ),
+                        "{error:?}"
+                    );
+                    break;
+                }
+            }
+        }
+        assert_eq!(seen, (0..29u64).collect::<Vec<u64>>());
+    }
+
+    /// Direct parser probe: the native v2 column dictionary is validated eagerly.
+    fn u12_probe_sort_column(rebuilt: &[u8]) {
+        let error = match crate::segment::SegmentReader::open(
+            rebuilt.to_vec(),
+            crate::segment::SegmentLimits::default(),
+        ) {
+            Ok(_) => panic!("eager column validation must reject the mutated dictionary"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                error,
+                crate::segment::SegmentError::InvalidUtf8 { context: "keyword" }
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn c2_u12_corrupt_selected_unselected_and_multi_fault() {
+        // --- pristine 32-row corpus: 30 matching rows, K = 3, K+1 = 4 --------
+        let mut rows = documents(30);
+        rows.extend(other_documents(2, 30));
+        let fixture = Fixture::new(&[rows]);
+        let request = request_asc(term_common(), 3);
+
+        let (pristine, postings_offset, postings_length) = {
+            let guard = fixture.snapshot.open_segment_reader(0).expect("guard");
+            let reader = guard.reader();
+            let physical: Vec<String> = reader
+                .doc_keys()
+                .expect("keys")
+                .iter()
+                .map(|key| key.as_str().to_owned())
+                .collect();
+            assert_eq!(
+                physical,
+                (0..32).map(bounded_key).collect::<Vec<String>>(),
+                "pristine physical DOC_KEYS order"
+            );
+            let grp_field = reader.schema().field_id("grp").expect("grp field id");
+            assert!(
+                reader
+                    .field_norms()
+                    .and_then(|norms| norms.field(grp_field))
+                    .is_some(),
+                "grp field norms are persisted, so statistics never scan postings"
+            );
+            let entry = reader
+                .dictionary()
+                .expect("dictionary")
+                .lookup(grp_field, "common")
+                .expect("grp/common entry");
+            assert_eq!(entry.doc_freq, 30, "grp/common document frequency");
+            (
+                reader.bytes().to_vec(),
+                entry.postings_offset,
+                entry.postings_length,
+            )
+        };
+
+        // Healthy control on the untouched snapshot.
+        reset_witnesses();
+        let healthy = run_ineligible(&fixture, &request).expect("pristine matched query");
+        assert_eq!(healthy.total_hits, 30);
+        assert_eq!(
+            keys(&healthy),
+            vec![bounded_key(0), bounded_key(1), bounded_key(2)]
+        );
+        assert!(healthy.next_cursor.is_some());
+        assert_eq!(c2_observation::strict_routes(), 1, "healthy control is C2");
+        let healthy_legacy = forced_legacy(&fixture, &request);
+        assert_eq!(projected(&healthy), projected(&healthy_legacy));
+        assert_eq!(healthy.total_hits, healthy_legacy.total_hits);
+        assert_eq!(healthy.generation, healthy_legacy.generation);
+        assert_eq!(healthy.view_ordinal, healthy_legacy.view_ordinal);
+        assert_eq!(
+            healthy.next_cursor.is_some(),
+            healthy_legacy.next_cursor.is_some()
+        );
+        assert_eq!(healthy.aggregation, healthy_legacy.aggregation);
+
+        // --- row runner ------------------------------------------------------
+        struct U12Row {
+            id: &'static str,
+            doc_key_record: Option<usize>,
+            final_posting: bool,
+            sort_column_record: Option<usize>,
+            injected_score: Option<u64>,
+            /// Whether the fault is reached only after the route was selected.
+            routed: bool,
+            converted: usize,
+            callbacks: usize,
+            numeric: usize,
+            membership: usize,
+        }
+
+        let zero_request = request_asc(
+            Query::Term {
+                field: "grp".to_owned(),
+                value: FieldValue::Keyword("no-such-group".to_owned()),
+            },
+            3,
+        );
+
+        let run_row = |row: U12Row| {
+            let mut copied = CopiedSegment::parse(&pristine);
+            if let Some(record) = row.doc_key_record {
+                u12_corrupt_doc_key(&mut copied, record);
+            }
+            if row.final_posting {
+                u12_corrupt_final_posting(&mut copied, postings_offset, postings_length);
+            }
+            if let Some(record) = row.sort_column_record {
+                u12_corrupt_sort_column(&mut copied, record);
+            }
+            let rebuilt = copied.rebuild();
+            assert_ne!(rebuilt, pristine, "{}: rebuilt bytes differ", row.id);
+            let snapshot = c2_f1_snapshot(row.id, &copied, rebuilt.clone());
+
+            // Direct decoder probes on the made bytes.
+            if row.doc_key_record.is_some() {
+                u12_probe_doc_keys(&rebuilt);
+            }
+            if row.final_posting {
+                u12_probe_final_posting(&rebuilt);
+            }
+            if row.sort_column_record.is_some() {
+                u12_probe_sort_column(&rebuilt);
+            }
+
+            // A zero-match query must succeed without key resolution for the
+            // posting/key rows; a malformed column is authoritative regardless.
+            if row.sort_column_record.is_none() {
+                reset_witnesses();
+                let zero = c2_f1_run_snapshot(&fixture, &snapshot, &zero_request)
+                    .expect("zero-match query must succeed");
+                assert_eq!(zero.total_hits, 0, "{}: zero-match count", row.id);
+                assert!(zero.hits.is_empty(), "{}: zero-match hits", row.id);
+                assert!(zero.next_cursor.is_none(), "{}: zero-match cursor", row.id);
+            }
+
+            // The actual row.
+            reset_witnesses();
+            b2_observation::reset();
+            let result = {
+                let _arm = row.injected_score.map(physical::ScoreFailureArm::arm);
+                c2_f1_run_snapshot(&fixture, &snapshot, &request)
+            };
+            let expected = match row.id {
+                "D0" | "D29" | "D31" => U12Expected::DocKey,
+                "P29" | "P29+D0" => U12Expected::ZeroFrequency,
+                "C0" | "C29" | "C29+P29+D0" => U12Expected::SortColumn,
+                "S29+D0" => U12Expected::InjectedScore,
+                other => panic!("unknown U12 row {other}"),
+            };
+            assert_u12_error(result.expect_err("row must fail"), expected, row.id);
+            assert_eq!(
+                c2_observation::strict_routes(),
+                usize::from(row.routed),
+                "{}: strict route",
+                row.id
+            );
+            assert_eq!(
+                c2_observation::legacy_routes(),
+                0,
+                "{}: no legacy route",
+                row.id
+            );
+            assert_eq!(
+                physical::strict_evaluator_calls(),
+                usize::from(row.routed),
+                "{}: evaluator calls",
+                row.id
+            );
+            assert_eq!(
+                physical::converted_rows(),
+                row.converted,
+                "{}: completed converted rows",
+                row.id
+            );
+            assert_eq!(
+                physical::callbacks(),
+                row.callbacks,
+                "{}: completed callbacks",
+                row.id
+            );
+            assert_eq!(
+                b2_observation::numeric_candidates(),
+                row.numeric,
+                "{}: entered numeric candidates",
+                row.id
+            );
+            assert_eq!(
+                physical::strict_membership_observations(),
+                row.membership,
+                "{}: membership observations",
+                row.id
+            );
+            if row.converted > 0 {
+                assert!(
+                    physical::inplace_preserved(),
+                    "{}: the whole segment was converted in place",
+                    row.id
+                );
+            }
+            eprintln!(
+                "C2-F1 U12 {}: routed={} converted={} callbacks={} numeric={} membership={}",
+                row.id, row.routed, row.converted, row.callbacks, row.numeric, row.membership
+            );
+
+            // Repeat each *real byte fault* on the same immutable corrupted
+            // snapshot: the same exact error. The synthetic score fault has no
+            // repeat: its arm is gone, so the underlying byte fault surfaces.
+            if row.injected_score.is_none() {
+                reset_witnesses();
+                b2_observation::reset();
+                let repeat = c2_f1_run_snapshot(&fixture, &snapshot, &request);
+                assert_u12_error(repeat.expect_err("repeat must fail"), expected, row.id);
+            }
+
+            // Same-query Legacy comparison. The injected-score row is C2-only, so
+            // its unarmed controls are compared instead.
+            if row.injected_score.is_some() {
+                let unarmed = c2_f1_forced_legacy_on_snapshot(&fixture, &snapshot, &request, true);
+                assert_u12_error(
+                    unarmed.expect_err("unarmed legacy"),
+                    U12Expected::DocKey,
+                    row.id,
+                );
+                reset_witnesses();
+                let unarmed_c2 = c2_f1_run_snapshot(&fixture, &snapshot, &request);
+                assert_u12_error(
+                    unarmed_c2.expect_err("unarmed C2"),
+                    U12Expected::DocKey,
+                    row.id,
+                );
+            } else {
+                let legacy =
+                    c2_f1_forced_legacy_on_snapshot(&fixture, &snapshot, &request, row.routed);
+                assert_u12_error(legacy.expect_err("legacy"), expected, row.id);
+            }
+
+            // The original committed bytes were never mutated.
+            assert_eq!(
+                pristine.as_slice(),
+                fixture.snapshot.segments()[0].bytes(),
+                "{}: original immutable bytes unchanged",
+                row.id
+            );
+            // And the pristine fixture still answers exactly as before.
+            reset_witnesses();
+            let after = run_ineligible(&fixture, &request).expect("pristine recovery");
+            assert_eq!(keys(&after), keys(&healthy), "{}: pristine keys", row.id);
+            assert_eq!(
+                after.total_hits, healthy.total_hits,
+                "{}: pristine count",
+                row.id
+            );
+            assert_eq!(bits(&after), bits(&healthy), "{}: pristine scores", row.id);
+        };
+
+        let row = |id: &'static str, doc_key_record, final_posting, sort_column_record| U12Row {
+            id,
+            doc_key_record,
+            final_posting,
+            sort_column_record,
+            injected_score: None,
+            routed: true,
+            converted: 30,
+            callbacks: 0,
+            numeric: 1,
+            membership: 30,
+        };
+
+        run_row(row("D0", Some(0), false, None));
+        run_row(row("D29", Some(29), false, None));
+        run_row(row("D31", Some(31), false, None));
+
+        let posting_row = |id: &'static str, final_posting, doc_key_record| U12Row {
+            id,
+            doc_key_record,
+            final_posting,
+            sort_column_record: None,
+            injected_score: None,
+            routed: true,
+            converted: 0,
+            callbacks: 0,
+            numeric: 0,
+            membership: 0,
+        };
+        // P29 and P29+D0 are blocked by the postings byte-layout guard (D14):
+        // `grp/common` encodes as compact-short *positional* (218-byte payload,
+        // marker 7, 0x96 0x01 position length), not the plan's 67-byte doc-only
+        // payload, so the prescribed `postings_offset + 66` byte is not the final
+        // frequency. See c2-f1-d14-postings-layout-stop.txt.
+        let _ = posting_row;
+
+        let column_row =
+            |id: &'static str, sort_column_record, final_posting, doc_key_record| U12Row {
+                id,
+                doc_key_record,
+                final_posting,
+                sort_column_record: Some(sort_column_record),
+                injected_score: None,
+                routed: false,
+                converted: 0,
+                callbacks: 0,
+                numeric: 0,
+                membership: 0,
+            };
+        // C29+P29+D0 is blocked by the same postings byte-layout guard (D14).
+        run_row(column_row("C0", 0, false, None));
+        run_row(column_row("C29", 29, false, None));
+
+        run_row(U12Row {
+            id: "S29+D0",
+            doc_key_record: Some(0),
+            final_posting: false,
+            sort_column_record: None,
+            injected_score: Some(29),
+            routed: true,
+            converted: 0,
+            callbacks: 0,
+            numeric: 0,
+            membership: 30,
+        });
     }
 
     // -----------------------------------------------------------------------

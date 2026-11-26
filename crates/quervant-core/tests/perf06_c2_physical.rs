@@ -1005,7 +1005,42 @@ fn c2_i08_resource_cancellation_atomicity() {
         full_projection(),
     );
     // `m = 23` per-segment effective-live matches: the virtual peak is
-    // `3m = 69` entries and `128m = 2944` bytes.
+    // `3m = 69` entries and `128m = 2944` bytes. Every document is live with
+    // persisted native norms, so statistics preparation is scan-free and the
+    // evaluator scans exactly 23 posting occurrences.
+    let expected_keys = expected_lane_keys("common", 48, 3, true);
+    assert_eq!(
+        expected_keys,
+        vec![
+            "d00000002".to_owned(),
+            "d00000004".to_owned(),
+            "d00000006".to_owned()
+        ],
+        "literal ascending common lane"
+    );
+
+    /// Assert that `observed` is the exact admitted response, including score bits,
+    /// projection, generation, view ordinal and cursor presence.
+    fn assert_same_response(left: &UnifiedResponse, right: &UnifiedResponse, label: &str) {
+        assert_eq!(left.hits.len(), right.hits.len(), "{label}: hit count");
+        assert_eq!(left.total_hits, right.total_hits, "{label}: total hits");
+        assert_eq!(left.generation, right.generation, "{label}: generation");
+        assert_eq!(
+            left.view_ordinal, right.view_ordinal,
+            "{label}: view ordinal"
+        );
+        assert_eq!(
+            left.next_cursor.is_some(),
+            right.next_cursor.is_some(),
+            "{label}: cursor presence"
+        );
+        assert_eq!(scores(left), scores(right), "{label}: score bits");
+        for (a, b) in left.hits.iter().zip(right.hits.iter()) {
+            assert_eq!(a.key, b.key, "{label}: key");
+            assert_eq!(a.fields, b.fields, "{label}: projected fields");
+        }
+    }
+
     let exact = SearchLimits::default()
         .with_max_segment_candidate_entries(69)
         .expect("entries")
@@ -1013,6 +1048,11 @@ fn c2_i08_resource_cancellation_atomicity() {
         .expect("bytes");
     let admitted = search_with(&corpus, &page, exact, &NeverCancel).expect("exact peak");
     assert_eq!(admitted.total_hits, 23);
+    assert_eq!(keys(&admitted), expected_keys);
+    assert!(admitted.next_cursor.is_some());
+
+    // One-under entry budget: the exact typed error, then an independent retry
+    // with the admitted limits on the *same* immutable snapshot.
     let under_entries = SearchLimits::default()
         .with_max_segment_candidate_entries(68)
         .expect("entries")
@@ -1030,6 +1070,10 @@ fn c2_i08_resource_cancellation_atomicity() {
         ),
         "{rejected:?}"
     );
+    let recovered = search_with(&corpus, &page, exact, &NeverCancel).expect("retry after entries");
+    assert_same_response(&recovered, &admitted, "post-entries retry");
+
+    // One-under byte budget.
     let under_bytes = SearchLimits::default()
         .with_max_segment_candidate_entries(69)
         .expect("entries")
@@ -1047,6 +1091,39 @@ fn c2_i08_resource_cancellation_atomicity() {
         ),
         "{rejected:?}"
     );
+    let recovered = search_with(&corpus, &page, exact, &NeverCancel).expect("retry after bytes");
+    assert_same_response(&recovered, &admitted, "post-bytes retry");
+
+    // Scanned-occurrence boundary on the two-segment corpus: 11 + 12 = 23
+    // matching postings, one occurrence each.
+    let split = Corpus::build("i08-split", &[(0..24).collect(), (24..48).collect()]);
+    let scanned_23 = SearchLimits::default()
+        .with_max_scanned_posting_occurrences(23)
+        .expect("scanned");
+    let split_admitted =
+        search_with(&split, &page, scanned_23, &NeverCancel).expect("exact scanned limit");
+    assert_eq!(split_admitted.total_hits, 23);
+    assert_eq!(keys(&split_admitted), expected_keys);
+    assert!(split_admitted.next_cursor.is_some());
+    let scanned_22 = SearchLimits::default()
+        .with_max_scanned_posting_occurrences(22)
+        .expect("scanned");
+    let rejected =
+        search_with(&split, &page, scanned_22, &NeverCancel).expect_err("one-under scanned");
+    assert!(
+        matches!(
+            rejected,
+            SearchError::ResourceLimit {
+                limit: 22,
+                requested: 23
+            }
+        ),
+        "{rejected:?}"
+    );
+    let recovered =
+        search_with(&split, &page, scanned_23, &NeverCancel).expect("retry after scanned");
+    assert_same_response(&recovered, &split_admitted, "post-scanned retry");
+
     // Cancellation returns the typed error and leaves the index usable.
     let flag = CancellationFlag::new();
     flag.cancel();
@@ -1054,27 +1131,9 @@ fn c2_i08_resource_cancellation_atomicity() {
         search_with(&corpus, &page, SearchLimits::default(), &flag).expect_err("cancelled");
     assert!(matches!(cancelled, SearchError::Cancelled), "{cancelled:?}");
     let retried = search(&corpus, &page).expect("retry after cancellation");
-    assert_eq!(retried.total_hits, 23);
-    assert_eq!(keys(&retried), keys(&admitted));
-    // A later-segment failure aborts the whole request: no partial page is ever
-    // returned for an under-budget multi-segment query.
-    let split = Corpus::build("i08-split", &[(0..24).collect(), (24..48).collect()]);
-    let partial = search_with(
-        &split,
-        &page,
-        SearchLimits::default()
-            .with_max_scanned_posting_occurrences(30)
-            .expect("scanned"),
-        &NeverCancel,
-    );
-    match partial {
-        Err(SearchError::ResourceLimit { .. }) => {}
-        Ok(response) => {
-            // If the accepted accounting admits it, the page must still be exact.
-            assert_eq!(response.total_hits, 23);
-        }
-        Err(other) => panic!("unexpected {other:?}"),
-    }
+    assert_same_response(&retried, &admitted, "post-cancellation retry");
+    // A failed or cancelled request returns no partial page: every rejection above
+    // produced `Err`, and each retry produced the exact admitted response.
 }
 
 // ---------------------------------------------------------------------------
