@@ -1,0 +1,29 @@
+RECEIPT c2-f1-a1-bench-norun
+COMMAND: QUERVANT_ENV_SANITIZED=1 cargo +1.98.1 bench --workspace --no-run
+ENV_PREFIX: env -u QUERVANT_PR15I_D3C_STRATEGY -u QUERVANT_PR15I_D3C_PREFILTER_PROFILE
+CWD: /home/yduchesne/Dev/Github/yduchesne/quervant
+TOOLCHAIN: rustc 1.98.1
+SOURCE: A1 START 2bf9539cd2f53838ad1aca406ca4e67a34229ff6 + final A1 test/source changes (see c2-f1-a1-source-freeze.txt)
+HEADSHA: 2bf9539cd2f53838ad1aca406ca4e67a34229ff6
+START: 2026-11-26T18:38:05Z
+BEGIN RAW OUTPUT
+   Compiling quervant-core v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-core)
+   Compiling quervant-distributed v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-distributed)
+    Finished `bench` profile [optimized] target(s) in 42.86s
+  Executable benches src/lib.rs (target/release/deps/quervant_core-7d2f68146db739c9)
+  Executable benches/bm25.rs (target/release/deps/bm25-a30c82e5e32f15ca)
+  Executable benches/dictionary.rs (target/release/deps/dictionary-5d1fded4387f90c2)
+  Executable benches/geo.rs (target/release/deps/geo-c922e1ca5054baa5)
+  Executable benches/merge.rs (target/release/deps/merge-71e57bb3e4d73b9a)
+  Executable benches/phrase.rs (target/release/deps/phrase-60b42f213a5b0d9b)
+  Executable benches/postings.rs (target/release/deps/postings-6113a96fce81edd3)
+  Executable benches/search.rs (target/release/deps/search-8be8099320334f2a)
+  Executable benches/typed_analytics.rs (target/release/deps/typed_analytics-83b75052357d9db8)
+  Executable benches/unified_diagnostics.rs (target/release/deps/unified_diagnostics-b3cdd139da68ba39)
+  Executable benches/writer_mutation.rs (target/release/deps/writer_mutation-ede258136f9094f0)
+  Executable benches src/lib.rs (target/release/deps/quervant_distributed-248bb7bcf21e4d30)
+  Executable benches src/lib.rs (target/release/deps/quervant_objectstore-bafef1e727435e82)
+END RAW OUTPUT
+EXIT: 0
+END: 2026-11-26T18:38:48Z
+END RECEIPT

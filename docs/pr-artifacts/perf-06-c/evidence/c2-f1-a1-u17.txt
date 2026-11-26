@@ -1,0 +1,27 @@
+RECEIPT c2-f1-a1-u17
+COMMAND: QUERVANT_ENV_SANITIZED=1 cargo +1.98.1 test -p quervant-core --lib search::unified::c2_tests::c2_u17_ordinal_unavailable_and_b3_refusal -- --exact --nocapture --test-threads=1
+ENV_PREFIX: env -u QUERVANT_PR15I_D3C_STRATEGY -u QUERVANT_PR15I_D3C_PREFILTER_PROFILE
+CWD: /home/yduchesne/Dev/Github/yduchesne/quervant
+TOOLCHAIN: rustc 1.98.1
+SOURCE: A1 START 2bf9539cd2f53838ad1aca406ca4e67a34229ff6 + final A1 test/source changes (see c2-f1-a1-source-freeze.txt)
+HEADSHA: 2bf9539cd2f53838ad1aca406ca4e67a34229ff6
+START: 2026-11-26T18:36:43Z
+BEGIN RAW OUTPUT
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running unittests src/lib.rs (target/debug/deps/quervant_core-4bce05dee4e4fed4)
+
+running 1 test
+test search::unified::c2_tests::c2_u17_ordinal_unavailable_and_b3_refusal ... C2-F1 U17 refusal: segments=1 attempts=1 directories=0 refusals=1 fallbacks=[0] collected=[(0, 4, 40)]
+C2-F1 U17 refusal: segments=2 attempts=2 directories=1 refusals=1 fallbacks=[0] collected=[(0, 4, 20), (1, 4, 40)]
+C2-F1 U17 refusal: segments=2 attempts=2 directories=1 refusals=1 fallbacks=[1] collected=[(0, 4, 20), (1, 4, 40)]
+C2-F1 U17 refusal: segments=2 attempts=2 directories=2 refusals=0 fallbacks=[] collected=[(0, 4, 20), (1, 4, 40)]
+C2-F1 U17 refusal: segments=2 attempts=0 directories=0 refusals=0 fallbacks=[0, 1] collected=[(0, 4, 20), (1, 4, 40)]
+C2-F1-A1 U17 INJECTED_C2_ONLY — no-eager-binding structural evidence: routes=1/0 bound_columns=1 evaluators=1 membership=34 converted=0 callbacks=0 numeric=0 collected=[] fallbacks=[] attempts=0
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1201 filtered out; finished in 0.12s
+
+END RAW OUTPUT
+EXIT: 0
+END: 2026-11-26T18:36:43Z
+END RECEIPT

@@ -1,0 +1,26 @@
+RECEIPT c2-f1-a1-regression-15h-a
+COMMAND: QUERVANT_ENV_SANITIZED=1 cargo +1.98.1 test -p quervant-core --test pr15h_a_candidate_materialization
+ENV_PREFIX: env -u QUERVANT_PR15I_D3C_STRATEGY -u QUERVANT_PR15I_D3C_PREFILTER_PROFILE
+CWD: /home/yduchesne/Dev/Github/yduchesne/quervant
+TOOLCHAIN: rustc 1.98.1
+SOURCE: A1 START 2bf9539cd2f53838ad1aca406ca4e67a34229ff6 + final A1 test/source changes (see c2-f1-a1-source-freeze.txt)
+HEADSHA: 2bf9539cd2f53838ad1aca406ca4e67a34229ff6
+START: 2026-11-26T18:37:24Z
+BEGIN RAW OUTPUT
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/pr15h_a_candidate_materialization.rs (target/debug/deps/pr15h_a_candidate_materialization-f4631dd376ac934a)
+
+running 6 tests
+test h_a_i04_pit_refresh_delete_upsert ... ok
+test h_a_i06_corruption_injection ... ok
+test h_a_i02_two_segment_differential ... ok
+test h_a_i01_local_commit_reopen_term_query ... ok
+test h_a_i05_limits_and_cancellation ... ok
+test h_a_i03_mixed_fallback_shapes ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+
+END RAW OUTPUT
+EXIT: 0
+END: 2026-11-26T18:37:24Z
+END RECEIPT

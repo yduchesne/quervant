@@ -1,0 +1,36 @@
+RECEIPT c2-f1-a1-flake-classification
+SUBJECT: segment::reader::stored_blocks_reader_tests::certificate_retains_flat_offsets_and_hot_path_is_direct
+POLICY: original F1 section 14 / A23 bounded diagnostics — first failure preserved,
+        at most one identical current-source repeat, at most two isolated BASE runs.
+COMMAND: env -u QUERVANT_PR15I_D3C_STRATEGY -u QUERVANT_PR15I_D3C_PREFILTER_PROFILE \
+         cargo +1.85.0 test --workspace --all-targets --all-features
+CWD: repository root
+BEGIN RAW OUTPUT
+attempt 1 (final A1 source, 2026-11-26T18:49:32Z) -> EXIT 101
+  failures:
+  ---- segment::reader::stored_blocks_reader_tests::certificate_retains_flat_offsets_and_hot_path_is_direct stdout ----
+  panicked at crates/quervant-core/src/segment/reader.rs:2874
+  assertion `left == right` failed
+    left: 4
+   right: 1
+  test result: FAILED. 1241 passed; 1 failed; 2 ignored
+  receipt: evidence/c2-f1-a1-test-msrv-all-features.txt
+
+attempt 2 (identical command, identical source, 2026-11-26T18:52Z) -> EXIT 0
+  all test targets: 0 failed
+  receipt: evidence/c2-f1-a1-test-msrv-all-features-repeat-01.txt
+
+baseline run 1 (isolated worktree at bc726420cede2e26681d6e8192b45a5d0169abbf) -> EXIT 0
+baseline run 2 (identical) -> EXIT 0
+  (this pair did not reproduce the counter race within the bound)
+END RAW OUTPUT
+HISTORICAL BASELINE PROOF (pre-existing at the same pinned commit):
+  evidence/c2-baseline-flake-pre-existing.txt — the same test and the same
+  `builds_after - builds_before` assertion reproduced on a pristine
+  origin/main@bc726420ced… worktree with no C2 code, `left: 2 right: 1`.
+CLASSIFICATION: nondeterministic (thread-local counter race in a protected module
+  `segment/reader.rs`); pre-existing at MAIN_BASE, provenance-independent of A1.
+DISPOSITION: the mandatory MSRV all-features workspace gate REMAINS BLOCKED pending
+  a maintainer decision; the later green repeat and the green baseline pair do not
+  waive it. No source, thread count, filter or retry-to-green change was made.
+END RECEIPT

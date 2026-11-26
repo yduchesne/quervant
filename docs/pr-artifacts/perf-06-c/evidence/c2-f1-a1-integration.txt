@@ -1,0 +1,29 @@
+RECEIPT c2-f1-a1-integration
+COMMAND: QUERVANT_ENV_SANITIZED=1 cargo +1.98.1 test -p quervant-core --test perf06_c2_physical -- --test-threads=1
+ENV_PREFIX: env -u QUERVANT_PR15I_D3C_STRATEGY -u QUERVANT_PR15I_D3C_PREFILTER_PROFILE
+CWD: /home/yduchesne/Dev/Github/yduchesne/quervant
+TOOLCHAIN: rustc 1.98.1
+SOURCE: A1 START 2bf9539cd2f53838ad1aca406ca4e67a34229ff6 + final A1 test/source changes (see c2-f1-a1-source-freeze.txt)
+HEADSHA: 2bf9539cd2f53838ad1aca406ca4e67a34229ff6
+START: 2026-11-26T18:36:53Z
+BEGIN RAW OUTPUT
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running tests/perf06_c2_physical.rs (target/debug/deps/perf06_c2_physical-5e828c4a3c49f893)
+
+running 9 tests
+test c2_i01_i10_b4_formula_exact_term_lanes ... ok
+test c2_i02_scores_full_projection_and_reverse_sort ... ok
+test c2_i03_pit_update_delete_merge_reopen ... ok
+test c2_i04_duplicates_and_optional_fallback ... ok
+test c2_i05_real_cursor_multi_page ... ok
+test c2_i06_corrupt_container_and_legacy_errors ... ok
+test c2_i07_batch_aggregate_and_unsupported_shapes ... ok
+test c2_i08_resource_cancellation_atomicity ... ok
+test c2_i09_empty_and_sparse_physical_segments ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.54s
+
+END RAW OUTPUT
+EXIT: 0
+END: 2026-11-26T18:37:08Z
+END RECEIPT

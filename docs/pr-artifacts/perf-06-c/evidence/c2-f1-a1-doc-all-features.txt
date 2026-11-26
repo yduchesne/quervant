@@ -1,0 +1,19 @@
+RECEIPT c2-f1-a1-doc-all-features
+COMMAND: QUERVANT_ENV_SANITIZED=1 cargo +1.98.1 doc --workspace --all-features --no-deps
+ENV_PREFIX: env -u QUERVANT_PR15I_D3C_STRATEGY -u QUERVANT_PR15I_D3C_PREFILTER_PROFILE
+CWD: /home/yduchesne/Dev/Github/yduchesne/quervant
+TOOLCHAIN: rustdoc 1.98.1
+SOURCE: A1 START 2bf9539cd2f53838ad1aca406ca4e67a34229ff6 + final A1 test/source changes (see c2-f1-a1-source-freeze.txt)
+HEADSHA: 2bf9539cd2f53838ad1aca406ca4e67a34229ff6
+START: 2026-11-26T18:38:00Z
+BEGIN RAW OUTPUT
+ Documenting quervant-objectstore v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-objectstore)
+    Checking quervant-core v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-core)
+ Documenting quervant-core v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-core)
+ Documenting quervant-distributed v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-distributed)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.85s
+   Generated /home/yduchesne/Dev/Github/yduchesne/quervant/target/doc/quervant_core/index.html and 2 other files
+END RAW OUTPUT
+EXIT: 0
+END: 2026-11-26T18:38:05Z
+END RECEIPT

@@ -1,0 +1,25 @@
+RECEIPT c2-f1-a1-physical-serial
+COMMAND: QUERVANT_ENV_SANITIZED=1 cargo +1.98.1 test -p quervant-core --lib search::execute::c2_physical_tests:: -- --test-threads=1
+ENV_PREFIX: env -u QUERVANT_PR15I_D3C_STRATEGY -u QUERVANT_PR15I_D3C_PREFILTER_PROFILE
+CWD: /home/yduchesne/Dev/Github/yduchesne/quervant
+TOOLCHAIN: rustc 1.98.1
+SOURCE: A1 START 2bf9539cd2f53838ad1aca406ca4e67a34229ff6 + final A1 test/source changes (see c2-f1-a1-source-freeze.txt)
+HEADSHA: 2bf9539cd2f53838ad1aca406ca4e67a34229ff6
+START: 2026-11-26T18:36:52Z
+BEGIN RAW OUTPUT
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/quervant_core-4bce05dee4e4fed4)
+
+running 5 tests
+test search::execute::c2_physical_tests::c2_p01_shape_mismatch_fails_closed ... ok
+test search::execute::c2_physical_tests::c2_p02_inplace_reuse_and_callback_order ... ok
+test search::execute::c2_physical_tests::c2_p03_corrupt_postings_precede_every_callback ... ok
+test search::execute::c2_physical_tests::c2_p04_late_score_fault_precedes_corrupt_doc_keys ... ok
+test search::execute::c2_physical_tests::c2_p05_n_examination_and_scanned_frequency ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 1197 filtered out; finished in 0.02s
+
+END RAW OUTPUT
+EXIT: 0
+END: 2026-11-26T18:36:52Z
+END RECEIPT

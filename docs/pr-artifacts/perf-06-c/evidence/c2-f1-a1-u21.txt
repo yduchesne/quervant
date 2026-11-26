@@ -1,0 +1,29 @@
+RECEIPT c2-f1-a1-u21
+COMMAND: QUERVANT_ENV_SANITIZED=1 cargo +1.98.1 test -p quervant-core --lib search::unified::c2_tests::c2_u21_work_budget_exhaustion_after_prior_segment -- --exact --nocapture --test-threads=1
+ENV_PREFIX: env -u QUERVANT_PR15I_D3C_STRATEGY -u QUERVANT_PR15I_D3C_PREFILTER_PROFILE
+CWD: /home/yduchesne/Dev/Github/yduchesne/quervant
+TOOLCHAIN: rustc 1.98.1
+SOURCE: A1 START 2bf9539cd2f53838ad1aca406ca4e67a34229ff6 + final A1 test/source changes (see c2-f1-a1-source-freeze.txt)
+HEADSHA: 2bf9539cd2f53838ad1aca406ca4e67a34229ff6
+START: 2026-11-26T18:36:43Z
+BEGIN RAW OUTPUT
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/quervant_core-4bce05dee4e4fed4)
+
+running 1 test
+test search::unified::c2_tests::c2_u21_work_budget_exhaustion_after_prior_segment ... C2-F1-A1 U21-A86: ResourceLimit{86,87} evaluators=1 membership=0 converted=0 callbacks=0 numeric=0 bound=1 collected=[]
+C2-F1-A1 U21-A86: recovery-ok total=40 evaluators=2 membership=40 converted=40 callbacks=40 numeric=40 bound=2
+C2-F1-A1 U21-A87: ResourceLimit{87,88} evaluators=2 membership=34 converted=34 callbacks=34 numeric=34 bound=2 collected=[(0, 3, 34)]
+C2-F1-A1 U21-A87: recovery-ok total=40 evaluators=2 membership=40 converted=40 callbacks=40 numeric=40 bound=2
+C2-F1-A1 U21-A99: ResourceLimit{99,100} evaluators=2 membership=34 converted=34 callbacks=34 numeric=34 bound=2 collected=[(0, 3, 34)]
+C2-F1-A1 U21-A99: recovery-ok total=40 evaluators=2 membership=40 converted=40 callbacks=40 numeric=40 bound=2
+C2-F1-A1 U21-A100: success total=40 evaluators=2 membership=40 converted=40 callbacks=40 numeric=40 bound=2 collected=[(0, 3, 34), (1, 3, 40)]
+C2-F1-A1 U21-A100: recovery-ok total=40 evaluators=2 membership=40 converted=40 callbacks=40 numeric=40 bound=2
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1201 filtered out; finished in 0.03s
+
+END RAW OUTPUT
+EXIT: 0
+END: 2026-11-26T18:36:43Z
+END RECEIPT
