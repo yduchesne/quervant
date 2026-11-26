@@ -1019,8 +1019,9 @@ fn c2_i08_resource_cancellation_atomicity() {
         "literal ascending common lane"
     );
 
-    /// Assert that `observed` is the exact admitted response, including score bits,
-    /// projection, generation, view ordinal and cursor presence.
+    /// Assert that `observed` is the exact admitted response: hit count, total,
+    /// generation, view ordinal, ordered keys and projected fields, explicit score
+    /// bits, the **complete cursor** and the aggregation payload.
     fn assert_same_response(left: &UnifiedResponse, right: &UnifiedResponse, label: &str) {
         assert_eq!(left.hits.len(), right.hits.len(), "{label}: hit count");
         assert_eq!(left.total_hits, right.total_hits, "{label}: total hits");
@@ -1030,10 +1031,10 @@ fn c2_i08_resource_cancellation_atomicity() {
             "{label}: view ordinal"
         );
         assert_eq!(
-            left.next_cursor.is_some(),
-            right.next_cursor.is_some(),
-            "{label}: cursor presence"
+            left.next_cursor, right.next_cursor,
+            "{label}: complete cursor"
         );
+        assert_eq!(left.aggregation, right.aggregation, "{label}: aggregation");
         assert_eq!(scores(left), scores(right), "{label}: score bits");
         for (a, b) in left.hits.iter().zip(right.hits.iter()) {
             assert_eq!(a.key, b.key, "{label}: key");

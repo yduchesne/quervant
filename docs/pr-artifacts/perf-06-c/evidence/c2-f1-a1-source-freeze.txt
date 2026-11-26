@@ -1,0 +1,23 @@
+# PERF-06-C2-F1-A1 source-freeze receipt
+
+## A1 comparison (A1 START -> final source)
+execute.rs byte-identical to A1 START (frozen, incl. P05): PASS
+unified trailing content after C2_TESTS_CLOSE_MARKER is whitespace only: PASS
+A1 START contains the old observer comment exactly once: PASS
+candidate contains the prescribed A1 comment exactly once: PASS
+unified.rs non-test regions equal to A1 START (observer comments excluded): PASS
+
+## Original F1 normal-build comparison (F1 START -> final source)
+execute.rs normal-build equality vs F1 START: PASS
+candidate contains F1 Site A exactly once: PASS
+candidate contains F1 Site B exactly once: PASS
+unified.rs normal-build equality vs F1 START (both sites removed): PASS
+
+## Integration test scope
+perf06_c2_physical.rs diff hunks vs A1 START: 3 (['@@ -1022,2 +1022,3 @@ fn c2_i08_resource_cancellation_atomicity() {', '@@ -1033,3 +1034,2 @@ fn c2_i08_resource_cancellation_atomicity() {', '@@ -1036,0 +1037 @@ fn c2_i08_resource_cancellation_atomicity() {'])
+Scope requirement: only I08's local helper/comment may differ (inspected manually).
+
+A1_START = 2bf9539cd2f53838ad1aca406ca4e67a34229ff6
+F1_START = 46ccab0a606a56a8b9034ab4db5c9c4df969d098
+worktree HEAD = 2bf9539cd2f53838ad1aca406ca4e67a34229ff6
+RESULT: PASS
