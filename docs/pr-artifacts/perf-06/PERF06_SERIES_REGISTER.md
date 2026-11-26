@@ -255,3 +255,30 @@ was executed with results in
   stable/MSRV QA and both coverage gates pass (93.24 % / 92.82 % lines).
 - PR #131 remains **draft and unmerged**; G10 independent review/maintainer
   acceptance stays open; C3/C4 are unstarted and no performance claim is made.
+
+## PERF-06-C2-F1-A1 amendment execution status (2026-11-26)
+
+The approved
+[PERF06C2F1_A1_DETAILED_AMENDMENT.md](../perf-06-c/PERF06C2F1_A1_DETAILED_AMENDMENT.md)
+resolved both F1 D14 stops by adopting the settled source facts — content-addressed
+query segment order (34-document slice first) and compact-short positional
+`grp/common` postings — and strengthened the response comparisons. Results:
+[PERF06C2F1_A1_EXECUTION_REPORT.md](../perf-06-c/PERF06C2F1_A1_EXECUTION_REPORT.md).
+
+- **Now executed and passing:** all nine U12 corruption/precedence rows
+  (`completed=9`), the four native-order U21 boundary rows with three same-snapshot
+  recoveries, the U17 `INJECTED_C2_ONLY` no-eager-binding case, the five U17 B3
+  refusal rows with complete forced-Legacy parity, the retained P05 resource table,
+  and I08's exact resource/cancellation outcomes with complete cursor and
+  aggregation equality.
+- **Unchanged:** production execution semantics (`execute.rs` byte-identical to
+  A1 START; the A1 and F1 normal-build region checks both pass), persisted formats,
+  storage, benchmark assets and CI workflows.
+- **G7 remains BLOCKED** on two maintainer-owned decisions: the 55 committed-range
+  whitespace diagnostics confined to 40 frozen plan/receipt artifacts (exactly
+  matching the amendment's Appendix A proposal, with `A1_START..HEAD` clean), and a
+  reproduced pre-existing `stored_blocks_reader_tests` counter flake.
+- **Delivery:** PR [#131](https://github.com/yduchesne/quervant/pull/131) is open and
+  **unmerged** with its observed readiness flag preserved; G10 independent
+  review/maintainer acceptance is open; C3/C4 are unstarted and no performance claim
+  is made.

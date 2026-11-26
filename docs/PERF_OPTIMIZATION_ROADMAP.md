@@ -379,3 +379,23 @@ Production execution semantics are unchanged, local stable/MSRV QA and both
 coverage gates pass, and **no performance claim** is made. C3 has not started; C4
 remains the only stage authorized to run the incremental warm qualification against
 the accepted A+B baseline. Independent review and maintainer merge remain open.
+
+## PERF-06-C2-F1-A1 amendment execution (2026-11-26)
+
+The approved [A1 amendment](pr-artifacts/perf-06-c/PERF06C2F1_A1_DETAILED_AMENDMENT.md)
+resolved the two F1 fixture contradictions using the settled source facts
+(content-addressed query segment order; compact-short positional `grp/common`
+postings) and strengthened every response comparison to complete cursor and
+aggregation equality. Results:
+[PERF06C2F1_A1_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C2F1_A1_EXECUTION_REPORT.md).
+
+All prescribed cases now execute: nine U12 rows, four native-order U21 boundary rows
+with three recoveries, the U17 no-eager-binding structural case, five B3 refusal
+rows, the retained P05 table and I08's exact resource outcomes. Production semantics
+are unchanged and local stable/MSRV QA plus both coverage gates pass (93.33 % /
+92.91 % lines). **G7 remains blocked** on two maintainer-owned decisions (frozen
+artifact whitespace; a pre-existing test flake), so the disposition is
+`PERF06_C2_F1_A1_ACCEPTANCE_EXECUTED_G7_BLOCKED_WHITESPACE_DECISION`.
+
+PR [#131](https://github.com/yduchesne/quervant/pull/131) is open and unmerged; G10 is
+open; C3/C4 are unstarted and no performance claim is made.

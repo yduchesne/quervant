@@ -425,3 +425,62 @@ ordinary concurrency and passed on first attempt).
   `benchmarks/**`, the C1 contract, `docs/architecture/**`, the authoring guide,
   `AGENTS.md`, `docs/TESTING.md`, the original C2 plan and the C1 source audit are
   all byte-identical to START.
+
+## PERF-06-C2-F1-A1 errata and superseding status (2026-11-26)
+
+This section supersedes the F1 report's earlier conclusions where listed. Every
+preceding byte of this report is preserved unchanged.
+
+1. **The two D14 stops were correct.** The plan's segment-order and posting-layout
+   assumptions were wrong, not the source. Query segment order is the manifest order
+   sorted by the content-addressed `s-{sha256}` id (34-document slice first for the
+   prescribed corpus), and `grp/common` is encoded compact-short **positional**
+   (218-byte payload, marker 7, 150-byte position stream). The approved
+   [A1 amendment](PERF06C2F1_A1_DETAILED_AMENDMENT.md) restates both fixtures; the
+   new receipts are in [PERF06C2F1_A1_EXECUTION_REPORT.md](PERF06C2F1_A1_EXECUTION_REPORT.md).
+2. **U21 and the U17 structural row were not executed by F1.** Their status changes
+   only now that the amended cases pass: four native-order U21 rows (caps 86/87/99/100
+   with a completed `(0,3,34)` tuple before the later-segment error, plus three
+   same-snapshot recoveries) and the `INJECTED_C2_ONLY` no-eager-binding case
+   (one bound column, no completion, no candidate entry, then a full unarmed recovery).
+3. **U12 executed six of nine rows in F1.** The earlier statement that a skipped final
+   posting "would now be rejected" was not established by that run. All nine rows now
+   execute, in order, with `completed=9`, including `P29`, `P29+D0` and `C29+P29+D0`.
+4. **The earlier "complete/identical" response comparisons were presence-only for
+   cursors** and I08 omitted aggregation. `assert_c2_f1_full_response` and the
+   strengthened I08 helper now compare the complete cursor and the aggregation
+   payload, with explicit score bits (`evidence/c2-f1-a1-u17.txt`,
+   `c2-f1-a1-u12.txt`, `c2-f1-a1-u21.txt`, `c2-f1-a1-i08.txt`).
+5. **The G7 whitespace claims in this report were wrong.** `git diff --check` was run
+   while the new plan/evidence files were untracked, so "all 25 errors pre-existed"
+   and "the F1 delta is clean" are not valid final-range conclusions. The real
+   committed range `MAIN_BASE...HEAD` currently reports **55 diagnostics across 40
+   frozen artifacts**, exactly matching Appendix A of the A1 amendment, with
+   `A1_START..HEAD` at **0**. The old receipt is preserved; the corrected measurement
+   and classification are in `evidence/c2-f1-a1-whitespace-range.txt`.
+6. **No `c2-f1-u21-attempt-02.txt` exists.** The reviewed tree contains only
+   `c2-f1-u21-attempt-01.txt`; the amended U21 evidence is `c2-f1-a1-u21.txt`.
+7. **Historical revisions and CI runs are historical only.** `46ccab0…`,
+   `564fd78…` and CI run 45828518258 predate A1; the current identity record is in the
+   A1 report. `BASE` there means `MAIN_BASE` and `START` means `A1_START`.
+8. **Coverage labels corrected without touching the raw measurements.** The
+   `cargo llvm-cov` TOTAL line is `(total lines, missed lines, cover)`: the historical
+   default figure is 74,113 total / 69,103 covered / 5,010 missed / 93.24 %, and
+   all-features is 75,622 total / 70,196 covered / 5,426 missed / 92.82 % — not
+   "74,113 covered". A1 re-measured: default 74,368 total / 69,404 covered / 4,964
+   missed / 93.33 %; all-features 75,877 / 70,494 / 5,383 / 92.91 %.
+9. **The old source-freeze receipt was incomplete.** It recorded no checking script,
+   no tested-dirty-diff hash, and several old command receipts lack invocation/exit/
+   source metadata. New A1 receipts carry `BEGIN/END RAW OUTPUT`, real exit codes,
+   timestamps, toolchain and source identity, plus the checker
+   `evidence/c2-f1-a1-source-freeze.txt`. Current-source equality supports preserving
+   the verified F1 work; it does not reconstruct unrecorded historical command
+   metadata.
+10. **Additional A1 G7 blocker.** The known pre-existing
+    `segment::reader::stored_blocks_reader_tests::certificate_retains_flat_offsets_and_hot_path_is_direct`
+    counter flake failed once in the MSRV all-features workspace run and passed on an
+    identical repeat; the earlier baseline receipt reproduces it on `MAIN_BASE`.
+    G7 stays blocked pending maintainer disposition (`evidence/c2-f1-a1-flake-classification.txt`).
+
+**Current disposition:** `PERF06_C2_F1_A1_ACCEPTANCE_EXECUTED_G7_BLOCKED_WHITESPACE_DECISION`
+— every prescribed A1 case executes; G7 has two maintainer-owned blockers; G10 open.

@@ -538,3 +538,12 @@ rows are **not executed** and are disclosed as a HARD STOP:
 
 Both are recorded as `PERF06_C2_F1_STOPPED_PLAN_AMENDMENT_REQUIRED` items with the
 smallest requested amendment; no expectation, byte offset or fixture was rewritten.
+
+## Current C2 status pointer (2026-11-26, A1)
+
+This report and its F1 correction section are historical. Current state, gates and
+evidence live in [PERF06C2F1_A1_EXECUTION_REPORT.md](PERF06C2F1_A1_EXECUTION_REPORT.md):
+PR #131 is open and unmerged, the strict-term executor and all amended F1/A1
+acceptance cases are implemented and verified, G7 remains blocked on two
+maintainer-owned decisions (frozen-artifact whitespace and a pre-existing test
+flake), and G10 (independent review/merge) is open. No performance claim is made.

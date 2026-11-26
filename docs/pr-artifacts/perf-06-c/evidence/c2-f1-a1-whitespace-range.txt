@@ -1,0 +1,157 @@
+RECEIPT c2-f1-a1-whitespace-range
+COMMAND: git diff --check <BASE>..<HEAD> (three ranges) plus worktree and staged forms
+CWD: /home/yduchesne/Dev/Github/yduchesne/quervant
+HEAD: 80ccc5c75f244c2c89b295732a229423ad86438f
+CORE.WHITESPACE: (unset: git defaults)
+ATTR: docs/pr-artifacts/perf-06-c/PERF06C2_DETAILED_PLAN.md: whitespace: unspecified
+START: 2026-11-26T19:10:08Z
+BEGIN RAW OUTPUT
+$ git diff --check 46ccab0a606a56a8b9034ab4db5c9c4df969d098..80ccc5c75f244c2c89b295732a229423ad86438f
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:3: trailing whitespace.
++**Repository:** yduchesne/quervant  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:4: trailing whitespace.
++**Existing PR:** [#131](https://github.com/yduchesne/quervant/pull/131)  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:5: trailing whitespace.
++**Required branch:** `dev/perf06-c2`  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:6: trailing whitespace.
++**Plan date:** November 26, 2026 (America/Los_Angeles)  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:7: trailing whitespace.
++**Reviewed and freshly inspected PR head:** `46ccab0a606a56a8b9034ab4db5c9c4df969d098`  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:8: trailing whitespace.
++**Fresh main / accepted C1:** `bc726420cede2e26681d6e8192b45a5d0169abbf`  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:9: trailing whitespace.
++**Current review disposition:** `PERF06_C2_REVIEW_CHANGES_REQUIRED`  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:378: trailing whitespace.
++Capture these observations before calling `forced_legacy`, because that helper resets C2 observations. Then compare `projected()` (includes score bits and fields), `total_hits`, `generation`, `view_ordinal`, `next_cursor`, and `aggregation` against forced Legacy of the **same** query/snapshot/config. For explicit configs use a small test helper mirroring `forced_legacy` but passing the supplied config to `run_with`; do not force Legacy by changing the query shape. 
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:853: trailing whitespace.
++**Categories:** AUTO = AUTO-RESOLVE; DEFER = DEFER AND CONTINUE; STOP = HARD STOP for affected work.  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:854: trailing whitespace.
++**Owners:** Agent executes only the listed rule. Maintainer owns design/source amendments, waivers, acceptance and merge. Repository owner owns unavailable access/CI dependencies.  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:1005: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-baseline-integration.txt:16: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-baseline-physical.txt:12: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-baseline-unified.txt:30: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-i08-attempt-01.txt:8: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-i08-attempt-02.txt:9: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-integration.txt:16: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-p05-attempt-01.txt:42: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-p05-attempt-02.txt:14: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-physical-parallel.txt:12: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-physical-serial.txt:12: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-regression-15h-a.txt:14: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-regression-15h-a2.txt:16: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-regression-b1-ordinals.txt:31: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-regression-b1-unit.txt:100: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-regression-b2-ordinals.txt:16: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-regression-b2-unit.txt:66: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-regression-b3-keys.txt:16: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-regression-b3-unit.txt:64: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-u12-attempt-01.txt:42: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-u12-attempt-02.txt:14: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-u17-attempt-01.txt:41: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-u17-attempt-02.txt:14: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-u21-attempt-01.txt:36: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-unified-parallel.txt:31: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-unified-serial.txt:31: new blank line at EOF.
+exit=2
+$ git diff --check 2bf9539cd2f53838ad1aca406ca4e67a34229ff6..80ccc5c75f244c2c89b295732a229423ad86438f
+exit=0
+$ git diff --check bc726420cede2e26681d6e8192b45a5d0169abbf...80ccc5c75f244c2c89b295732a229423ad86438f
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:3: trailing whitespace.
++**Repository:** yduchesne/quervant  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:4: trailing whitespace.
++**Existing PR:** [#131](https://github.com/yduchesne/quervant/pull/131)  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:5: trailing whitespace.
++**Required branch:** `dev/perf06-c2`  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:6: trailing whitespace.
++**Plan date:** November 26, 2026 (America/Los_Angeles)  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:7: trailing whitespace.
++**Reviewed and freshly inspected PR head:** `46ccab0a606a56a8b9034ab4db5c9c4df969d098`  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:8: trailing whitespace.
++**Fresh main / accepted C1:** `bc726420cede2e26681d6e8192b45a5d0169abbf`  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:9: trailing whitespace.
++**Current review disposition:** `PERF06_C2_REVIEW_CHANGES_REQUIRED`  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:378: trailing whitespace.
++Capture these observations before calling `forced_legacy`, because that helper resets C2 observations. Then compare `projected()` (includes score bits and fields), `total_hits`, `generation`, `view_ordinal`, `next_cursor`, and `aggregation` against forced Legacy of the **same** query/snapshot/config. For explicit configs use a small test helper mirroring `forced_legacy` but passing the supplied config to `run_with`; do not force Legacy by changing the query shape. 
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:853: trailing whitespace.
++**Categories:** AUTO = AUTO-RESOLVE; DEFER = DEFER AND CONTINUE; STOP = HARD STOP for affected work.  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:854: trailing whitespace.
++**Owners:** Agent executes only the listed rule. Maintainer owns design/source amendments, waivers, acceptance and merge. Repository owner owns unavailable access/CI dependencies.  
+docs/pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md:1005: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/PERF06C2_DETAILED_PLAN.md:3: trailing whitespace.
++**Repository:** `yduchesne/quervant`  
+docs/pr-artifacts/perf-06-c/PERF06C2_DETAILED_PLAN.md:4: trailing whitespace.
++**Dependency:** merged documentation-only C1 PR #130; verified `main` at authoring time: `bc726420cede2e26681d6e8192b45a5d0169abbf`  
+docs/pr-artifacts/perf-06-c/PERF06C2_DETAILED_PLAN.md:5: trailing whitespace.
++**Suggested branch / PR:** `dev/perf06-c2-physical-executor` → `main`; draft PR `PERF-06-C2: integrate exact-count strict-term Top-K execution`  
+docs/pr-artifacts/perf-06-c/PERF06C2_DETAILED_PLAN.md:6: trailing whitespace.
++**Document authority:** `docs/architecture/PERF06C_PHYSICAL_EXECUTION_CONTRACT.md`, `docs/pr-artifacts/perf-06-c/PERF06C1_SOURCE_AUDIT.md`, `docs/DETAILED_PR_PLAN_AUTHORING_GUIDE.md`, `AGENTS.md`, `docs/TESTING.md`.  
+docs/pr-artifacts/perf-06-c/evidence/c2-coverage-all-features.txt:11: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-coverage.txt:11: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-baseline-integration.txt:16: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-baseline-physical.txt:12: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-baseline-unified.txt:30: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-i08-attempt-01.txt:8: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-i08-attempt-02.txt:9: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-integration.txt:16: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-p05-attempt-01.txt:42: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-p05-attempt-02.txt:14: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-physical-parallel.txt:12: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-physical-serial.txt:12: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-regression-15h-a.txt:14: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-regression-15h-a2.txt:16: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-regression-b1-ordinals.txt:31: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-regression-b1-unit.txt:100: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-regression-b2-ordinals.txt:16: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-regression-b2-unit.txt:66: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-regression-b3-keys.txt:16: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-regression-b3-unit.txt:64: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-u12-attempt-01.txt:42: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-u12-attempt-02.txt:14: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-u17-attempt-01.txt:41: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-u17-attempt-02.txt:14: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-u21-attempt-01.txt:36: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-unified-parallel.txt:31: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-f1-unified-serial.txt:31: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-integration.txt:16: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-regression-15h-a.txt:13: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-regression-15h-a2.txt:15: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-regression-b1-ordinals.txt:7: trailing whitespace.
++test b1_i02_child_process_reopen_sees_the_same_view ... 
+docs/pr-artifacts/perf-06-c/evidence/c2-regression-b1-ordinals.txt:16: trailing whitespace.
++test b1_i04_historical_fixture_append_compact_and_reopen ... 
+docs/pr-artifacts/perf-06-c/evidence/c2-regression-b1-ordinals.txt:30: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-regression-b1-unit.txt:72: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-regression-b2-ordinals.txt:15: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-regression-b2-unit.txt:38: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-regression-b3-keys.txt:15: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-regression-b3-unit.txt:36: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-unit-c2-parallel.txt:45: new blank line at EOF.
+docs/pr-artifacts/perf-06-c/evidence/c2-unit-c2-serial.txt:45: new blank line at EOF.
+exit=2
+$ git diff --check
+exit=0
+$ git diff --cached --check
+exit=0
+END RAW OUTPUT
+RECONCILIATION:
+  main...HEAD diagnostics = 55 across exactly the 40 artifacts listed in
+  PERF06C2F1_A1_DETAILED_AMENDMENT.md Appendix A; all 40 git blobs are
+  byte-identical at this HEAD (0 mismatches) and the declared diagnostic count
+  is also 55 (0 extra, 0 missing).
+  A1_START..HEAD = 0 diagnostics, so no A1-authored prose or receipt other than
+  this self-quoting one introduces whitespace.
+  F1_START..HEAD = 23 diagnostics, all inside the same frozen F1 artifacts.
+  Untracked foreign path docs/pr-artifacts/perf-06-b/evidence/f2-ci-status.txt is
+  outside these ranges and was never staged (A05).
+SELF-QUOTING NOTE (A30): this receipt embeds the raw diff-check output, so its
+  own body necessarily contains the quoted '+' lines with trailing whitespace.
+  Per A30 the raw bytes are preserved unchanged; this file is therefore a NEW
+  A1 artifact needing a separate explicit decision and is NOT covered by the
+  Appendix A scope (which names only the 40 frozen artifacts above).
+CLASSIFICATION: deterministic pre-existing whitespace in frozen plans/raw
+  receipts, plus this self-quoting A1 receipt.
+GATE: G7 BLOCKED (A24/A30). This receipt grants no exception and does not report
+  the command as passing.
+END: 2026-11-26T19:10:08Z
+END RECEIPT
