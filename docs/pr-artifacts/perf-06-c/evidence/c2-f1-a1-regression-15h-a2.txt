@@ -1,0 +1,28 @@
+RECEIPT c2-f1-a1-regression-15h-a2
+COMMAND: QUERVANT_ENV_SANITIZED=1 cargo +1.98.1 test -p quervant-core --test pr15h_a2_dispatch
+ENV_PREFIX: env -u QUERVANT_PR15I_D3C_STRATEGY -u QUERVANT_PR15I_D3C_PREFILTER_PROFILE
+CWD: /home/yduchesne/Dev/Github/yduchesne/quervant
+TOOLCHAIN: rustc 1.98.1
+SOURCE: A1 START 2bf9539cd2f53838ad1aca406ca4e67a34229ff6 + final A1 test/source changes (see c2-f1-a1-source-freeze.txt)
+HEADSHA: 2bf9539cd2f53838ad1aca406ca4e67a34229ff6
+START: 2026-11-26T18:37:24Z
+BEGIN RAW OUTPUT
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/pr15h_a2_dispatch.rs (target/debug/deps/pr15h_a2_dispatch-6c77ce023dcb66d6)
+
+running 8 tests
+test a2_i07_corruption_fail_closed ... ok
+test a2_i04_candidate_budget_boundary ... ok
+test a2_i05_cancellation_high_and_low ... ok
+test a2_i06_sort_cursor_typed_negative ... ok
+test a2_i01_local_commit_reopen_boundary ... ok
+test a2_i08_fs_reopen_and_deterministic_rebuild ... ok
+test a2_i03_two_segment_live_dispatch_and_pit ... ok
+test a2_i02_100k_mixed_cardinality ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.34s
+
+END RAW OUTPUT
+EXIT: 0
+END: 2026-11-26T18:37:32Z
+END RECEIPT

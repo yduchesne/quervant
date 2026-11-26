@@ -1092,6 +1092,15 @@ only; PERF-06-B4 owns any performance qualification.
 
 ## Integrated lexical physical execution (PERF-06-C1 design)
 
+> **Status note (2026-11-25):** C2 — the strict-term physical executor — is
+> implemented on a draft branch from the approved
+> [C2 plan](pr-artifacts/perf-06-c/PERF06C2_DETAILED_PLAN.md); the executed evidence
+> and disclosed limitations are in the
+> [C2 execution report](pr-artifacts/perf-06-c/PERF06C2_EXECUTION_REPORT.md).
+> C2 is unmerged and makes no performance claim; C3 has not started and C4 owns all
+> warm qualification.
+
+
 The [PERF-06-C physical execution contract](architecture/PERF06C_PHYSICAL_EXECUTION_CONTRACT.md) defines the proposed narrow standalone strict-term / keyword-sort Top-K physical operator on the **accepted A+B source**, its exact-count and eager-score requirements, the nonnegotiable error/budget/PIT/fallback semantics, and C3's formal winner-only scoring proof boundary. The [C1 source reconciliation](pr-artifacts/perf-06-c/PERF06C1_SOURCE_AUDIT.md) explains the difference from the current PERF-05/B1–B3 collector and historical rejected physical-operator approaches.
 
 **C1 is documentation only**; no physical operator or runtime dispatch is implemented by this architectural section. C2, C3 and C4 require separate review, implementation, tests and qualification.

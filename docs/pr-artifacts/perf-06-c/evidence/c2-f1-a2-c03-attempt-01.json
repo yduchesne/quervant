@@ -1,0 +1,41 @@
+{
+  "schema": "quervant-perf06-c2-f1-a2-receipt-v1",
+  "mode": "pinned",
+  "receipt_location": "repository-evidence",
+  "command": [
+    "cargo",
+    "+1.98.1",
+    "test",
+    "-p",
+    "quervant-core",
+    "--lib",
+    "search::unified::c2_tests::",
+    "--",
+    "--test-threads=8"
+  ],
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+  "source_commit_after": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+  "source_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "source_patch_base64": "",
+  "helper_scripts_sha256": {
+    "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-record.py": "d1f71971f261d8591bc335ee6f63208b9e4043f26c3231377d8a16b60f0e50f0",
+    "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-source-freeze.py": "1fdd7fdcb46049d883ece1c40090932fd9460eb60bc1c57b7a038910f67d619b"
+  },
+  "known_foreign_artifact_sha256_before": "c286db999aeaf3943fdb3f731cf823a9336eedc79311fa77254a66976ea3e7c7",
+  "known_foreign_artifact_sha256_after": "c286db999aeaf3943fdb3f731cf823a9336eedc79311fa77254a66976ea3e7c7",
+  "environment_keys_removed": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE",
+    "RUST_TEST_THREADS"
+  ],
+  "started_utc": "2026-11-26T20:49:50.186700+00:00",
+  "ended_utc": "2026-11-26T20:49:52.204069+00:00",
+  "command_exit_code": 0,
+  "launch_error": null,
+  "source_identity_valid": true,
+  "source_identity_error": null,
+  "combined_output_encoding": "base64",
+  "combined_output_sha256": "c44bac51200a70525890391ad7f3a6c922f61f6cf0dcd03898c56dc644636d85",
+  "combined_output_base64": "ICAgIEZpbmlzaGVkIGB0ZXN0YCBwcm9maWxlIFt1bm9wdGltaXplZCArIGRlYnVnaW5mb10gdGFyZ2V0KHMpIGluIDAuMDdzCiAgICAgUnVubmluZyB1bml0dGVzdHMgc3JjL2xpYi5ycyAodGFyZ2V0L2RlYnVnL2RlcHMvcXVlcnZhbnRfY29yZS00YmNlMDVkZWU0ZTRmZWQ0KQoKcnVubmluZyAyNCB0ZXN0cwp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UwNF9ydW50aW1lX3NoYXBlX2FuZF9kZWNvZGVyIC4uLiBvawp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UwN19sYXRlX3Njb3JlX2Vycm9yX2JlYXRzX2tleV9lcnJvciAuLi4gb2sKdGVzdCBzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MDNfdmFsaWRhdGlvbl9wcmVjZWRlbmNlIC4uLiBvawp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UxMV9wcmVmbGlnaHRfYXRvbWljX2FuZF9yYWlpIC4uLiBvawp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UwOV9pbnBsYWNlX2FsbG9jYXRpb25faWRlbnRpdHkgLi4uIG9rCnRlc3Qgc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTAxX3N0YXRpY19kaXNwYXRjaF9tYXRyaXggLi4uIG9rCnRlc3Qgc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTE0X251bWVyaWNfcmFua19udWxsX21pc3NpbmdfbXVsdGlvbmUgLi4uIG9rCnRlc3Qgc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTE1X2R1cGxpY2F0ZV9jb2xsaXNpb25fYW5kX2xvc2VyIC4uLiBvawp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UwNl9leGFjdF90b3RhbF9oaXRzIC4uLiBvawp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UxMF92aXJ0dWFsX2xlZGdlcl9leGFjdF9ib3VuZGFyaWVzIC4uLiBvawp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UwNV9uX3dvcmtfYW5kX3NjYW5uZWRfZnJlcSAuLi4gb2sKdGVzdCBzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MThfcGl0X211dGF0aW9uX2FuZF9taXhlZF9zZWdtZW50cyAuLi4gb2sKdGVzdCBzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MTlfc2libGluZ19wYXRoc191bnRvdWNoZWQgLi4uIG9rCnRlc3Qgc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTIwX2dlbmVyaWNfaG90X2xvb3BfaXNvbGF0aW9uIC4uLiBvawp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UxNl9jdXJzb3Jfc2VudGluZWxfYW5kX2xlZ2FjeV9jb250aW51YXRpb24gLi4uIG9rCnRlc3Qgc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTEyX2NvcnJ1cHRfc2VsZWN0ZWRfdW5zZWxlY3RlZF9hbmRfbXVsdGlfZmF1bHQgLi4uIG9rCnRlc3Qgc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTIzX2IxX2IyX2IzX3JldXNlX3dpdG5lc3MgLi4uIG9rCnRlc3Qgc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTIxX3dvcmtfYnVkZ2V0X2V4aGF1c3Rpb25fYWZ0ZXJfcHJpb3Jfc2VnbWVudCAuLi4gb2sKdGVzdCBzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MjRfemVyb19lZmZlY3RfYW5kX2Vycm9yX3JlcGV0aXRpb24gLi4uIG9rCnRlc3Qgc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTEzX2NhbmNlbGxhdGlvbl9wcm9ncmVzcyAuLi4gb2sKdGVzdCBzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MTdfb3JkaW5hbF91bmF2YWlsYWJsZV9hbmRfYjNfcmVmdXNhbCAuLi4gb2sKdGVzdCBzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MDJfY2FyZGluYWxpdHlfYm91bmRhcnkgLi4uIG9rCnRlc3Qgc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTIyX3NlZWRlZF9kaWZmZXJlbnRpYWxfbWF0cml4IC4uLiBvawp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UwOF9zY29yZV9iaXRfcGFyaXR5IC4uLiBvawoKdGVzdCByZXN1bHQ6IG9rLiAyNCBwYXNzZWQ7IDAgZmFpbGVkOyAwIGlnbm9yZWQ7IDAgbWVhc3VyZWQ7IDExNzggZmlsdGVyZWQgb3V0OyBmaW5pc2hlZCBpbiAxLjkzcwoK"
+}

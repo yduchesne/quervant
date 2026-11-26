@@ -1,0 +1,43 @@
+{
+  "schema": "quervant-perf06-c2-f1-a2-receipt-v1",
+  "mode": "pinned",
+  "receipt_location": "repository-evidence",
+  "command": [
+    "cargo",
+    "+1.98.1",
+    "test",
+    "-p",
+    "quervant-core",
+    "--lib",
+    "search::unified::c2_tests::",
+    "--",
+    "--list",
+    "--format",
+    "terse"
+  ],
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+  "source_commit_after": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+  "source_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "source_patch_base64": "",
+  "helper_scripts_sha256": {
+    "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-record.py": "d1f71971f261d8591bc335ee6f63208b9e4043f26c3231377d8a16b60f0e50f0",
+    "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-source-freeze.py": "1fdd7fdcb46049d883ece1c40090932fd9460eb60bc1c57b7a038910f67d619b"
+  },
+  "known_foreign_artifact_sha256_before": "c286db999aeaf3943fdb3f731cf823a9336eedc79311fa77254a66976ea3e7c7",
+  "known_foreign_artifact_sha256_after": "c286db999aeaf3943fdb3f731cf823a9336eedc79311fa77254a66976ea3e7c7",
+  "environment_keys_removed": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE",
+    "RUST_TEST_THREADS"
+  ],
+  "started_utc": "2026-11-26T20:49:34.167309+00:00",
+  "ended_utc": "2026-11-26T20:49:34.277071+00:00",
+  "command_exit_code": 0,
+  "launch_error": null,
+  "source_identity_valid": true,
+  "source_identity_error": null,
+  "combined_output_encoding": "base64",
+  "combined_output_sha256": "1dc8b46db073f8d78fcb855d3ff11fcb1eec1c9a51471540c8e194fd82de760d",
+  "combined_output_base64": "ICAgIEZpbmlzaGVkIGB0ZXN0YCBwcm9maWxlIFt1bm9wdGltaXplZCArIGRlYnVnaW5mb10gdGFyZ2V0KHMpIGluIDAuMDlzCiAgICAgUnVubmluZyB1bml0dGVzdHMgc3JjL2xpYi5ycyAodGFyZ2V0L2RlYnVnL2RlcHMvcXVlcnZhbnRfY29yZS00YmNlMDVkZWU0ZTRmZWQ0KQpzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MDFfc3RhdGljX2Rpc3BhdGNoX21hdHJpeDogdGVzdApzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MDJfY2FyZGluYWxpdHlfYm91bmRhcnk6IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTAzX3ZhbGlkYXRpb25fcHJlY2VkZW5jZTogdGVzdApzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MDRfcnVudGltZV9zaGFwZV9hbmRfZGVjb2RlcjogdGVzdApzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MDVfbl93b3JrX2FuZF9zY2FubmVkX2ZyZXE6IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTA2X2V4YWN0X3RvdGFsX2hpdHM6IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTA3X2xhdGVfc2NvcmVfZXJyb3JfYmVhdHNfa2V5X2Vycm9yOiB0ZXN0CnNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UwOF9zY29yZV9iaXRfcGFyaXR5OiB0ZXN0CnNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UwOV9pbnBsYWNlX2FsbG9jYXRpb25faWRlbnRpdHk6IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTEwX3ZpcnR1YWxfbGVkZ2VyX2V4YWN0X2JvdW5kYXJpZXM6IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTExX3ByZWZsaWdodF9hdG9taWNfYW5kX3JhaWk6IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTEyX2NvcnJ1cHRfc2VsZWN0ZWRfdW5zZWxlY3RlZF9hbmRfbXVsdGlfZmF1bHQ6IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTEzX2NhbmNlbGxhdGlvbl9wcm9ncmVzczogdGVzdApzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MTRfbnVtZXJpY19yYW5rX251bGxfbWlzc2luZ19tdWx0aW9uZTogdGVzdApzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MTVfZHVwbGljYXRlX2NvbGxpc2lvbl9hbmRfbG9zZXI6IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTE2X2N1cnNvcl9zZW50aW5lbF9hbmRfbGVnYWN5X2NvbnRpbnVhdGlvbjogdGVzdApzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MTdfb3JkaW5hbF91bmF2YWlsYWJsZV9hbmRfYjNfcmVmdXNhbDogdGVzdApzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MThfcGl0X211dGF0aW9uX2FuZF9taXhlZF9zZWdtZW50czogdGVzdApzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MTlfc2libGluZ19wYXRoc191bnRvdWNoZWQ6IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTIwX2dlbmVyaWNfaG90X2xvb3BfaXNvbGF0aW9uOiB0ZXN0CnNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UyMV93b3JrX2J1ZGdldF9leGhhdXN0aW9uX2FmdGVyX3ByaW9yX3NlZ21lbnQ6IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTIyX3NlZWRlZF9kaWZmZXJlbnRpYWxfbWF0cml4OiB0ZXN0CnNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UyM19iMV9iMl9iM19yZXVzZV93aXRuZXNzOiB0ZXN0CnNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UyNF96ZXJvX2VmZmVjdF9hbmRfZXJyb3JfcmVwZXRpdGlvbjogdGVzdAo="
+}

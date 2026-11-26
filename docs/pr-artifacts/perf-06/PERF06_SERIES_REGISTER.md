@@ -201,3 +201,113 @@ no merge, no baseline promotion, no PERF-06-C1 start.
 The C1 PR changes **docs only**. It creates no physical-plan type in Rust, no unit/integration tests, no benchmark acquisition or code changes, and no implementation plan for a coding agent. Approval of C1 documentation is **not** approval to run C2. C2 and C3 each require a separate prescriptive detailed plan and correctness/CI acceptance; C4 requires a separately frozen warm benchmark against the accepted A+B baseline and an independent adoption decision. No PR stage may bypass the historical low-hit regression evidence or assume that non-scoring sort allows loser's BM25 errors to be ignored.
 
 **C1 acceptance state:** independent document review and maintainer merge **OPEN**. After merge, use merged main for the C2 base, not this C1 branch.
+
+## PERF-06-C2 implementation status amendment (2026-11-25)
+
+**Baseline:** merged C1 `main@bc726420cede2e26681d6e8192b45a5d0169abbf`.
+C2 was implemented on the draft branch `dev/perf06-c2-physical-executor` from the
+approved prescriptive plan
+[PERF06C2_DETAILED_PLAN.md](../perf-06-c/PERF06C2_DETAILED_PLAN.md) (committed
+verbatim). The executed evidence ledger, invariant trace and disclosed
+limitations are in
+[PERF06C2_EXECUTION_REPORT.md](../perf-06-c/PERF06C2_EXECUTION_REPORT.md).
+
+- **C2 scope delivered:** one request-local `StrictTermOrdinalTopK` route for a
+  standalone single-analyzed-term query with one sortable `Keyword` column and a
+  proven `M > K+1`; a new private in-place scored-posting evaluator that reuses the
+  single validated `(doc_id, freq)` posting allocation and rewrites its frequency
+  word to `f64::to_bits()` after eagerly scoring **every** match; the accepted
+  B1/B2/B3 candidate handlers, duplicate policy and K+1 cursor finalization reused
+  unchanged; the accepted legacy per-segment loop moved out of line mechanically
+  with no per-document dispatch.
+- **Still open:** C2 is **not merged**, **not performance-qualified** and makes no
+  warm-latency claim. Independent review (G10) and maintainer merge are
+  maintainer-owned. **C3 has not started.** C4 owns every warm measurement,
+  including the low-hit/absent/rare guard.
+- **Unchanged:** no persisted format, writer/storage/reader API, dependency,
+  feature flag, benchmark asset, CI workflow or historical negative evidence was
+  modified. C2 performs no durable writes.
+
+## PERF-06-C2-F1 test/evidence fixup status (2026-11-26)
+
+PR [#131](https://github.com/yduchesne/quervant/pull/131) (branch `dev/perf06-c2`)
+carried the C2 implementation. Independent review raised five test/evidence
+findings, and the follow-up plan
+[PERF06C2F1_DETAILED_FIXUP_PLAN.md](../perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md)
+was executed with results in
+[PERF06C2F1_EXECUTION_REPORT.md](../perf-06-c/PERF06C2F1_EXECUTION_REPORT.md).
+
+- **Closed:** the actual per-segment B3 allocation refusal (five exact probe rows),
+  the exact P05 evaluator work/scanned table with same-budget recovery, the exact
+  public I08 resource boundaries with same-snapshot retries, the new C2-U12
+  corruption/precedence test (6 of 9 prescribed rows), and the corrected
+  inventory/identity/evidence attribution (28 unit + 9 integration at START;
+  29 + 9 after F1).
+- **Blocked (`PERF06_C2_F1_STOPPED_PLAN_AMENDMENT_REQUIRED`):** three prescribed
+  fixtures are contradicted by the accepted source — physical segment order is
+  content-addressed (`s-{sha256}`) rather than commit order, and the `grp/common`
+  postings payload is compact-short *positional* (218 bytes) rather than the plan's
+  67-byte doc-only form. The C2-U21 boundary table, the U17 no-eager-binding
+  refinement and the U12 posting-mutation rows therefore did not execute; no
+  expectation or byte offset was rewritten.
+- **Unchanged:** production execution semantics (normal-build source equality
+  verified), persisted formats, storage, benchmark assets and CI workflows. Local
+  stable/MSRV QA and both coverage gates pass (93.24 % / 92.82 % lines).
+- PR #131 remains **draft and unmerged**; G10 independent review/maintainer
+  acceptance stays open; C3/C4 are unstarted and no performance claim is made.
+
+## PERF-06-C2-F1-A1 amendment execution status (2026-11-26)
+
+The approved
+[PERF06C2F1_A1_DETAILED_AMENDMENT.md](../perf-06-c/PERF06C2F1_A1_DETAILED_AMENDMENT.md)
+resolved both F1 D14 stops by adopting the settled source facts — content-addressed
+query segment order (34-document slice first) and compact-short positional
+`grp/common` postings — and strengthened the response comparisons. Results:
+[PERF06C2F1_A1_EXECUTION_REPORT.md](../perf-06-c/PERF06C2F1_A1_EXECUTION_REPORT.md).
+
+- **Now executed and passing:** all nine U12 corruption/precedence rows
+  (`completed=9`), the four native-order U21 boundary rows with three same-snapshot
+  recoveries, the U17 `INJECTED_C2_ONLY` no-eager-binding case, the five U17 B3
+  refusal rows with complete forced-Legacy parity, the retained P05 resource table,
+  and I08's exact resource/cancellation outcomes with complete cursor and
+  aggregation equality.
+- **Unchanged:** production execution semantics (`execute.rs` byte-identical to
+  A1 START; the A1 and F1 normal-build region checks both pass), persisted formats,
+  storage, benchmark assets and CI workflows.
+- **G7 remains BLOCKED** on two maintainer-owned decisions: the 55 committed-range
+  whitespace diagnostics confined to 40 frozen plan/receipt artifacts (exactly
+  matching the amendment's Appendix A proposal, with `A1_START..HEAD` clean), and a
+  reproduced pre-existing `stored_blocks_reader_tests` counter flake.
+- **Delivery:** PR [#131](https://github.com/yduchesne/quervant/pull/131) is open and
+  **unmerged** with its observed readiness flag preserved; G10 independent
+  review/maintainer acceptance is open; C3/C4 are unstarted and no performance claim
+  is made.
+
+## PERF-06-C2-F1-A2 closeout (2026-11-26)
+
+The approved
+[PERF06C2F1_A2_CLOSEOUT_PLAN.md](../perf-06-c/PERF06C2F1_A2_CLOSEOUT_PLAN.md) finished
+the F1/A1 closeout. Results:
+[PERF06C2F1_A2_EXECUTION_REPORT.md](../perf-06-c/PERF06C2F1_A2_EXECUTION_REPORT.md).
+
+- **Certificate counter interference CLOSED BY REPAIR.** Test-only observation is now
+  thread-local (`stored_blocks.rs` `Cell` in the existing `thread_local!` block), the
+  single real build site calls the helper, and the existing test gained a
+  deterministic sibling-thread regression: the worker builds a real certificate
+  (delta 1) while the parent observes delta 0 before its own first access (delta 1),
+  with every original hot-path assertion and the warm no-rebuild equality retained.
+  The retired global mechanism fails red-first (`exit 101`, left 1 / right 0); the
+  final state passes T02–T07 (stable, MSRV, MSRV+all-features, and the nine-test
+  module serial/8-thread/MSRV).
+- **Frozen C2 acceptance re-executed on immutable A2_TESTED:** U17 (five B3 rows +
+  structural), U21 (86/87/99/100 + three recoveries), U12 (nine rows, `completed=9`),
+  P05 (six exact rows), I08 (exact resources + complete retry parity); inventories
+  24/5/9/39 and nine reader tests; all local QA and both coverage gates pass
+  (93.33 % / 92.91 % lines).
+- **Normal builds unchanged:** `execute.rs`, `unified.rs` and the integration tests are
+  byte-identical to A2_START, verified by the supplied exact checker in both regimes.
+- **G7 remains BLOCKED** solely on the human decision about exactly 81 whitespace
+  diagnostics in 41 unchanged frozen artifacts (A2's own range is 0). Delivery,
+  reports and the PR body are corrected; PR #131 stays open and **unmerged** with its
+  observed readiness preserved; G10 is open; C3/C4 are unstarted and no performance
+  claim is made.

@@ -1,0 +1,28 @@
+RECEIPT c2-f1-a1-regression-b3-keys
+COMMAND: QUERVANT_ENV_SANITIZED=1 cargo +1.98.1 test -p quervant-core --test perf06_b3_keys
+ENV_PREFIX: env -u QUERVANT_PR15I_D3C_STRATEGY -u QUERVANT_PR15I_D3C_PREFILTER_PROFILE
+CWD: /home/yduchesne/Dev/Github/yduchesne/quervant
+TOOLCHAIN: rustc 1.98.1
+SOURCE: A1 START 2bf9539cd2f53838ad1aca406ca4e67a34229ff6 + final A1 test/source changes (see c2-f1-a1-source-freeze.txt)
+HEADSHA: 2bf9539cd2f53838ad1aca406ca4e67a34229ff6
+START: 2026-11-26T18:37:23Z
+BEGIN RAW OUTPUT
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/perf06_b3_keys.rs (target/debug/deps/perf06_b3_keys-8e7a5cfd7050764c)
+
+running 8 tests
+test b3_i06_rustfs_suite_registration_is_unchanged ... ok
+test b3_i04_genuine_v1_fixture_then_compaction ... ok
+test b3_i08_resource_limits_and_exact_set_fallback ... ok
+test b3_i07_corrupt_doc_keys_is_authoritative ... ok
+test b3_i05_cursor_pages_pinned_batch_and_ineligible_shapes ... ok
+test b3_i01_filesystem_corpus_full_order_projection_and_scores ... ok
+test b3_i03_held_pits_and_immutable_objects_across_mutation ... ok
+test b3_i02_sequential_keys_repeat_queries_are_stable ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+
+END RAW OUTPUT
+EXIT: 0
+END: 2026-11-26T18:37:24Z
+END RECEIPT

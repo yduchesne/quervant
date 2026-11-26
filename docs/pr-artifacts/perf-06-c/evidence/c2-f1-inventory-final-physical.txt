@@ -1,0 +1,35 @@
+warning: variable does not need to be mutable
+     --> crates/quervant-core/src/search/unified.rs:13553:13
+      |
+13553 |         let mut run_row = |row: U12Row| {
+      |             ----^^^^^^^
+      |             |
+      |             help: remove this `mut`
+      |
+      = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `forced_legacy_pre_route` is never used
+     --> crates/quervant-core/src/search/unified.rs:11812:8
+      |
+11812 |     fn forced_legacy_pre_route(
+      |        ^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `body` is never used
+     --> crates/quervant-core/src/search/unified.rs:11864:12
+      |
+11838 |     impl CopiedSegment {
+      |     ------------------ method in this implementation
+...
+11864 |         fn body(&self, kind: crate::segment::SectionKind) -> &[u8] {
+      |            ^^^^
+
+warning: `quervant-core` (lib test) generated 3 warnings (run `cargo fix --lib -p quervant-core --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/quervant_core-4bce05dee4e4fed4)
+search::execute::c2_physical_tests::c2_p01_shape_mismatch_fails_closed: test
+search::execute::c2_physical_tests::c2_p02_inplace_reuse_and_callback_order: test
+search::execute::c2_physical_tests::c2_p03_corrupt_postings_precede_every_callback: test
+search::execute::c2_physical_tests::c2_p04_late_score_fault_precedes_corrupt_doc_keys: test
+search::execute::c2_physical_tests::c2_p05_n_examination_and_scanned_frequency: test

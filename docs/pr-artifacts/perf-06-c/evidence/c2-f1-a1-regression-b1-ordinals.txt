@@ -1,0 +1,43 @@
+RECEIPT c2-f1-a1-regression-b1-ordinals
+COMMAND: QUERVANT_ENV_SANITIZED=1 cargo +1.98.1 test -p quervant-core --test perf06_b1_ordinals
+ENV_PREFIX: env -u QUERVANT_PR15I_D3C_STRATEGY -u QUERVANT_PR15I_D3C_PREFILTER_PROFILE
+CWD: /home/yduchesne/Dev/Github/yduchesne/quervant
+TOOLCHAIN: rustc 1.98.1
+SOURCE: A1 START 2bf9539cd2f53838ad1aca406ca4e67a34229ff6 + final A1 test/source changes (see c2-f1-a1-source-freeze.txt)
+HEADSHA: 2bf9539cd2f53838ad1aca406ca4e67a34229ff6
+START: 2026-11-26T18:37:22Z
+BEGIN RAW OUTPUT
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running tests/perf06_b1_ordinals.rs (target/debug/deps/perf06_b1_ordinals-0e88f35c26e464e4)
+
+running 11 tests
+test b1_i02_child_body ... ignored, invoked only by b1_i02_child_process_reopen_sees_the_same_view
+test b1_i04_child_body ... ignored, invoked only by b1_i04_historical_fixture_append_compact_and_reopen
+test b1_i07_container_wrapped_column_corruption_is_rejected ... ok
+test b1_i08_pinned_cursor_pagination_and_negative_outcomes ... ok
+test b1_u14_real_writer_rejects_zero_multi_count ... ok
+
+running 1 test
+
+running 1 test
+test b1_i04_child_body ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.02s
+
+test b1_i04_historical_fixture_append_compact_and_reopen ... ok
+test b1_i02_child_body ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.02s
+
+test b1_i02_child_process_reopen_sees_the_same_view ... ok
+test b1_i01_corpus_values_ordinals_and_exact_query_order ... ok
+test b1_i05_public_aggregation_and_nonstored_reconstruction ... ok
+test b1_i03_append_delete_compact_and_held_pits ... ok
+test b1_i06_exact_large_dictionary_allocation_boundary ... ok
+
+test result: ok. 9 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.36s
+
+END RAW OUTPUT
+EXIT: 0
+END: 2026-11-26T18:37:23Z
+END RECEIPT

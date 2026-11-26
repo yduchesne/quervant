@@ -1,0 +1,34 @@
+RECEIPT c2-f1-a1-script-tests
+COMMAND: QUERVANT_ENV_SANITIZED=1 bash benchmarks/scripts/test-scripts.sh
+ENV_PREFIX: env -u QUERVANT_PR15I_D3C_STRATEGY -u QUERVANT_PR15I_D3C_PREFILTER_PROFILE
+CWD: /home/yduchesne/Dev/Github/yduchesne/quervant
+TOOLCHAIN: bash
+SOURCE: A1 START 2bf9539cd2f53838ad1aca406ca4e67a34229ff6 + final A1 test/source changes (see c2-f1-a1-source-freeze.txt)
+HEADSHA: 2bf9539cd2f53838ad1aca406ca4e67a34229ff6
+START: 2026-11-26T18:38:48Z
+BEGIN RAW OUTPUT
+== A4-T11 invalid profiling arguments ==
+== A4-T10/C-T21 unavailable profilers report UNAVAILABLE ==
+  perf installed; skipping UNAVAILABLE assertion
+  heaptrack installed; skipping UNAVAILABLE assertion
+== A4-T10 fake perf tool produces a captured report ==
+== C-T14 provenance runs are preserved ==
+== C-T15 historical report ==
+== C-T01/C-T08 fixture metadata counts and dictionary throughput ==
+metadata ok
+== C-T03..C-T07 v2 builder + validator ==
+== C-T09..C-T13 contention detector (synthetic snapshots) ==
+== C-T16 aggregate consumes repeated --trial-report flags ==
+== PR14F wrapper qualification contract ==
+== PR14F SR-14F-01 oracle ordering ==
+== AR2-T01..T04 profiler-evidence validator contract (TEST FIXTURES) ==
+== AR2 counterexample gate: pre-patch parser could not qualify ==
+== AR2-T06 profiler-evidence record writer/verifier contract ==
+== AR2-T05/T06 runner -> validator evidence wiring (TEST FIXTURE) ==
+== AR2-T08 frozen tooling identity and workload invariants ==
+
+script tests: 108 passed, 0 failed
+END RAW OUTPUT
+EXIT: 0
+END: 2026-11-26T18:39:37Z
+END RECEIPT

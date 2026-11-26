@@ -106,6 +106,7 @@ pub(crate) struct ParsedStoredV2 {
 #[cfg(test)]
 thread_local! {
     static DECOMPRESSED_BLOCKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static CERTIFICATE_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -119,12 +120,18 @@ pub(crate) fn decompressed_blocks() -> u64 {
 }
 
 #[cfg(test)]
-pub(crate) static FAIL_STORED_BLOCKS_BUILD: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+pub(crate) fn record_certificate_build() {
+    CERTIFICATE_BUILDS.with(|value| value.set(value.get() + 1));
+}
 
 #[cfg(test)]
-pub(crate) static CERTIFICATE_BUILDS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+pub(crate) fn certificate_builds() -> u64 {
+    CERTIFICATE_BUILDS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) static FAIL_STORED_BLOCKS_BUILD: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(test)]
 pub(crate) static COUNTER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

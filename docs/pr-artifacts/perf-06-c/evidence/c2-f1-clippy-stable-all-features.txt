@@ -1,0 +1,4 @@
+    Checking quervant-objectstore v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-objectstore)
+    Checking quervant-core v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-core)
+    Checking quervant-distributed v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-distributed)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.02s

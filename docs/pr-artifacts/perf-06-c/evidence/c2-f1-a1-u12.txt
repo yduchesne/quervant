@@ -1,0 +1,31 @@
+RECEIPT c2-f1-a1-u12
+COMMAND: QUERVANT_ENV_SANITIZED=1 cargo +1.98.1 test -p quervant-core --lib search::unified::c2_tests::c2_u12_corrupt_selected_unselected_and_multi_fault -- --exact --nocapture --test-threads=1
+ENV_PREFIX: env -u QUERVANT_PR15I_D3C_STRATEGY -u QUERVANT_PR15I_D3C_PREFILTER_PROFILE
+CWD: /home/yduchesne/Dev/Github/yduchesne/quervant
+TOOLCHAIN: rustc 1.98.1
+SOURCE: A1 START 2bf9539cd2f53838ad1aca406ca4e67a34229ff6 + final A1 test/source changes (see c2-f1-a1-source-freeze.txt)
+HEADSHA: 2bf9539cd2f53838ad1aca406ca4e67a34229ff6
+START: 2026-11-26T18:36:43Z
+BEGIN RAW OUTPUT
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/quervant_core-4bce05dee4e4fed4)
+
+running 1 test
+test search::unified::c2_tests::c2_u12_corrupt_selected_unselected_and_multi_fault ... C2-F1 U12 D0: routed=true converted=30 callbacks=0 numeric=1 membership=30
+C2-F1 U12 D29: routed=true converted=30 callbacks=0 numeric=1 membership=30
+C2-F1 U12 D31: routed=true converted=30 callbacks=0 numeric=1 membership=30
+C2-F1 U12 P29: routed=true converted=0 callbacks=0 numeric=0 membership=0
+C2-F1 U12 P29+D0: routed=true converted=0 callbacks=0 numeric=0 membership=0
+C2-F1 U12 C0: routed=false converted=0 callbacks=0 numeric=0 membership=0
+C2-F1 U12 C29: routed=false converted=0 callbacks=0 numeric=0 membership=0
+C2-F1 U12 C29+P29+D0: routed=false converted=0 callbacks=0 numeric=0 membership=0
+C2-F1 U12 S29+D0: routed=true converted=0 callbacks=0 numeric=0 membership=30
+C2-F1-A1 U12 completed=9 ids=["D0", "D29", "D31", "P29", "P29+D0", "C0", "C29", "C29+P29+D0", "S29+D0"]
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1201 filtered out; finished in 0.09s
+
+END RAW OUTPUT
+EXIT: 0
+END: 2026-11-26T18:36:43Z
+END RECEIPT

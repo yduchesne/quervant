@@ -1,0 +1,21 @@
+{
+  "result": "PASS",
+  "mode": "worktree-final",
+  "A2_START": "cdffd5b486ce46312abf4c45c80b9d33ecbf657d",
+  "worktree_HEAD": "cdffd5b486ce46312abf4c45c80b9d33ecbf657d",
+  "normal_build_source_equal": true,
+  "other_source_build_inputs_and_old_evidence_unchanged": true,
+  "A1_and_original_F1_checks": "PASS",
+  "changed_paths": [
+    "crates/quervant-core/src/segment/reader.rs",
+    "crates/quervant-core/src/segment/stored_blocks.rs",
+    "docs/pr-artifacts/perf-06-c/PERF06C2F1_A2_CLOSEOUT_PLAN.md",
+    "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-preflight.json",
+    "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-record.py",
+    "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-source-freeze.py",
+    "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-t01-red-attempt-01.json"
+  ],
+  "source_patch_sha256": "30f6d2b22a4fe40bffe6c4ba2641b7d9281375cc137d0f349bee72a805c2af0f",
+  "roadmap_scope": "UNCHANGED",
+  "note": "Emitted by docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-source-freeze.py --worktree-final cdffd5b486ce46312abf4c45c80b9d33ecbf657d on the final TLS worktree (implementation check; superseded by the immutable-source receipts). source_patch_base64 omitted here; regenerate with the named command."
+}

@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/quervant_core-4bce05dee4e4fed4)
+search::execute::c2_physical_tests::c2_p01_shape_mismatch_fails_closed: test
+search::execute::c2_physical_tests::c2_p02_inplace_reuse_and_callback_order: test
+search::execute::c2_physical_tests::c2_p03_corrupt_postings_precede_every_callback: test
+search::execute::c2_physical_tests::c2_p04_late_score_fault_precedes_corrupt_doc_keys: test
+search::execute::c2_physical_tests::c2_p05_n_examination_and_scanned_frequency: test

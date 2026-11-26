@@ -1,0 +1,66 @@
+warning: variable does not need to be mutable
+     --> crates/quervant-core/src/search/unified.rs:13553:13
+      |
+13553 |         let mut run_row = |row: U12Row| {
+      |             ----^^^^^^^
+      |             |
+      |             help: remove this `mut`
+      |
+      = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `forced_legacy_pre_route` is never used
+     --> crates/quervant-core/src/search/unified.rs:11812:8
+      |
+11812 |     fn forced_legacy_pre_route(
+      |        ^^^^^^^^^^^^^^^^^^^^^^^
+      |
+      = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `body` is never used
+     --> crates/quervant-core/src/search/unified.rs:11864:12
+      |
+11838 |     impl CopiedSegment {
+      |     ------------------ method in this implementation
+...
+11864 |         fn body(&self, kind: crate::segment::SectionKind) -> &[u8] {
+      |            ^^^^
+
+warning: `quervant-core` (lib test) generated 3 warnings (run `cargo fix --lib -p quervant-core --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/quervant_core-4bce05dee4e4fed4)
+
+running 31 tests
+test search::typed_compare::b2_comparator_tests::b2_u02_raw_byte_order_is_preserved ... ok
+test search::typed_compare::b2_comparator_tests::b2_u01_ordinal_order_matches_canonical_sort_values ... ok
+test search::score::tests::b2_u03_invalid_summary_lookup_fails_closed ... ok
+test search::score::tests::b2_u01_live_summary_all_and_partial ... ok
+test search::execute::budget_tests::b2_u05_helper_preserves_work_charge ... ok
+test search::score::tests::b2_u02_two_segment_mixed_counts ... ok
+test search::execute::budget_tests::b2_u04_count_helper_chunk_edges ... ok
+test search::execute::budget_tests::b2_u06_cancel_poll_schedule_same_as_legacy ... ok
+test search::unified::b2_tests::b2_f1_u01_hidden_mixed_heap_rejected_even_for_loser ... ok
+test search::unified::b2_tests::b2_u14_mixed_heaps_are_rejected_before_mutation ... ok
+test search::unified::b2_tests::b2_f1_u03_long_loser_after_k_plus_one ... ok
+test search::unified::b2_tests::b2_u08_u22_budget_failure_leaves_heap_unchanged_and_charges_match ... ok
+test search::unified::b2_tests::b2_u10_u11_u12_optional_and_error_dispatch ... ok
+test search::unified::b2_tests::b2_u07_losing_long_value_reports_the_decode_limit ... ok
+test search::unified::b2_tests::b2_u17_corrupt_v2_terms_are_authoritative_errors ... ok
+test search::unified::b2_tests::b2_u09_u15_u24_ineligible_shapes_do_not_prepare ... ok
+test search::unified::b2_tests::b2_u06_multi_one_keeps_shape_and_order ... ok
+test search::unified::b2_tests::b2_u19_map_reuse_is_snapshot_scoped ... ok
+test segment::column::b2_accessor_tests::b2_u07_decode_budget_79_rejects_the_80_byte_single_before_discard ... ok
+test segment::column::b2_accessor_tests::b2_u21_bound_row_reads_preserve_single_missing_null_and_multi_one ... ok
+test search::unified::b2_tests::b2_u23_cursor_validation_precedes_preparation ... ok
+test search::unified::b2_tests::b2_u20_identity_all_missing_and_empty_snapshot ... ok
+test search::unified::b2_tests::b2_u05_equal_ranks_tie_by_key_ascending ... ok
+test search::unified::b3_tests::b3_u02_numeric_order_matches_the_b2_owned_path_and_a_byte_oracle ... ok
+test search::unified::b2_tests::b2_u03_local_ordinals_translate_to_one_shared_order ... ok
+test search::unified::c2_tests::c2_u23_b1_b2_b3_reuse_witness ... ok
+test search::unified::b2_tests::b2_u18_duplicate_strategies_preserve_ordinal_results ... ok
+test search::unified::b2_tests::b2_u04_top_k_sizes_and_truncation ... ok
+test search::unified::b2_tests::b2_f1_u02_one_time_audit_and_numeric_only_admissions ... ok
+test search::unified::b2_tests::b2_u16_materialization_tracks_competitiveness ... ok
+test search::unified::b2_tests::b2_u13_generated_differential_oracle ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 1171 filtered out; finished in 0.97s
+

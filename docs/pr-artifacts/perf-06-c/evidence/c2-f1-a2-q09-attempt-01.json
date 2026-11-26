@@ -1,0 +1,38 @@
+{
+  "schema": "quervant-perf06-c2-f1-a2-receipt-v1",
+  "mode": "pinned",
+  "receipt_location": "repository-evidence",
+  "command": [
+    "cargo",
+    "+1.98.1",
+    "doc",
+    "--workspace",
+    "--all-features",
+    "--no-deps"
+  ],
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "source_commit": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+  "source_commit_after": "919e5d7cd355edf5d4530997ef7ab5167ea0b4fc",
+  "source_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "source_patch_base64": "",
+  "helper_scripts_sha256": {
+    "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-record.py": "d1f71971f261d8591bc335ee6f63208b9e4043f26c3231377d8a16b60f0e50f0",
+    "docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-source-freeze.py": "1fdd7fdcb46049d883ece1c40090932fd9460eb60bc1c57b7a038910f67d619b"
+  },
+  "known_foreign_artifact_sha256_before": "c286db999aeaf3943fdb3f731cf823a9336eedc79311fa77254a66976ea3e7c7",
+  "known_foreign_artifact_sha256_after": "c286db999aeaf3943fdb3f731cf823a9336eedc79311fa77254a66976ea3e7c7",
+  "environment_keys_removed": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE",
+    "RUST_TEST_THREADS"
+  ],
+  "started_utc": "2026-11-26T20:51:07.351771+00:00",
+  "ended_utc": "2026-11-26T20:51:13.774034+00:00",
+  "command_exit_code": 0,
+  "launch_error": null,
+  "source_identity_valid": true,
+  "source_identity_error": null,
+  "combined_output_encoding": "base64",
+  "combined_output_sha256": "b9326d4fe6aa3a586cfda03075d96a064b9632d3f3e47e4ef0968561ce9abb45",
+  "combined_output_base64": "IERvY3VtZW50aW5nIHF1ZXJ2YW50LW9iamVjdHN0b3JlIHYwLjEuMCAoL2hvbWUveWR1Y2hlc25lL0Rldi9HaXRodWIveWR1Y2hlc25lL3F1ZXJ2YW50L2NyYXRlcy9xdWVydmFudC1vYmplY3RzdG9yZSkKICAgIENoZWNraW5nIHF1ZXJ2YW50LWNvcmUgdjAuMS4wICgvaG9tZS95ZHVjaGVzbmUvRGV2L0dpdGh1Yi95ZHVjaGVzbmUvcXVlcnZhbnQvY3JhdGVzL3F1ZXJ2YW50LWNvcmUpCiBEb2N1bWVudGluZyBxdWVydmFudC1jb3JlIHYwLjEuMCAoL2hvbWUveWR1Y2hlc25lL0Rldi9HaXRodWIveWR1Y2hlc25lL3F1ZXJ2YW50L2NyYXRlcy9xdWVydmFudC1jb3JlKQogRG9jdW1lbnRpbmcgcXVlcnZhbnQtZGlzdHJpYnV0ZWQgdjAuMS4wICgvaG9tZS95ZHVjaGVzbmUvRGV2L0dpdGh1Yi95ZHVjaGVzbmUvcXVlcnZhbnQvY3JhdGVzL3F1ZXJ2YW50LWRpc3RyaWJ1dGVkKQogICAgRmluaXNoZWQgYGRldmAgcHJvZmlsZSBbdW5vcHRpbWl6ZWQgKyBkZWJ1Z2luZm9dIHRhcmdldChzKSBpbiA2LjQwcwogICBHZW5lcmF0ZWQgL2hvbWUveWR1Y2hlc25lL0Rldi9HaXRodWIveWR1Y2hlc25lL3F1ZXJ2YW50L3RhcmdldC9kb2MvcXVlcnZhbnRfY29yZS9pbmRleC5odG1sIGFuZCAyIG90aGVyIGZpbGVzCg=="
+}

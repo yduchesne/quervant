@@ -1,0 +1,14 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/quervant_core-4bce05dee4e4fed4)
+
+running 1 test
+test search::unified::c2_tests::c2_u12_corrupt_selected_unselected_and_multi_fault ... C2-F1 U12 D0: routed=true converted=30 callbacks=0 numeric=1 membership=30
+C2-F1 U12 D29: routed=true converted=30 callbacks=0 numeric=1 membership=30
+C2-F1 U12 D31: routed=true converted=30 callbacks=0 numeric=1 membership=30
+C2-F1 U12 C0: routed=false converted=0 callbacks=0 numeric=0 membership=0
+C2-F1 U12 C29: routed=false converted=0 callbacks=0 numeric=0 membership=0
+C2-F1 U12 S29+D0: routed=true converted=0 callbacks=0 numeric=0 membership=30
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1201 filtered out; finished in 0.06s
+

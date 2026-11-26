@@ -1,0 +1,16 @@
+RECEIPT c2-f1-a1-clippy-stable-all-features
+COMMAND: QUERVANT_ENV_SANITIZED=1 cargo +1.98.1 clippy --workspace --all-targets --all-features -- -D warnings
+ENV_PREFIX: env -u QUERVANT_PR15I_D3C_STRATEGY -u QUERVANT_PR15I_D3C_PREFILTER_PROFILE
+CWD: /home/yduchesne/Dev/Github/yduchesne/quervant
+TOOLCHAIN: clippy 1.98.1
+SOURCE: A1 START 2bf9539cd2f53838ad1aca406ca4e67a34229ff6 + final A1 test/source changes (see c2-f1-a1-source-freeze.txt)
+HEADSHA: 2bf9539cd2f53838ad1aca406ca4e67a34229ff6
+START: 2026-11-26T18:37:37Z
+BEGIN RAW OUTPUT
+    Checking quervant-core v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-core)
+    Checking quervant-distributed v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-distributed)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.48s
+END RAW OUTPUT
+EXIT: 0
+END: 2026-11-26T18:37:43Z
+END RECEIPT

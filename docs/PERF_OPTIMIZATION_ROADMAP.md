@@ -343,3 +343,60 @@ B4 is **accepted and merged** in [PR #129](https://github.com/yduchesne/quervant
 The maintainer selected a **documentation-only C1 PR**, rather than a coding-agent plan for a non-implementation stage. [The C1 physical-execution contract](architecture/PERF06C_PHYSICAL_EXECUTION_CONTRACT.md) freezes strict-term/keyword Top-K eligibility, request-local dispatch, B1–B3 reuse, exact-count and score obligations, virtual accounting/error ordering, optional-fallback rules, and the safe-deferred-scoring proof boundary. [The C1 source audit](pr-artifacts/perf-06-c/PERF06C1_SOURCE_AUDIT.md) reconciles the current accepted strict-postings path against rejected PR 15H-A/A2 and 15I-C. **No C1 runtime/test change or warm benchmark is claimed.**
 
 C2 remains the first executor implementation PR, C3 is a separate guarded scoring implementation, and C4 is the next performance qualification. C1 approval/merge is maintainer-owned; the C1 draft does not authorize a coding agent to implement C2 or C3 without separate detailed plans and acceptance.
+
+## PERF-06-C2 implementation status (2026-11-25)
+
+C2 is **implemented on a draft branch** (`dev/perf06-c2-physical-executor`) from
+the approved plan [PERF06C2_DETAILED_PLAN.md](pr-artifacts/perf-06-c/PERF06C2_DETAILED_PLAN.md),
+with the executed evidence in
+[PERF06C2_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C2_EXECUTION_REPORT.md).
+The strict-term physical route, the in-place scored-posting handoff, the preserved
+virtual memory admissions, the B1/B2/B3 reuse and the K+1 cursor behavior are
+implemented and covered by new crate unit tests, a new `FsDirectory`
+integration suite and the retained B1/B2/B3 regressions.
+
+C2 is **not merged**, **not performance-qualified** and makes no claim about warm
+latency or low-hit codegen neutrality. C3 has not started; C4 remains the only
+stage authorized to run the incremental warm qualification against the accepted
+A+B baseline. Independent review and maintainer merge remain open (G10).
+
+## PERF-06-C2-F1 test/evidence fixup (2026-11-26)
+
+C2 remains **implemented on draft PR [#131](https://github.com/yduchesne/quervant/pull/131)**
+(branch `dev/perf06-c2`), unmerged. The independent-review follow-up
+[PERF06C2F1_DETAILED_FIXUP_PLAN.md](pr-artifacts/perf-06-c/PERF06C2F1_DETAILED_FIXUP_PLAN.md)
+was executed and its results are in
+[PERF06C2F1_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C2F1_EXECUTION_REPORT.md):
+the actual B3 allocation refusal, the exact P05/I08 resource boundaries, the new
+C2-U12 corruption/precedence test and the corrected test inventory are verified,
+while three prescribed fixtures are contradicted by the accepted source (physical
+segment order is content-addressed; `grp/common` postings are compact-short
+positional), so the C2-U21 boundary table, the U17 no-eager-binding refinement and
+the U12 posting-mutation rows are blocked pending a maintainer fixture amendment.
+Disposition: `PERF06_C2_F1_STOPPED_PLAN_AMENDMENT_REQUIRED`.
+
+Production execution semantics are unchanged, local stable/MSRV QA and both
+coverage gates pass, and **no performance claim** is made. C3 has not started; C4
+remains the only stage authorized to run the incremental warm qualification against
+the accepted A+B baseline. Independent review and maintainer merge remain open.
+
+## PERF-06-C2-F1-A2 closeout (2026-11-26)
+
+C2 remains **implemented on PR [#131](https://github.com/yduchesne/quervant/pull/131)**
+(branch `dev/perf06-c2`), open and unmerged. The approved
+[A2 closeout plan](pr-artifacts/perf-06-c/PERF06C2F1_A2_CLOSEOUT_PLAN.md) finished the
+F1/A1 closeout: the pre-existing certificate test-counter interference is **closed by
+repair** (thread-local test observation with a deterministic sibling-thread regression,
+red-first proof retained), and every frozen C2 acceptance case was re-executed on
+immutable source — U17, U21, U12 (nine rows), P05 and I08 — together with the retained
+inventories (24/5/9/39, nine reader tests) and all local QA, with coverage at
+93.33 % / 92.91 % lines. Results:
+[PERF06C2F1_A2_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C2F1_A2_EXECUTION_REPORT.md).
+
+Normal-build runtime source is unchanged. **G7 remains blocked** solely on the human
+decision about exactly 81 whitespace diagnostics in 41 unchanged frozen artifacts
+(A2's own range is 0); disposition
+`PERF06_C2_F1_A2_ACCEPTANCE_EXECUTED_G7_BLOCKED_WHITESPACE_DECISION`. No performance
+claim is made: C3 has not started and C4 remains the only stage authorized to run the
+incremental warm qualification against the accepted A+B baseline. Independent review
+and maintainer merge remain open.

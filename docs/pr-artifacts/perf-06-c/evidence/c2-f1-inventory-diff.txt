@@ -1,0 +1,36 @@
+# C2-F1 registered test-function inventories (fully qualified names)
+
+baseline unified   : 23
+baseline physical  : 5
+baseline integrat. : 9
+baseline broad `c2_` filter: 38
+
+final unified      : 24
+final physical     : 5
+final integration  : 9
+final broad filter : 39
+
+unified added   : ['search::unified::c2_tests::c2_u12_corrupt_selected_unselected_and_multi_fault']
+unified removed : []
+physical added  : []
+physical removed: []
+integration added  : []
+integration removed: []
+
+older non-C2 accounting tests inside the broad filter (10):
+  - search::execute::budget_tests::c2_cancel_phrase_cleanup
+  - search::execute::budget_tests::c2_local_reject_no_batch_change
+  - search::execute::budget_tests::c2_phrase_scratch_exact_and_one_over
+  - search::execute::budget_tests::c2_postings_exact_and_one_over
+  - search::execute::budget_tests::c2_release_underflow_no_mutation
+  - search::execute::budget_tests::c2_scored_map_exact_and_one_over
+  - search::execute::budget_tests::c2_segment_exact_and_one_over_atomic
+  - search::execute::budget_tests::c2_standalone_none_parity
+  - search::execute::budget_tests::c2_two_segment_reuse_single_scope
+  - search::memory::tests::c2_memory_preflight_release_balances
+
+broad filter == union(C2 unit modules + older accounting tests): True
+
+New PERF-06 C2 test functions at START: 28+9 = 37
+New PERF-06 C2 test functions after F1: 29+9 = 38
+Matrix cases and retries are not separate test functions.

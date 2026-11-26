@@ -166,3 +166,25 @@ C2 must be materially different: build atop the accepted PERF-05 strict postings
 This document is C1's **reviewable architecture specification**, not an implemented physical-plan module or a detailed coding-agent execution plan. Approving the C1 documentation accepts the above *constraints and intended narrow physical architecture*, not the performance effect or any unresolved compiler/ledger proof. C2 and C3 each require their own source-specific detailed agent plans under `docs/DETAILED_PR_PLAN_AUTHORING_GUIDE.md` before changing production code; those plans may only refine implementation within these invariants. A discovery that would change a frozen semantic rule requires a separately reviewed C1 amendment, not improvisation.
 
 **C1 acceptance:** source audit reconciled to the merged B4 baseline; all fallback rows, score/count/error and ownership contracts explicit; rejected historical approaches classified; no `crates/`, `benchmarks/`, CI, dependency or index change; architecture document linked from the roadmap/register. After independent maintainer review C1 may merge. C2 must start from that merged document baseline, not the draft PR head.
+
+## 10. C2 implementation status note (documentation only)
+
+**Status:** C2 has been **implemented** on a draft, unmerged branch as
+`StrictTermOrdinalTopK` per `docs/pr-artifacts/perf-06-c/PERF06C2_DETAILED_PLAN.md`.
+This note records the status only; it changes no C1 semantic rule above.
+
+- Eligibility, the `M > K+1` certificate, the request-local single route
+  decision, full posting-stream validation, eager all-match scoring, the
+  preserved virtual matched/scored admissions, the B1/B2/B3 reuse and the shared
+  K+1 cursor finalization are implemented exactly as specified in §3–§6.
+- The sole retained `(doc_id, freq)` posting allocation is rewritten **in place**
+  to `(doc_id, score.to_bits())`, so no second full-M `(doc_id, f64)` vector is
+  allocated. Both the `SET_BYTES_PER_ENTRY` and `SCORED_MAP_BYTES_PER_ENTRY`
+  logical admissions are still made and released in the accepted order.
+- **C2 makes no performance claim.** No benchmark, profiler or timing acquisition
+  was executed. C3 (winner-only scoring) is **not started**; C4 remains the only
+  stage authorized to measure the incremental warm effect and the low-hit
+  codegen guard.
+- Independent review and maintainer merge are **open** (G10). See
+  `docs/pr-artifacts/perf-06-c/PERF06C2_EXECUTION_REPORT.md` for the executed
+  evidence, residual risks and the disclosed limitations.

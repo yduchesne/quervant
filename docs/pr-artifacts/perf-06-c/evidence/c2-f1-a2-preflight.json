@@ -1,0 +1,70 @@
+{
+  "generated_utc": "2026-11-26T20:47:35.122844+00:00",
+  "repo_root": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "branch": "dev/perf06-c2",
+  "status_short": [
+    "?? docs/pr-artifacts/perf-06-b/evidence/f2-ci-status.txt",
+    "?? docs/pr-artifacts/perf-06-c/PERF06C2F1_A2_CLOSEOUT_PLAN.md",
+    "?? docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-record.py",
+    "?? docs/pr-artifacts/perf-06-c/evidence/c2-f1-a2-source-freeze.py"
+  ],
+  "head": "cdffd5b486ce46312abf4c45c80b9d33ecbf657d",
+  "origin_main": "bc726420cede2e26681d6e8192b45a5d0169abbf",
+  "origin_branch": "cdffd5b486ce46312abf4c45c80b9d33ecbf657d",
+  "merge_base_main_head": "bc726420cede2e26681d6e8192b45a5d0169abbf",
+  "log1": "commit cdffd5b486ce46312abf4c45c80b9d33ecbf657d\nAuthor:     Yanick Duchesne <yanickduchesne@gmail.com>\nAuthorDate: Thu Nov 26 11:31:49 2026 -0800\nCommit:     Yanick Duchesne <yanickduchesne@gmail.com>\nCommitDate: Thu Nov 26 11:31:49 2026 -0800\n\n    docs(perf-06-c2-f1-a1): record ordinary CI for the A1 head",
+  "blob_reader": "37af8cc4091b9eef7d963c6ae4e154ad6d93e8ea",
+  "blob_stored": "fd2cd436217106ef91ca8e28c210153a30a0a49b",
+  "blob_reader_main": "37af8cc4091b9eef7d963c6ae4e154ad6d93e8ea",
+  "blob_stored_main": "fd2cd436217106ef91ca8e28c210153a30a0a49b",
+  "pr": {
+    "baseRefName": "main",
+    "headRefName": "dev/perf06-c2",
+    "headRefOid": "cdffd5b486ce46312abf4c45c80b9d33ecbf657d",
+    "isDraft": false,
+    "number": 131,
+    "state": "OPEN",
+    "url": "https://github.com/yduchesne/quervant/pull/131"
+  },
+  "plan_sha256_f1": "b9d11e958af2186e9a5f358153cee489a4cdafc9913ed7ea7bb6b494b091d5e7",
+  "plan_sha256_a1": "edd967b1e0c7c40cbda0e55d32af6ca0932c9c890e85e1d68e4458fb51cc1bb2",
+  "plan_sha256_a2": "92d079b104f2c150929e73feab7aa0ca69f05beb377dff4f74afb6893c9cc100",
+  "helper_record_sha256": "d1f71971f261d8591bc335ee6f63208b9e4043f26c3231377d8a16b60f0e50f0",
+  "helper_freeze_sha256": "1fdd7fdcb46049d883ece1c40090932fd9460eb60bc1c57b7a038910f67d619b",
+  "counter_occurrences": [
+    "crates/quervant-core/src/segment/stored_blocks.rs:126:pub(crate) static CERTIFICATE_BUILDS: std::sync::atomic::AtomicU64 =",
+    "crates/quervant-core/src/segment/reader.rs:1085:        super::stored_blocks::CERTIFICATE_BUILDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);",
+    "crates/quervant-core/src/segment/reader.rs:2867:        let builds_before = crate::segment::stored_blocks::CERTIFICATE_BUILDS",
+    "crates/quervant-core/src/segment/reader.rs:2872:        let builds_after = crate::segment::stored_blocks::CERTIFICATE_BUILDS"
+  ],
+  "flag_lock_occurrences": [
+    "crates/quervant-core/src/segment/stored_blocks.rs:122:pub(crate) static FAIL_STORED_BLOCKS_BUILD: std::sync::atomic::AtomicBool =",
+    "crates/quervant-core/src/segment/stored_blocks.rs:130:pub(crate) static COUNTER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());",
+    "crates/quervant-core/src/segment/stored_blocks.rs:134:pub(crate) fn test_serial() -> std::sync::MutexGuard<'static, ()> {",
+    "crates/quervant-core/src/segment/stored_blocks.rs:135:    COUNTER_LOCK",
+    "crates/quervant-core/src/segment/stored_blocks.rs:141:pub(crate) fn set_fail_stored_blocks_build(value: bool) {",
+    "crates/quervant-core/src/segment/stored_blocks.rs:142:    FAIL_STORED_BLOCKS_BUILD.store(value, std::sync::atomic::Ordering::SeqCst);",
+    "crates/quervant-core/src/segment/stored_blocks.rs:1197:        let _serial = test_serial();",
+    "crates/quervant-core/src/segment/stored_blocks.rs:1225:        let _serial = test_serial();",
+    "crates/quervant-core/src/segment/stored_blocks.rs:1248:        let _serial = test_serial();",
+    "crates/quervant-core/src/segment/stored_blocks.rs:1281:        let _serial = test_serial();",
+    "crates/quervant-core/src/segment/stored_blocks.rs:1294:        let _serial = test_serial();",
+    "crates/quervant-core/src/segment/stored_blocks.rs:1328:        let _serial = test_serial();",
+    "crates/quervant-core/src/segment/stored_blocks.rs:1373:        let _serial = test_serial();",
+    "crates/quervant-core/src/segment/reader.rs:997:        if super::stored_blocks::FAIL_STORED_BLOCKS_BUILD.load(std::sync::atomic::Ordering::SeqCst)",
+    "crates/quervant-core/src/segment/reader.rs:2780:        crate::segment::stored_blocks::test_serial()",
+    "crates/quervant-core/src/segment/reader.rs:2974:        crate::segment::stored_blocks::set_fail_stored_blocks_build(true);",
+    "crates/quervant-core/src/segment/reader.rs:2978:        crate::segment::stored_blocks::set_fail_stored_blocks_build(false);"
+  ],
+  "toolchains": [
+    "stable-x86_64-unknown-linux-gnu (active, default)",
+    "1.85.0-x86_64-unknown-linux-gnu",
+    "1.98.1-x86_64-unknown-linux-gnu"
+  ],
+  "cargo_1_98": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+  "rustc_1_98": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8",
+  "cargo_1_85": "cargo 1.85.0 (d73d2caf9 2024-12-31)",
+  "rustc_1_85": "rustc 1.85.0 (4d91de4e4 2025-02-17)\nbinary: rustc\ncommit-hash: 4d91de4e48198da2e33413efdcd9cd2cc0c46688\ncommit-date: 2025-02-17\nhost: x86_64-unknown-linux-gnu\nrelease: 1.85.0\nLLVM version: 19.1.7",
+  "llvm_cov": "cargo-llvm-cov 0.9.1",
+  "python": "Python 3.12.3"
+}

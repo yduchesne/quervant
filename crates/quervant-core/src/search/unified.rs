@@ -47,7 +47,7 @@ use super::plan::CompiledLeaf;
 use super::projection::{
     ProjectionLedger, ProjectionPlan, projected_field_bytes, projected_hit_bytes,
 };
-use super::score::compute_stats;
+use super::score::{SnapshotStats, compute_stats};
 use super::typed::{self, ScanGuard, TypedPlan};
 use super::typed_compare::{
     ColumnAccess, OrdinalSortKey, SortValue, compare_borrowed_keyword_to_owned, compare_candidates,
@@ -123,6 +123,18 @@ impl UnifiedRequest {
 /// executed and no `after` cursor is supplied. Sorting is deliberately **not**
 /// restricted: the frozen PR15D adapter sorts by `doc_id ASC` and must exercise this
 /// path. Everything else keeps the unmodified live-bitmap scan.
+/// PERF-06-C2: the test-only forced-Legacy override, or a constant `false` in
+/// every non-test build. Consulted only at the single request-local route decision.
+#[cfg(test)]
+fn c2_legacy_forced() -> bool {
+    c2_observation::legacy_forced()
+}
+
+#[cfg(not(test))]
+const fn c2_legacy_forced() -> bool {
+    false
+}
+
 fn single_term_postings_eligible(
     plan: &UnifiedPlan,
     request: &UnifiedRequest,
@@ -638,6 +650,65 @@ impl<'a> UnifiedSearcher<'a> {
             && request.sort.fields[0].multi.is_none()
     }
 
+    /// PERF-06-C2: the request-level strict-term physical dispatch certificate.
+    ///
+    /// Every predicate is required. The C1 static shape is deliberately re-checked
+    /// here as a fail-closed source guard (never a second analyzer, never a second
+    /// compiler) on top of the accepted `single_term_postings_eligible` /
+    /// `keyword_ordinal_eligible` prerequisites and the request-wide B1 `Ready`
+    /// state. The count is the accepted BM25 document frequency of the single
+    /// positive term, which `compute_stats` derives from effective-live data; a
+    /// segment/format for which that count is not a sound effective-live
+    /// cardinality keeps the whole request on Legacy (D11).
+    fn strict_term_dispatch_eligible(
+        &self,
+        plan: &UnifiedPlan,
+        request: &UnifiedRequest,
+        aggregation: Option<&Aggregation>,
+        standalone: bool,
+        stats: &SnapshotStats<'_>,
+        ordinal_field: u32,
+    ) -> bool {
+        if !standalone || aggregation.is_some() || request.after.is_some() {
+            return false;
+        }
+        if !single_term_postings_eligible(plan, request, aggregation)
+            || !self.keyword_ordinal_eligible(plan, request, aggregation, standalone)
+        {
+            return false;
+        }
+        if plan.root != UnifiedNode::Lexical(0)
+            || plan.lexical_leaves.len() != 1
+            || !plan.typed_leaves.is_empty()
+        {
+            return false;
+        }
+        let field_id = match &plan.lexical_leaves[0] {
+            CompiledLeaf::Term { field_id, terms } if terms.len() == 1 => *field_id,
+            _ => return false,
+        };
+        if plan.positive_lexical.len() != 1 || !plan.positive_lexical.contains(&0) {
+            return false;
+        }
+        if !plan.scoring_field_ids.contains(&field_id) {
+            return false;
+        }
+        // The one sortable Keyword field the ordinal map was prepared for must be
+        // the same field the compiled leaf scores on this engine's schema.
+        if plan.codec.field_id(&request.sort.fields[0].field) != Some(ordinal_field) {
+            return false;
+        }
+        let CompiledLeaf::Term { terms, .. } = &plan.lexical_leaves[0] else {
+            return false;
+        };
+        let term = terms[0].as_str();
+        let Some(field) = stats.field(field_id) else {
+            return false;
+        };
+        let document_frequency = field.doc_freq(term);
+        document_frequency > request.top_k.limit.saturating_add(1) as u64
+    }
+
     #[allow(clippy::needless_option_as_deref)]
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn collect_mixed(
@@ -780,7 +851,6 @@ impl<'a> UnifiedSearcher<'a> {
         let mut scope = memory.map(SlotMemoryScope::new);
         let relevance = request.sort.fields.is_empty();
         let scoring = !plan.positive_lexical.is_empty();
-        let heap_limit = request.top_k.limit.saturating_add(1);
         let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
         let mut ordinal_heap_audit = ordinal_map.as_ref().map(|_| OrdinalHeapAudit::new());
         let mut compact_hash_audit = CompactHashAudit::new();
@@ -791,343 +861,84 @@ impl<'a> UnifiedSearcher<'a> {
             &mut scope,
         )?;
         let mut total_hits = 0u64;
-        for (segment_index, reader) in readers.iter().enumerate() {
-            let columns = ColumnAccess::open(reader)?;
-            let keyword_field_id = if keyword_late {
-                Some(
-                    reader
-                        .schema()
-                        .field_id(&request.sort.fields[0].field)
-                        .ok_or_else(|| SearchError::CorruptIndex {
-                            detail:
-                                "segment schema/analyzer bindings do not match the supplied schema"
-                                    .to_owned(),
-                        })?,
-                )
-            } else {
-                None
-            };
-            // PERF-06-B2: bind the numeric accessor and this segment's rank
-            // translation exactly once; neither is looked up per candidate.
-            let ordinal_binding = match (&ordinal_map, ordinal_field_id) {
-                (Some(map), Some(field_id)) => {
-                    let bound = columns
-                        .bind_keyword_sort_ordinal(field_id)?
-                        .ok_or_else(ready_ordinal_column_missing)?;
-                    #[cfg(test)]
-                    b2_observation::record_bound_column();
-                    let translation = map.bind_segment(&guards[segment_index])?;
-                    Some((bound, translation))
+        // PERF-06-C2: one request-local physical route decision, taken after the
+        // common preflight and before any per-segment admission or typed setup.
+        // The choice is a local value: it is never persisted, never re-evaluated
+        // per segment or per candidate, and never flipped back to Legacy once
+        // candidate processing has started.
+        let physical_ordinal_field = if c2_legacy_forced() {
+            None
+        } else {
+            match (&ordinal_map, ordinal_field_id) {
+                (Some(_), Some(field_id))
+                    if self.strict_term_dispatch_eligible(
+                        plan,
+                        request,
+                        aggregation,
+                        standalone,
+                        &stats,
+                        field_id,
+                    ) =>
+                {
+                    Some(field_id)
                 }
                 _ => None,
-            };
-            let json = typed::JsonAccess::open(reader)?;
-            let mut typed_geo: Vec<typed::GeoMembership> = Vec::new();
-            let mut geo_scratches: Vec<typed::GeoScratchBudget> = Vec::new();
-            for typed_leaf in &plan.typed_leaves {
-                let mut scratch =
-                    typed::GeoScratchBudget::new(self.limits.max_total_candidate_bytes());
-                let membership = {
-                    let mut typed_charge = TypedCharge::new(&mut meter);
-                    let mut guard = ScanGuard::shared(&mut typed_charge);
-                    let mut geo_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
-                        .as_mut()
-                        .map(|sink| sink as &mut (dyn MemoryCharge + '_));
-                    typed::build_geo_membership_with_memory(
-                        &typed_leaf.geo_leaves,
-                        reader.spatial(),
-                        reader,
-                        &columns,
-                        &mut guard,
-                        &mut scratch,
-                        self.limits.max_segment_candidate_entries(),
-                        geo_memory.as_deref_mut(),
-                    )?
-                };
-                typed_geo.push(membership);
-                geo_scratches.push(scratch);
             }
-            let mut sort_scratch =
-                typed::GeoScratchBudget::new(self.limits.max_total_candidate_bytes());
-            let geo_sort = {
-                let mut typed_charge = TypedCharge::new(&mut meter);
-                let mut guard = ScanGuard::shared(&mut typed_charge);
-                let mut geo_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
-                    .as_mut()
-                    .map(|sink| sink as &mut (dyn MemoryCharge + '_));
-                typed::build_geo_sort_distances_with_memory(
-                    Some(&request.sort),
-                    reader,
-                    &columns,
-                    &mut guard,
-                    &mut sort_scratch,
-                    geo_memory.as_deref_mut(),
-                )?
-            };
-            let mut memory_sink: Option<&mut (dyn MemoryCharge + '_)> = scope
-                .as_mut()
-                .map(|sink| sink as &mut (dyn MemoryCharge + '_));
-            // Computed once per query from the compiled plan, not from the query
-            // text, so analyzer expansion cannot be mistaken for a single stream.
-            let postings_candidate_eligible =
-                single_term_postings_eligible(plan, request, aggregation);
-            let scored = execute::evaluate_lexical_with(
-                reader,
-                &plan.lexical_leaves,
-                &expansion,
-                &stats,
-                &plan.positive_lexical,
-                segment_index,
-                &live[segment_index],
-                &mut budget,
-                &mut meter,
-                &mut memory_sink,
-                !plan.typed_leaves.is_empty(),
-                postings_candidate_eligible,
-                cancel,
-                |doc_id, leaf_data, meter, mut memory| {
-                    let matched = {
-                        let mut typed_charge = TypedCharge::new(&mut *meter);
-                        let mut guard = ScanGuard::shared(&mut typed_charge);
-                        if postings_candidate_eligible {
-                            // The strict root-Term eligibility and evaluate_lexical_with's
-                            // one-term/one-postings runtime guard prove every yielded doc_id
-                            // already satisfies UnifiedNode::Lexical(0).  Do not repeat the
-                            // same term's binary search in LeafData::matches.
-                            true
-                        } else {
-                            evaluate_unified(
-                                &plan.root,
-                                doc_id,
-                                leaf_data,
-                                &plan.typed_leaves,
-                                &columns,
-                                &json,
-                                &typed_geo,
-                                &mut guard,
-                                memory.as_deref_mut(),
-                            )?
-                        }
-                    };
-                    if matched {
-                        if let Some(state) = aggregation_state.as_mut() {
-                            let mut agg_charge = TypedCharge::new(&mut *meter);
-                            let mut agg_guard = ScanGuard::shared(&mut agg_charge);
-                            typed::visit_aggregate(
-                                &mut agg_guard,
-                                &mut state.engine,
-                                &state.plan,
-                                &state.request,
-                                state.bucket.as_ref(),
-                                &columns,
-                                doc_id,
-                                memory.as_deref_mut(),
-                            )?;
-                        }
-                    }
-                    Ok(matched)
-                },
-            )?;
-            // PR 15E Phase 5: a large segment projecting exactly one hit decodes
-            // only that one document key; every other shape keeps the full cache.
-            let single_hit_segment = scored.len() == 1 && reader.doc_count() >= 1024;
-            // PERF-06-B3: at most one key-identity binding attempt per segment,
-            // made on the first matched, scored candidate — exactly where the
-            // original code would resolve its owned key. A refusal downgrades
-            // this whole segment to the owned B2 key path.
-            let mut key_binder = KeyBinder::Unattempted;
-            for (doc_id, score) in scored {
-                total_hits = total_hits
-                    .checked_add(1)
-                    .ok_or(SearchError::ResourceLimit {
-                        limit: u64::MAX,
-                        requested: u64::MAX,
-                    })?;
-                if let Some((bound, translation)) = &ordinal_binding {
-                    #[cfg(test)]
-                    b2_observation::record_numeric_candidate();
-                    if matches!(key_binder, KeyBinder::Unattempted) {
-                        key_binder = if experiment.supports_compact_key() {
-                            match reader.bind_key_identity(cancel)? {
-                                Some(identity) => KeyBinder::Ready(identity),
-                                None => KeyBinder::Fallback,
-                            }
-                        } else {
-                            KeyBinder::Fallback
-                        };
-                    }
-                    let audit = ordinal_heap_audit
-                        .as_mut()
-                        .ok_or_else(mixed_ordinal_heap_error)?;
-                    if let KeyBinder::Ready(identity) = &key_binder {
-                        consider_compact_ordinal_candidate(
-                            &columns,
-                            reader.schema(),
-                            request,
-                            doc_id,
-                            segment_index,
-                            score,
-                            scoring,
-                            bound,
-                            translation,
-                            identity,
-                            audit,
-                            &mut compact_hash_audit,
-                            &mut heap,
-                            heap_limit,
-                            &mut budget,
-                            &mut scope,
-                            &mut experiment,
-                        )?;
-                        continue;
-                    }
-                    let key = if single_hit_segment {
-                        reader.doc_key_selected(doc_id)?
-                    } else {
-                        reader.doc_key(doc_id)?
-                    };
-                    consider_ordinal_keyword_candidate(
-                        &columns,
-                        reader.schema(),
-                        request,
-                        doc_id,
-                        segment_index,
-                        key,
-                        score,
-                        scoring,
-                        bound,
-                        translation,
-                        audit,
-                        &mut heap,
-                        heap_limit,
-                        &mut budget,
-                        &mut scope,
-                        &mut experiment,
-                    )?;
-                    continue;
-                }
-                let key = if single_hit_segment {
-                    reader.doc_key_selected(doc_id)?
-                } else {
-                    reader.doc_key(doc_id)?
-                };
-                if let Some(field_id) = keyword_field_id {
-                    consider_borrowed_keyword_candidate(
-                        &columns,
-                        reader.schema(),
-                        request,
-                        doc_id,
-                        segment_index,
-                        key,
-                        score,
-                        scoring,
-                        field_id,
-                        &mut heap,
-                        heap_limit,
-                        &mut budget,
-                        &mut scope,
-                        &mut experiment,
-                    )?;
-                    continue;
-                }
-                let mut tuple = if request.sort.fields.is_empty() {
-                    Vec::new()
-                } else {
-                    sort_tuple_for_doc(
-                        &columns,
-                        reader.schema(),
-                        &request.sort,
-                        geo_sort.as_ref(),
-                        doc_id,
-                    )?
-                };
-                let sort_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
-                    .as_mut()
-                    .map(|sink| sink as &mut (dyn MemoryCharge + '_));
-                let mut sort_scratch = typed::JsonSortScratch::new(sort_memory);
-                for (index, field) in request.sort.fields.iter().enumerate() {
-                    if field.json_path.is_some() {
-                        let mut typed_charge = TypedCharge::new(&mut meter);
-                        let mut guard = ScanGuard::shared(&mut typed_charge);
-                        tuple[index] = typed::json_sort_value(
-                            &json,
-                            reader.schema(),
-                            field,
-                            doc_id,
-                            &mut guard,
-                            &mut sort_scratch,
-                        )?;
-                    }
-                }
-                let hit = SelectedHit {
-                    segment_index,
-                    doc_id,
-                    key,
-                    // A pure typed or negative-only-lexical predicate has no
-                    // positive lexical contribution: report no score, matching
-                    // the typed executor's contract.
-                    score: if plan.positive_lexical.is_empty() {
-                        None
-                    } else {
-                        Some(score)
-                    },
-                    sort_tuple: tuple,
-                };
-                if let Some(cursor) = &request.after {
-                    let after = if relevance {
-                        if scoring {
-                            let cursor_score = cursor.last_score.ok_or_else(cursor_sort_error)?;
-                            let candidate_score = hit.score.ok_or_else(cursor_sort_error)?;
-                            cmp_relevance(cursor_score, &cursor.last_key, candidate_score, &hit.key)
-                                == Ordering::Less
-                        } else {
-                            hit.key > cursor.last_key
-                        }
-                    } else {
-                        compare_candidates(
-                            &hit.sort_tuple,
-                            &hit.key,
-                            &cursor.last_sort,
-                            &cursor.last_key,
-                            &request.sort,
-                        ) == Ordering::Greater
-                    };
-                    if !after {
-                        continue;
-                    }
-                }
-                // Release the transient winner reservation immediately before the
-                // retained candidate charge so the tuple is never double-charged.
-                sort_scratch.finish()?;
-                let charge = candidate_charge(&hit)?;
-                let entry = MixedEntry {
-                    hit,
-                    charge,
-                    sort: &request.sort,
-                    relevance,
-                    ordinal_sort: None,
-                    key_hash: None,
-                };
-                // Effective-live keys are unique per snapshot; a duplicate among
-                // retained candidates indicates corrupt committed state.
-                experiment.check(&heap, &entry.hit.key)?;
-                experiment.admit(entry, &mut heap, heap_limit, &mut budget, &mut scope)?;
+        };
+        match (physical_ordinal_field, ordinal_map.as_ref()) {
+            (Some(field_id), Some(map)) => {
+                #[cfg(test)]
+                c2_observation::record_strict_route();
+                collect_strict_term_ordinal_body(
+                    plan,
+                    request,
+                    &readers,
+                    &guards,
+                    &live,
+                    &expansion,
+                    &stats,
+                    map,
+                    field_id,
+                    keyword_late,
+                    &self.limits,
+                    &mut meter,
+                    &mut budget,
+                    &mut scope,
+                    &mut heap,
+                    &mut ordinal_heap_audit,
+                    &mut compact_hash_audit,
+                    &mut experiment,
+                    &mut total_hits,
+                    cancel,
+                )?;
             }
-            // Drop the geo allocations first; their batch reservations are
-            // released only after the backing buffers are gone.
-            drop(typed_geo);
-            drop(geo_sort);
-            for scratch in &mut geo_scratches {
-                let mut geo_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
-                    .as_mut()
-                    .map(|sink| sink as &mut (dyn MemoryCharge + '_));
-                scratch.release_all_with_memory(geo_memory.as_deref_mut())?;
-            }
-            {
-                let mut geo_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
-                    .as_mut()
-                    .map(|sink| sink as &mut (dyn MemoryCharge + '_));
-                sort_scratch.release_all_with_memory(geo_memory.as_deref_mut())?;
+            _ => {
+                #[cfg(test)]
+                c2_observation::record_legacy_route();
+                collect_mixed_legacy_body(
+                    plan,
+                    request,
+                    &readers,
+                    &guards,
+                    &live,
+                    &expansion,
+                    &stats,
+                    ordinal_map.as_ref(),
+                    ordinal_field_id,
+                    keyword_late,
+                    aggregation,
+                    &self.limits,
+                    &mut meter,
+                    &mut budget,
+                    &mut scope,
+                    &mut heap,
+                    &mut ordinal_heap_audit,
+                    &mut compact_hash_audit,
+                    &mut experiment,
+                    &mut aggregation_state,
+                    &mut total_hits,
+                    cancel,
+                )?;
             }
         }
         let aggregation_result = match aggregation_state {
@@ -1166,6 +977,599 @@ impl<'a> UnifiedSearcher<'a> {
         }
         Ok((selected, total_hits, next_cursor, aggregation_result))
     }
+}
+
+/// PERF-06-C2: the accepted legacy per-segment loop, moved mechanically.
+///
+/// This is the accepted `collect_mixed` segment loop verbatim: statement order,
+/// error boundaries, work/memory charges, geo drop order and every per-candidate
+/// decision are unchanged. Only the already-computed preflight locals became
+/// parameters and `self.limits`/`total_hits` became borrow-only plumbing. There is
+/// deliberately no strategy condition or per-document dispatch inside this
+/// function, so a low-hit request reaches exactly the accepted code shape.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::needless_borrow, clippy::needless_option_as_deref)]
+fn collect_mixed_legacy_body<'a>(
+    plan: &UnifiedPlan,
+    request: &'a UnifiedRequest,
+    readers: &[&SegmentReader],
+    guards: &[crate::index::GuardedSegmentReader],
+    live: &[Rc<Vec<bool>>],
+    expansion: &super::expand::Expansion,
+    stats: &SnapshotStats<'_>,
+    ordinal_map: Option<&Arc<SnapshotKeywordOrdinals>>,
+    ordinal_field_id: Option<u32>,
+    keyword_late: bool,
+    aggregation: Option<&Aggregation>,
+    limits: &SearchLimits,
+    mut meter: &mut MixedWorkMeter<'_>,
+    mut budget: &mut CandidateBudget,
+    mut scope: &mut Option<SlotMemoryScope<'_>>,
+    mut heap: &mut BinaryHeap<MixedEntry<'a>>,
+    ordinal_heap_audit: &mut Option<OrdinalHeapAudit>,
+    mut compact_hash_audit: &mut CompactHashAudit,
+    mut experiment: &mut d3c::State,
+    aggregation_state: &mut Option<AggregationState>,
+    total_hits: &mut u64,
+    cancel: &dyn Cancellation,
+) -> SearchResult<()> {
+    let relevance = request.sort.fields.is_empty();
+    let scoring = !plan.positive_lexical.is_empty();
+    let heap_limit = request.top_k.limit.saturating_add(1);
+    for (segment_index, reader) in readers.iter().enumerate() {
+        let columns = ColumnAccess::open(reader)?;
+        let keyword_field_id = if keyword_late {
+            Some(
+                reader
+                    .schema()
+                    .field_id(&request.sort.fields[0].field)
+                    .ok_or_else(|| SearchError::CorruptIndex {
+                        detail: "segment schema/analyzer bindings do not match the supplied schema"
+                            .to_owned(),
+                    })?,
+            )
+        } else {
+            None
+        };
+        // PERF-06-B2: bind the numeric accessor and this segment's rank
+        // translation exactly once; neither is looked up per candidate.
+        let ordinal_binding = match (ordinal_map, ordinal_field_id) {
+            (Some(map), Some(field_id)) => {
+                let bound = columns
+                    .bind_keyword_sort_ordinal(field_id)?
+                    .ok_or_else(ready_ordinal_column_missing)?;
+                #[cfg(test)]
+                b2_observation::record_bound_column();
+                let translation = map.bind_segment(&guards[segment_index])?;
+                Some((bound, translation))
+            }
+            _ => None,
+        };
+        let json = typed::JsonAccess::open(reader)?;
+        let mut typed_geo: Vec<typed::GeoMembership> = Vec::new();
+        let mut geo_scratches: Vec<typed::GeoScratchBudget> = Vec::new();
+        for typed_leaf in &plan.typed_leaves {
+            let mut scratch = typed::GeoScratchBudget::new(limits.max_total_candidate_bytes());
+            let membership = {
+                let mut typed_charge = TypedCharge::new(&mut meter);
+                let mut guard = ScanGuard::shared(&mut typed_charge);
+                let mut geo_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                    .as_mut()
+                    .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+                typed::build_geo_membership_with_memory(
+                    &typed_leaf.geo_leaves,
+                    reader.spatial(),
+                    reader,
+                    &columns,
+                    &mut guard,
+                    &mut scratch,
+                    limits.max_segment_candidate_entries(),
+                    geo_memory.as_deref_mut(),
+                )?
+            };
+            typed_geo.push(membership);
+            geo_scratches.push(scratch);
+        }
+        let mut sort_scratch = typed::GeoScratchBudget::new(limits.max_total_candidate_bytes());
+        let geo_sort = {
+            let mut typed_charge = TypedCharge::new(&mut meter);
+            let mut guard = ScanGuard::shared(&mut typed_charge);
+            let mut geo_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                .as_mut()
+                .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+            typed::build_geo_sort_distances_with_memory(
+                Some(&request.sort),
+                reader,
+                &columns,
+                &mut guard,
+                &mut sort_scratch,
+                geo_memory.as_deref_mut(),
+            )?
+        };
+        let mut memory_sink: Option<&mut (dyn MemoryCharge + '_)> = scope
+            .as_mut()
+            .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+        // Computed once per query from the compiled plan, not from the query
+        // text, so analyzer expansion cannot be mistaken for a single stream.
+        let postings_candidate_eligible = single_term_postings_eligible(plan, request, aggregation);
+        let scored = execute::evaluate_lexical_with(
+            reader,
+            &plan.lexical_leaves,
+            &expansion,
+            &stats,
+            &plan.positive_lexical,
+            segment_index,
+            &live[segment_index],
+            &mut budget,
+            &mut meter,
+            &mut memory_sink,
+            !plan.typed_leaves.is_empty(),
+            postings_candidate_eligible,
+            cancel,
+            |doc_id, leaf_data, meter, mut memory| {
+                let matched = {
+                    let mut typed_charge = TypedCharge::new(&mut *meter);
+                    let mut guard = ScanGuard::shared(&mut typed_charge);
+                    if postings_candidate_eligible {
+                        // The strict root-Term eligibility and evaluate_lexical_with's
+                        // one-term/one-postings runtime guard prove every yielded doc_id
+                        // already satisfies UnifiedNode::Lexical(0).  Do not repeat the
+                        // same term's binary search in LeafData::matches.
+                        true
+                    } else {
+                        evaluate_unified(
+                            &plan.root,
+                            doc_id,
+                            leaf_data,
+                            &plan.typed_leaves,
+                            &columns,
+                            &json,
+                            &typed_geo,
+                            &mut guard,
+                            memory.as_deref_mut(),
+                        )?
+                    }
+                };
+                if matched {
+                    if let Some(state) = aggregation_state.as_mut() {
+                        let mut agg_charge = TypedCharge::new(&mut *meter);
+                        let mut agg_guard = ScanGuard::shared(&mut agg_charge);
+                        typed::visit_aggregate(
+                            &mut agg_guard,
+                            &mut state.engine,
+                            &state.plan,
+                            &state.request,
+                            state.bucket.as_ref(),
+                            &columns,
+                            doc_id,
+                            memory.as_deref_mut(),
+                        )?;
+                    }
+                }
+                Ok(matched)
+            },
+        )?;
+        // PR 15E Phase 5: a large segment projecting exactly one hit decodes
+        // only that one document key; every other shape keeps the full cache.
+        let single_hit_segment = scored.len() == 1 && reader.doc_count() >= 1024;
+        // PERF-06-B3: at most one key-identity binding attempt per segment,
+        // made on the first matched, scored candidate — exactly where the
+        // original code would resolve its owned key. A refusal downgrades
+        // this whole segment to the owned B2 key path.
+        let mut key_binder = KeyBinder::Unattempted;
+        for (doc_id, score) in scored {
+            *total_hits = total_hits
+                .checked_add(1)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+            if let Some((bound, translation)) = &ordinal_binding {
+                #[cfg(test)]
+                b2_observation::record_numeric_candidate();
+                if matches!(key_binder, KeyBinder::Unattempted) {
+                    key_binder = if experiment.supports_compact_key() {
+                        match reader.bind_key_identity(cancel)? {
+                            Some(identity) => KeyBinder::Ready(identity),
+                            None => KeyBinder::Fallback,
+                        }
+                    } else {
+                        KeyBinder::Fallback
+                    };
+                }
+                let audit = ordinal_heap_audit
+                    .as_mut()
+                    .ok_or_else(mixed_ordinal_heap_error)?;
+                if let KeyBinder::Ready(identity) = &key_binder {
+                    consider_compact_ordinal_candidate(
+                        &columns,
+                        reader.schema(),
+                        request,
+                        doc_id,
+                        segment_index,
+                        score,
+                        scoring,
+                        bound,
+                        translation,
+                        identity,
+                        audit,
+                        &mut compact_hash_audit,
+                        &mut heap,
+                        heap_limit,
+                        &mut budget,
+                        &mut scope,
+                        &mut experiment,
+                    )?;
+                    continue;
+                }
+                let key = if single_hit_segment {
+                    reader.doc_key_selected(doc_id)?
+                } else {
+                    reader.doc_key(doc_id)?
+                };
+                consider_ordinal_keyword_candidate(
+                    &columns,
+                    reader.schema(),
+                    request,
+                    doc_id,
+                    segment_index,
+                    key,
+                    score,
+                    scoring,
+                    bound,
+                    translation,
+                    audit,
+                    &mut heap,
+                    heap_limit,
+                    &mut budget,
+                    &mut scope,
+                    &mut experiment,
+                )?;
+                continue;
+            }
+            let key = if single_hit_segment {
+                reader.doc_key_selected(doc_id)?
+            } else {
+                reader.doc_key(doc_id)?
+            };
+            if let Some(field_id) = keyword_field_id {
+                consider_borrowed_keyword_candidate(
+                    &columns,
+                    reader.schema(),
+                    request,
+                    doc_id,
+                    segment_index,
+                    key,
+                    score,
+                    scoring,
+                    field_id,
+                    &mut heap,
+                    heap_limit,
+                    &mut budget,
+                    &mut scope,
+                    &mut experiment,
+                )?;
+                continue;
+            }
+            let mut tuple = if request.sort.fields.is_empty() {
+                Vec::new()
+            } else {
+                sort_tuple_for_doc(
+                    &columns,
+                    reader.schema(),
+                    &request.sort,
+                    geo_sort.as_ref(),
+                    doc_id,
+                )?
+            };
+            let sort_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                .as_mut()
+                .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+            let mut sort_scratch = typed::JsonSortScratch::new(sort_memory);
+            for (index, field) in request.sort.fields.iter().enumerate() {
+                if field.json_path.is_some() {
+                    let mut typed_charge = TypedCharge::new(&mut meter);
+                    let mut guard = ScanGuard::shared(&mut typed_charge);
+                    tuple[index] = typed::json_sort_value(
+                        &json,
+                        reader.schema(),
+                        field,
+                        doc_id,
+                        &mut guard,
+                        &mut sort_scratch,
+                    )?;
+                }
+            }
+            let hit = SelectedHit {
+                segment_index,
+                doc_id,
+                key,
+                // A pure typed or negative-only-lexical predicate has no
+                // positive lexical contribution: report no score, matching
+                // the typed executor's contract.
+                score: if plan.positive_lexical.is_empty() {
+                    None
+                } else {
+                    Some(score)
+                },
+                sort_tuple: tuple,
+            };
+            if let Some(cursor) = &request.after {
+                let after = if relevance {
+                    if scoring {
+                        let cursor_score = cursor.last_score.ok_or_else(cursor_sort_error)?;
+                        let candidate_score = hit.score.ok_or_else(cursor_sort_error)?;
+                        cmp_relevance(cursor_score, &cursor.last_key, candidate_score, &hit.key)
+                            == Ordering::Less
+                    } else {
+                        hit.key > cursor.last_key
+                    }
+                } else {
+                    compare_candidates(
+                        &hit.sort_tuple,
+                        &hit.key,
+                        &cursor.last_sort,
+                        &cursor.last_key,
+                        &request.sort,
+                    ) == Ordering::Greater
+                };
+                if !after {
+                    continue;
+                }
+            }
+            // Release the transient winner reservation immediately before the
+            // retained candidate charge so the tuple is never double-charged.
+            sort_scratch.finish()?;
+            let charge = candidate_charge(&hit)?;
+            let entry = MixedEntry {
+                hit,
+                charge,
+                sort: &request.sort,
+                relevance,
+                ordinal_sort: None,
+                key_hash: None,
+            };
+            // Effective-live keys are unique per snapshot; a duplicate among
+            // retained candidates indicates corrupt committed state.
+            experiment.check(&heap, &entry.hit.key)?;
+            experiment.admit(entry, &mut heap, heap_limit, &mut budget, &mut scope)?;
+        }
+        // Drop the geo allocations first; their batch reservations are
+        // released only after the backing buffers are gone.
+        drop(typed_geo);
+        drop(geo_sort);
+        for scratch in &mut geo_scratches {
+            let mut geo_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                .as_mut()
+                .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+            scratch.release_all_with_memory(geo_memory.as_deref_mut())?;
+        }
+        {
+            let mut geo_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                .as_mut()
+                .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+            sort_scratch.release_all_with_memory(geo_memory.as_deref_mut())?;
+        }
+    }
+    Ok(())
+}
+
+/// PERF-06-C2: the strict-term physical per-segment loop.
+///
+/// The route was already chosen exactly once by `collect_mixed` from the
+/// request-level certificate; this function never re-decides it and never falls
+/// back. It preserves the accepted per-segment setup/validation order (column,
+/// ordinal binding, JSON, geo-sort and scratch setup) and hands every eagerly
+/// scored posting of the reused posting allocation to the unchanged B1/B2/B3
+/// candidate handlers.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::needless_option_as_deref)]
+fn collect_strict_term_ordinal_body<'a>(
+    plan: &UnifiedPlan,
+    request: &'a UnifiedRequest,
+    readers: &[&SegmentReader],
+    guards: &[crate::index::GuardedSegmentReader],
+    live: &[Rc<Vec<bool>>],
+    expansion: &super::expand::Expansion,
+    stats: &SnapshotStats<'_>,
+    ordinal_map: &Arc<SnapshotKeywordOrdinals>,
+    ordinal_field: u32,
+    keyword_late: bool,
+    limits: &SearchLimits,
+    meter: &mut MixedWorkMeter<'_>,
+    budget: &mut CandidateBudget,
+    scope: &mut Option<SlotMemoryScope<'_>>,
+    heap: &mut BinaryHeap<MixedEntry<'a>>,
+    ordinal_heap_audit: &mut Option<OrdinalHeapAudit>,
+    compact_hash_audit: &mut CompactHashAudit,
+    experiment: &mut d3c::State,
+    total_hits: &mut u64,
+    cancel: &dyn Cancellation,
+) -> SearchResult<()> {
+    let heap_limit = request.top_k.limit.saturating_add(1);
+    for (segment_index, reader) in readers.iter().enumerate() {
+        let columns = ColumnAccess::open(reader)?;
+        // Accepted per-segment setup order is preserved exactly: the sort field id,
+        // the numeric ordinal accessor and this segment's rank translation are
+        // resolved here, after every preceding segment completed -- never as an
+        // eager ahead-of-time preflight that could expose a later segment's error
+        // before an earlier segment's decoding/scoring error.
+        let _keyword_field_id = if keyword_late {
+            Some(
+                reader
+                    .schema()
+                    .field_id(&request.sort.fields[0].field)
+                    .ok_or_else(|| SearchError::CorruptIndex {
+                        detail: "segment schema/analyzer bindings do not match the supplied schema"
+                            .to_owned(),
+                    })?,
+            )
+        } else {
+            None
+        };
+        let bound = columns
+            .bind_keyword_sort_ordinal(ordinal_field)?
+            .ok_or_else(ready_ordinal_column_missing)?;
+        #[cfg(test)]
+        b2_observation::record_bound_column();
+        let translation = ordinal_map.bind_segment(&guards[segment_index])?;
+        // Same validation sequence as the accepted loop. The C2 selector admits no
+        // typed leaf, geo leaf or distance sort, so these structures stay empty,
+        // but opening/building them keeps the observable corrupt-section error
+        // order identical to Legacy.
+        let json = typed::JsonAccess::open(reader)?;
+        let mut typed_geo: Vec<typed::GeoMembership> = Vec::new();
+        let mut geo_scratches: Vec<typed::GeoScratchBudget> = Vec::new();
+        for typed_leaf in &plan.typed_leaves {
+            let mut scratch = typed::GeoScratchBudget::new(limits.max_total_candidate_bytes());
+            let membership = {
+                let mut typed_charge = TypedCharge::new(&mut *meter);
+                let mut guard = ScanGuard::shared(&mut typed_charge);
+                let mut geo_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                    .as_mut()
+                    .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+                typed::build_geo_membership_with_memory(
+                    &typed_leaf.geo_leaves,
+                    reader.spatial(),
+                    reader,
+                    &columns,
+                    &mut guard,
+                    &mut scratch,
+                    limits.max_segment_candidate_entries(),
+                    geo_memory.as_deref_mut(),
+                )?
+            };
+            typed_geo.push(membership);
+            geo_scratches.push(scratch);
+        }
+        let mut sort_scratch = typed::GeoScratchBudget::new(limits.max_total_candidate_bytes());
+        let geo_sort = {
+            let mut typed_charge = TypedCharge::new(&mut *meter);
+            let mut guard = ScanGuard::shared(&mut typed_charge);
+            let mut geo_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                .as_mut()
+                .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+            typed::build_geo_sort_distances_with_memory(
+                Some(&request.sort),
+                reader,
+                &columns,
+                &mut guard,
+                &mut sort_scratch,
+                geo_memory.as_deref_mut(),
+            )?
+        };
+        // PERF-06-B3: at most one key-identity binding attempt per segment, made on
+        // the first scored candidate exactly where the accepted loop resolves its
+        // own key. A refusal downgrades only this segment to the owned B2 path.
+        let mut key_binder = KeyBinder::Unattempted;
+        execute::visit_strict_term_scored_with(
+            reader,
+            &plan.lexical_leaves,
+            expansion,
+            stats,
+            &plan.positive_lexical,
+            segment_index,
+            &live[segment_index],
+            budget,
+            meter,
+            cancel,
+            |doc_id, score, matched_count, budget| {
+                *total_hits = total_hits
+                    .checked_add(1)
+                    .ok_or(SearchError::ResourceLimit {
+                        limit: u64::MAX,
+                        requested: u64::MAX,
+                    })?;
+                #[cfg(test)]
+                b2_observation::record_numeric_candidate();
+                if matches!(key_binder, KeyBinder::Unattempted) {
+                    key_binder = if experiment.supports_compact_key() {
+                        match reader.bind_key_identity(cancel)? {
+                            Some(identity) => KeyBinder::Ready(identity),
+                            None => KeyBinder::Fallback,
+                        }
+                    } else {
+                        KeyBinder::Fallback
+                    };
+                    #[cfg(test)]
+                    if matches!(key_binder, KeyBinder::Fallback) {
+                        c2_observation::record_owned_key_fallback_segment(segment_index);
+                    }
+                }
+                let audit = ordinal_heap_audit
+                    .as_mut()
+                    .ok_or_else(mixed_ordinal_heap_error)?;
+                if let KeyBinder::Ready(identity) = &key_binder {
+                    consider_compact_ordinal_candidate(
+                        &columns,
+                        reader.schema(),
+                        request,
+                        doc_id,
+                        segment_index,
+                        score,
+                        true,
+                        &bound,
+                        &translation,
+                        identity,
+                        audit,
+                        &mut *compact_hash_audit,
+                        heap,
+                        heap_limit,
+                        budget,
+                        scope,
+                        &mut *experiment,
+                    )?;
+                    return Ok(());
+                }
+                // PR 15E Phase 5: a large segment projecting exactly one hit decodes
+                // only that one document key; every other shape keeps the full cache.
+                let single_hit_segment = matched_count == 1 && reader.doc_count() >= 1024;
+                let key = if single_hit_segment {
+                    reader.doc_key_selected(doc_id)?
+                } else {
+                    reader.doc_key(doc_id)?
+                };
+                consider_ordinal_keyword_candidate(
+                    &columns,
+                    reader.schema(),
+                    request,
+                    doc_id,
+                    segment_index,
+                    key,
+                    score,
+                    true,
+                    &bound,
+                    &translation,
+                    audit,
+                    heap,
+                    heap_limit,
+                    budget,
+                    scope,
+                    &mut *experiment,
+                )
+            },
+        )?;
+        #[cfg(test)]
+        c2_observation::record_collected_segment(segment_index, heap.len(), *total_hits);
+        // Drop the geo allocations first; their batch reservations are released
+        // only after the backing buffers are gone (accepted order).
+        drop(typed_geo);
+        drop(geo_sort);
+        for scratch in &mut geo_scratches {
+            let mut geo_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                .as_mut()
+                .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+            scratch.release_all_with_memory(geo_memory.as_deref_mut())?;
+        }
+        {
+            let mut geo_memory: Option<&mut (dyn MemoryCharge + '_)> = scope
+                .as_mut()
+                .map(|sink| sink as &mut (dyn MemoryCharge + '_));
+            sort_scratch.release_all_with_memory(geo_memory.as_deref_mut())?;
+        }
+        drop(json);
+    }
+    Ok(())
 }
 
 impl std::fmt::Debug for UnifiedSearcher<'_> {
@@ -3365,6 +3769,106 @@ pub(crate) mod b3_observation {
     }
     pub(crate) fn record_one_time_heap_hash_audit() {
         ONE_TIME_HEAP_HASH_AUDITS.with(|value| value.set(value.get() + 1));
+    }
+}
+
+/// PERF-06-C2 structural route witnesses and the test-only forced-Legacy seam.
+///
+/// Thread-local and compiled out of every non-test build: no production counter,
+/// no runtime strategy environment variable and no feature flag. The forced-Legacy
+/// override is consulted only at the final request-local route decision, so the
+/// differential compares the same request, snapshot, compiler, sort, reader, map,
+/// score and budgets against the accepted Legacy body.
+#[cfg(test)]
+pub(crate) mod c2_observation {
+    use std::cell::{Cell, RefCell};
+
+    thread_local! {
+        static STRICT_ROUTES: Cell<usize> = const { Cell::new(0) };
+        static LEGACY_ROUTES: Cell<usize> = const { Cell::new(0) };
+        static FORCE_LEGACY: Cell<bool> = const { Cell::new(false) };
+        static OWNED_KEY_FALLBACK_SEGMENTS: RefCell<Vec<usize>> =
+            const { RefCell::new(Vec::new()) };
+        static COLLECTED_SEGMENTS: RefCell<Vec<(usize, usize, u64)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+
+    pub(crate) fn reset() {
+        STRICT_ROUTES.with(|value| value.set(0));
+        LEGACY_ROUTES.with(|value| value.set(0));
+        FORCE_LEGACY.with(|value| value.set(false));
+        OWNED_KEY_FALLBACK_SEGMENTS.with(|value| value.borrow_mut().clear());
+        COLLECTED_SEGMENTS.with(|value| value.borrow_mut().clear());
+    }
+
+    /// PERF-06-C2-F1-A1: record selection of the accepted owned B2 key handler.
+    /// Refusal and ExactSet bypass are distinguished by config and B3 counters.
+    pub(crate) fn record_owned_key_fallback_segment(segment_index: usize) {
+        OWNED_KEY_FALLBACK_SEGMENTS.with(|value| value.borrow_mut().push(segment_index));
+    }
+
+    pub(crate) fn owned_key_fallback_segments() -> Vec<usize> {
+        OWNED_KEY_FALLBACK_SEGMENTS.with(|value| value.borrow().clone())
+    }
+
+    /// PERF-06-C2-F1: a segment completed collection with this heap length and
+    /// cumulative hit count. Recorded after the evaluator returned successfully and
+    /// before the segment's cleanup, never for a failed segment.
+    pub(crate) fn record_collected_segment(segment_index: usize, heap_len: usize, total_hits: u64) {
+        COLLECTED_SEGMENTS.with(|value| {
+            value
+                .borrow_mut()
+                .push((segment_index, heap_len, total_hits));
+        });
+    }
+
+    pub(crate) fn collected_segments() -> Vec<(usize, usize, u64)> {
+        COLLECTED_SEGMENTS.with(|value| value.borrow().clone())
+    }
+
+    pub(crate) fn strict_routes() -> usize {
+        STRICT_ROUTES.with(Cell::get)
+    }
+
+    pub(crate) fn legacy_routes() -> usize {
+        LEGACY_ROUTES.with(Cell::get)
+    }
+
+    pub(crate) fn record_strict_route() {
+        STRICT_ROUTES.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn record_legacy_route() {
+        LEGACY_ROUTES.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn legacy_forced() -> bool {
+        FORCE_LEGACY.with(Cell::get)
+    }
+
+    /// Thread-local RAII override that forces the accepted Legacy body.
+    ///
+    /// It changes nothing except the final route choice and restores the previous
+    /// value on `Drop`, including while unwinding.
+    pub(crate) struct ForceLegacy {
+        previous: bool,
+    }
+
+    impl ForceLegacy {
+        pub(crate) fn apply() -> Self {
+            let previous = FORCE_LEGACY.with(|value| {
+                let previous = value.get();
+                value.set(true);
+                previous
+            });
+            Self { previous }
+        }
+    }
+
+    impl Drop for ForceLegacy {
+        fn drop(&mut self) {
+            FORCE_LEGACY.with(|value| value.set(self.previous));
+        }
     }
 }
 
@@ -10848,3 +11352,3158 @@ mod b3_tests {
         assert_eq!(b3_build_attempts(), 0);
     }
 }
+
+/// PERF-06-C2 unit and adversarial acceptance.
+///
+/// Every test asserts the **actual** selected route through the thread-local
+/// witnesses, never only that a response happened to look right, and computes its
+/// expected answer from literal input-derived formulas or from the test-only
+/// forced-Legacy execution of the *same* request on the *same* snapshot.
+#[cfg(test)]
+mod c2_tests {
+    use super::execute::c2_observation as physical;
+    use super::*;
+    use crate::analysis::{Cancellation, CancellationFlag, NeverCancel};
+    use crate::contract::aggregation::Aggregation;
+    use crate::contract::document::{
+        Cardinality, Document, DocumentKey, FieldValues, MutationRequest,
+    };
+    use crate::contract::query::{Bound, GeoBoundingBox};
+    use crate::contract::result::{
+        MissingValuePosition, MultiValueSelector, SortDirection, SortField, TopK,
+    };
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue, GeoPoint, JsonNumber, JsonValue};
+    use crate::index::{Index, IndexLimits, ReaderSnapshot};
+    use crate::storage::{Directory, MemoryDirectory};
+    use std::num::NonZeroUsize;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // -----------------------------------------------------------------------
+    // Fixture
+    // -----------------------------------------------------------------------
+
+    fn schema() -> Schema {
+        Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "grp",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, false, false),
+                ),
+                FieldDefinition::new(
+                    "doc_id",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, true),
+                )
+                .with_normalizer("keyword"),
+                FieldDefinition::new(
+                    "n",
+                    FieldType::I64,
+                    Cardinality::Single,
+                    FieldOptions::new(false, true, true),
+                ),
+                FieldDefinition::new(
+                    "body",
+                    FieldType::Text,
+                    Cardinality::Single,
+                    FieldOptions::indexed_stored(),
+                )
+                .with_analyzer("standard_folded"),
+                FieldDefinition::new(
+                    "js",
+                    FieldType::Json,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, false),
+                ),
+                FieldDefinition::new(
+                    "loc",
+                    FieldType::GeoPoint,
+                    Cardinality::Multi,
+                    FieldOptions::new(true, true, true),
+                ),
+                FieldDefinition::new(
+                    "grp_multi",
+                    FieldType::Keyword,
+                    Cardinality::Multi,
+                    FieldOptions::new(true, false, false),
+                ),
+                FieldDefinition::new(
+                    "tag",
+                    FieldType::Keyword,
+                    Cardinality::Multi,
+                    FieldOptions::new(true, false, true),
+                ),
+                FieldDefinition::new(
+                    "rank",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, false, true),
+                )
+                .with_normalizer("keyword"),
+            ],
+            None,
+        )
+        .expect("schema")
+    }
+
+    fn index_limits() -> IndexLimits {
+        IndexLimits::new()
+            .with_max_pending_docs(200_000)
+            .with_max_pending_bytes(512 * 1024 * 1024)
+    }
+
+    /// A live native index plus its snapshot. The `Index` is retained so the
+    /// snapshot's data owners stay alive for the whole test.
+    struct Fixture {
+        schema: Schema,
+        registry: AnalyzerRegistry,
+        index: Index,
+        snapshot: Arc<ReaderSnapshot>,
+    }
+
+    impl Fixture {
+        fn new(segments: &[Vec<Document>]) -> Self {
+            let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+            let schema = schema();
+            let registry = AnalyzerRegistry::builtin();
+            {
+                let index = Index::create_with_limits(
+                    Arc::clone(&directory),
+                    schema.clone(),
+                    registry.clone(),
+                    index_limits(),
+                )
+                .expect("create");
+                for segment in segments {
+                    let mut writer = index.writer().expect("writer");
+                    for document in segment {
+                        writer.insert(document.clone()).expect("insert");
+                    }
+                    writer.commit().expect("commit");
+                }
+            }
+            let index =
+                Index::open_existing(directory, schema.clone(), registry.clone()).expect("reopen");
+            let snapshot = index.snapshot();
+            Self {
+                schema,
+                registry,
+                index,
+                snapshot,
+            }
+        }
+
+        fn searcher(
+            &self,
+            limits: SearchLimits,
+            config: TopKDuplicateConfig,
+        ) -> UnifiedSearcher<'_> {
+            UnifiedSearcher::new(&self.snapshot, &self.schema, &self.registry, limits)
+                .with_topk_duplicate_config(config)
+        }
+
+        fn writer(&self) -> crate::index::IndexWriter {
+            self.index.writer().expect("writer")
+        }
+    }
+
+    fn bounded_key(index: usize) -> String {
+        format!("doc{index:06}")
+    }
+
+    /// B4-formula-like row: all rows carry `grp=common`; every third row carries
+    /// `grp_alt=other` so several literal count formulas are available.
+    fn document(index: usize) -> Document {
+        let mut document = Document::new(DocumentKey::new(bounded_key(index)).expect("key"));
+        document
+            .insert(
+                "grp",
+                FieldValues::Single(FieldValue::Keyword("common".to_owned())),
+            )
+            .expect("grp");
+        document
+            .insert(
+                "grp_multi",
+                FieldValues::Multi(vec![FieldValue::Keyword("common".to_owned())]),
+            )
+            .expect("grp_multi");
+        document
+            .insert(
+                "tag",
+                FieldValues::Multi(vec![FieldValue::Keyword("t".to_owned())]),
+            )
+            .expect("tag");
+        document
+            .insert(
+                "doc_id",
+                FieldValues::Single(FieldValue::Keyword(bounded_key(index))),
+            )
+            .expect("doc_id");
+        document
+            .insert("n", FieldValues::Single(FieldValue::I64(index as i64)))
+            .expect("n");
+        document
+            .insert(
+                "body",
+                FieldValues::Single(FieldValue::Text(if index % 2 == 0 {
+                    "alpha beta".to_owned()
+                } else {
+                    "gamma delta".to_owned()
+                })),
+            )
+            .expect("body");
+        document
+            .insert(
+                "js",
+                FieldValues::Single(FieldValue::Json(JsonValue::Object(
+                    [(
+                        "n".to_owned(),
+                        JsonValue::Number(JsonNumber::I64(index as i64)),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ))),
+            )
+            .expect("js");
+        document
+            .insert(
+                "loc",
+                FieldValues::Multi(vec![FieldValue::GeoPoint(
+                    GeoPoint::new(1.0 + index as f64 * 0.001, 2.0).expect("point"),
+                )]),
+            )
+            .expect("loc");
+        document
+    }
+
+    fn documents(count: usize) -> Vec<Document> {
+        (0..count).map(document).collect()
+    }
+
+    /// Documents that do not contain the queried `grp` term, so a committed
+    /// segment can have `m = 0` while still contributing N examinations.
+    fn other_documents(count: usize, offset: usize) -> Vec<Document> {
+        (0..count)
+            .map(|index| {
+                let mut document = document(offset + index);
+                document
+                    .insert(
+                        "grp",
+                        FieldValues::Single(FieldValue::Keyword("other".to_owned())),
+                    )
+                    .expect("grp");
+                document
+            })
+            .collect()
+    }
+
+    fn term_common() -> Query {
+        Query::Term {
+            field: "grp".to_owned(),
+            value: FieldValue::Keyword("common".to_owned()),
+        }
+    }
+
+    fn term_absent() -> Query {
+        Query::Term {
+            field: "grp".to_owned(),
+            value: FieldValue::Keyword("absent".to_owned()),
+        }
+    }
+
+    fn doc_id_sort(direction: SortDirection, missing: MissingValuePosition) -> Sort {
+        let mut field = SortField::new("doc_id", direction);
+        field.missing = missing;
+        Sort::new(vec![field])
+    }
+
+    fn request(query: Query, top_k: usize, sort: Sort) -> UnifiedRequest {
+        let mut request = UnifiedRequest::new(query, TopK::new(top_k).expect("top-k"));
+        request.sort = sort;
+        request.projection = Projection::Fields(vec!["doc_id".to_owned()]);
+        request
+    }
+
+    fn request_asc(query: Query, top_k: usize) -> UnifiedRequest {
+        request(
+            query,
+            top_k,
+            doc_id_sort(SortDirection::Asc, MissingValuePosition::Last),
+        )
+    }
+
+    fn run_with(
+        fixture: &Fixture,
+        request: &UnifiedRequest,
+        limits: SearchLimits,
+        config: TopKDuplicateConfig,
+    ) -> SearchResult<UnifiedResponse> {
+        fixture
+            .searcher(limits, config)
+            .search(request, &Budgets::new(), &NeverCancel)
+    }
+
+    fn run_ineligible(
+        fixture: &Fixture,
+        request: &UnifiedRequest,
+    ) -> SearchResult<UnifiedResponse> {
+        run_with(
+            fixture,
+            request,
+            SearchLimits::default(),
+            TopKDuplicateConfig::default(),
+        )
+    }
+
+    /// Run with all C2 witnesses reset and assert the physical route fired once.
+    fn strict(fixture: &Fixture, request: &UnifiedRequest) -> UnifiedResponse {
+        reset_witnesses();
+        let response = run_ineligible(fixture, request).expect("strict search");
+        assert_eq!(c2_observation::strict_routes(), 1, "strict route selected");
+        assert_eq!(c2_observation::legacy_routes(), 0, "legacy body not used");
+        assert!(
+            physical::strict_evaluator_calls() >= 1,
+            "the strict evaluator ran"
+        );
+        response
+    }
+
+    /// Run with all C2 witnesses reset and assert the accepted Legacy body ran.
+    fn legacy(fixture: &Fixture, request: &UnifiedRequest) -> UnifiedResponse {
+        reset_witnesses();
+        let response = run_ineligible(fixture, request).expect("legacy search");
+        assert_eq!(
+            c2_observation::strict_routes(),
+            0,
+            "strict route not selected"
+        );
+        assert_eq!(c2_observation::legacy_routes(), 1, "legacy body used");
+        assert_eq!(
+            physical::strict_evaluator_calls(),
+            0,
+            "no C2 evaluator call"
+        );
+        response
+    }
+
+    /// The same request, same snapshot, forced onto the accepted Legacy body.
+    fn forced_legacy(fixture: &Fixture, request: &UnifiedRequest) -> UnifiedResponse {
+        reset_witnesses();
+        let response = {
+            let _forced = c2_observation::ForceLegacy::apply();
+            run_ineligible(fixture, request).expect("forced legacy search")
+        };
+        assert_eq!(c2_observation::strict_routes(), 0, "forced legacy");
+        assert_eq!(c2_observation::legacy_routes(), 1, "forced legacy body");
+        response
+    }
+
+    fn reset_witnesses() {
+        c2_observation::reset();
+        physical::reset();
+        execute::test_observation::reset_scorer_calls();
+        execute::test_observation::reset_postings_handoff();
+        execute::test_observation::reset_term_membership_lookups();
+    }
+
+    fn keys(response: &UnifiedResponse) -> Vec<String> {
+        response
+            .hits
+            .iter()
+            .map(|hit| hit.key.as_str().to_owned())
+            .collect()
+    }
+
+    fn bits(response: &UnifiedResponse) -> Vec<u64> {
+        response
+            .hits
+            .iter()
+            .map(|hit| hit.score.expect("lexical hit is scored").to_bits())
+            .collect()
+    }
+
+    /// One projected hit: `(key, score bits, projected fields)`.
+    type ProjectedRow = (String, Option<u64>, Vec<(String, FieldValues)>);
+
+    fn projected(response: &UnifiedResponse) -> Vec<ProjectedRow> {
+        response
+            .hits
+            .iter()
+            .map(|hit| {
+                (
+                    hit.key.as_str().to_owned(),
+                    hit.score.map(f64::to_bits),
+                    hit.fields.clone(),
+                )
+            })
+            .collect()
+    }
+
+    fn expected_ascending_keys(count: usize, top_k: usize) -> Vec<String> {
+        (0..count.min(top_k)).map(bounded_key).collect()
+    }
+
+    /// PERF-06-C2-F1-A1: guard the native two-segment topology of the U17/U21
+    /// boundary fixture. Query order is the manifest order, which is sorted by the
+    /// content-addressed `s-{sha256}` segment id: the 34-document slice occupies
+    /// query segment 0. A mismatch here is a fixture/source disagreement (A08), not
+    /// permission to recompute the table constants.
+    fn assert_native_boundary_fixture(fixture: &Fixture) {
+        const EXPECTED: [(&str, u64, usize); 2] = [
+            (
+                "s-920b6e02921926f20ee4e865aecf1a4d0ca69e17e39cdd09fee6bd6ff0f7c097",
+                34,
+                6,
+            ),
+            (
+                "s-f915efbfc5652be3911bb2cddbacadee03d9466c68dd5fbd9bef28d7957fd495",
+                6,
+                0,
+            ),
+        ];
+        assert_eq!(fixture.snapshot.segment_count(), EXPECTED.len());
+        assert_eq!(fixture.snapshot.document_count(), 40);
+        for (segment_index, &(expected_id, expected_docs, global_start)) in
+            EXPECTED.iter().enumerate()
+        {
+            let segment = &fixture.snapshot.segments()[segment_index];
+            assert_eq!(segment.meta().segment_id(), expected_id);
+            assert_eq!(segment.doc_count(), expected_docs);
+            let guard = fixture
+                .snapshot
+                .open_segment_reader(segment_index)
+                .expect("native fixture reader");
+            let reader = guard.reader();
+            assert_eq!(reader.doc_count(), expected_docs);
+            let live = fixture
+                .snapshot
+                .effective_live_docs(segment_index, reader)
+                .expect("native fixture live mask");
+            assert_eq!(
+                live.len(),
+                usize::try_from(expected_docs).expect("small count")
+            );
+            assert!(
+                live.iter().all(|flag| *flag),
+                "native fixture must be all live"
+            );
+            let body_field_id = reader.schema().field_id("body").expect("body field id");
+            assert!(
+                reader
+                    .field_norms()
+                    .and_then(|norms| norms.field(body_field_id))
+                    .is_some()
+            );
+            for local_doc in 0..expected_docs {
+                let expected_key =
+                    bounded_key(global_start + usize::try_from(local_doc).expect("small local id"));
+                let actual_key = reader.doc_key(local_doc).expect("native fixture key");
+                assert_eq!(actual_key.as_str(), expected_key.as_str());
+            }
+        }
+    }
+
+    /// PERF-06-C2-F1-A1: compare two responses completely — projected hits,
+    /// explicit score bits, totals, generation, view ordinal, the whole cursor and
+    /// the aggregation payload. Two identically wrong routes are never the sole
+    /// oracle, so callers keep their literal expected values too.
+    fn assert_c2_f1_full_response(
+        actual: &UnifiedResponse,
+        expected: &UnifiedResponse,
+        label: &str,
+    ) {
+        assert_eq!(
+            projected(actual),
+            projected(expected),
+            "{label}: projected hits"
+        );
+        assert_eq!(bits(actual), bits(expected), "{label}: score bits");
+        assert_eq!(
+            actual.total_hits, expected.total_hits,
+            "{label}: total hits"
+        );
+        assert_eq!(
+            actual.generation, expected.generation,
+            "{label}: generation"
+        );
+        assert_eq!(
+            actual.view_ordinal, expected.view_ordinal,
+            "{label}: view ordinal"
+        );
+        assert_eq!(
+            actual.next_cursor, expected.next_cursor,
+            "{label}: complete cursor"
+        );
+        assert_eq!(
+            actual.aggregation, expected.aggregation,
+            "{label}: aggregation"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // PERF-06-C2-F1 shared test helpers
+    // -----------------------------------------------------------------------
+
+    /// Thread-local B3 probe guard. Install it *before* arming a probe and keep it
+    /// until every counter assertion has run, so a panic cannot leave a stale probe
+    /// behind for another test on this worker.
+    struct B3ProbeReset;
+
+    impl B3ProbeReset {
+        fn new() -> Self {
+            crate::segment::reader::clear_b3_probe();
+            Self
+        }
+    }
+
+    impl Drop for B3ProbeReset {
+        fn drop(&mut self) {
+            crate::segment::reader::clear_b3_probe();
+        }
+    }
+
+    /// The explicit `Prefilter`/threshold-4 duplicate configuration. `K < 4`
+    /// resolves to the existing internal `Linear` duplicate mode. `Linear` and
+    /// `Prefilter` both support compact keys; `ExactSet` does not.
+    fn linear_config() -> TopKDuplicateConfig {
+        TopKDuplicateConfig::new(
+            NonZeroUsize::new(4).expect("four"),
+            TopKDuplicateStrategy::Prefilter,
+        )
+    }
+
+    /// The distinct `ExactSet` control: it never attempts the key directory.
+    fn exact_set_config_threshold_one() -> TopKDuplicateConfig {
+        TopKDuplicateConfig::new(
+            NonZeroUsize::new(1).expect("one"),
+            TopKDuplicateStrategy::ExactSet,
+        )
+    }
+
+    /// The same request/snapshot/limits/config forced onto the accepted Legacy body.
+    fn forced_legacy_with(
+        fixture: &Fixture,
+        request: &UnifiedRequest,
+        limits: SearchLimits,
+        config: TopKDuplicateConfig,
+    ) -> SearchResult<UnifiedResponse> {
+        reset_witnesses();
+        let result = {
+            let _forced = c2_observation::ForceLegacy::apply();
+            run_with(fixture, request, limits, config)
+        };
+        assert_eq!(c2_observation::strict_routes(), 0, "forced legacy route");
+        assert_eq!(c2_observation::legacy_routes(), 1, "forced legacy body");
+        assert_eq!(
+            physical::strict_evaluator_calls(),
+            0,
+            "no C2 evaluator call"
+        );
+        result
+    }
+
+    // --- bounded copied-container fixtures -------------------------------
+
+    /// A validated copy of one committed segment used for byte-exact bounded
+    /// mutations. The original snapshot and committed storage are never touched.
+    struct CopiedSegment {
+        doc_count: u64,
+        required: Vec<(u16, u16)>,
+        optional: Vec<(u16, u16)>,
+        sections: Vec<(crate::segment::SectionKind, u16, u64, Vec<u8>)>,
+    }
+
+    impl CopiedSegment {
+        fn parse(pristine: &[u8]) -> Self {
+            let view = crate::segment::parse_container(
+                pristine,
+                &crate::segment::SegmentLimits::default(),
+            )
+            .expect("container");
+            Self {
+                doc_count: view.doc_count(),
+                required: view.required_features().to_vec(),
+                optional: view.optional_features().to_vec(),
+                sections: view
+                    .sections()
+                    .iter()
+                    .map(|entry| {
+                        (
+                            entry.kind,
+                            entry.flags,
+                            entry.aux,
+                            view.body(entry.kind).expect("section body").to_vec(),
+                        )
+                    })
+                    .collect(),
+            }
+        }
+
+        fn body_mut(&mut self, kind: crate::segment::SectionKind) -> &mut Vec<u8> {
+            &mut self
+                .sections
+                .iter_mut()
+                .find(|(section, _, _, _)| *section == kind)
+                .expect("section present")
+                .3
+        }
+
+        /// Rebuild a checksum-valid container preserving the kind, document count,
+        /// required/optional features, section order, flags and aux bytes; only the
+        /// section bodies the caller mutated differ.
+        fn rebuild(&self) -> Vec<u8> {
+            let mut builder = crate::segment::ContainerBuilder::new(
+                crate::segment::ContainerKind::Segment,
+                self.doc_count,
+            );
+            for (id, version) in &self.required {
+                builder.require_feature(*id, *version);
+            }
+            for (id, version) in &self.optional {
+                builder.optional_feature(*id, *version);
+            }
+            for (kind, flags, aux, body) in &self.sections {
+                builder.section(*kind, *flags, *aux, body.clone());
+            }
+            builder.build().expect("checksum-valid rebuild")
+        }
+    }
+
+    /// Wrap rebuilt bytes in a real in-memory snapshot with a deterministic per-row
+    /// identity.
+    fn c2_f1_snapshot(case_id: &str, copied: &CopiedSegment, rebuilt: Vec<u8>) -> ReaderSnapshot {
+        ReaderSnapshot::for_test(
+            vec![crate::index::SegmentSnapshot::new(
+                crate::index::SegmentMeta::new(
+                    format!("c2-f1-{case_id}"),
+                    format!("test/c2-f1-{case_id}"),
+                    quervant_objectstore::ContentDescriptor::of(&rebuilt),
+                    copied.required.clone(),
+                    copied.optional.clone(),
+                    None,
+                ),
+                Arc::new(rebuilt),
+                copied.doc_count,
+            )],
+            crate::segment::SegmentLimits::default(),
+            256 * 1024 * 1024,
+            256 * 1024 * 1024,
+        )
+    }
+
+    /// Run one request against an explicitly supplied snapshot through the real
+    /// searcher, sharing the fixture's schema and registry.
+    fn c2_f1_run_snapshot(
+        fixture: &Fixture,
+        snapshot: &ReaderSnapshot,
+        request: &UnifiedRequest,
+    ) -> SearchResult<UnifiedResponse> {
+        UnifiedSearcher::new(
+            snapshot,
+            &fixture.schema,
+            &fixture.registry,
+            SearchLimits::default(),
+        )
+        .with_topk_duplicate_config(TopKDuplicateConfig::default())
+        .search(request, &Budgets::new(), &NeverCancel)
+    }
+
+    /// The same request against an arbitrary snapshot, forced onto Legacy.
+    fn c2_f1_forced_legacy_on_snapshot(
+        fixture: &Fixture,
+        snapshot: &ReaderSnapshot,
+        request: &UnifiedRequest,
+        expect_route: bool,
+    ) -> SearchResult<UnifiedResponse> {
+        reset_witnesses();
+        let result = {
+            let _forced = c2_observation::ForceLegacy::apply();
+            c2_f1_run_snapshot(fixture, snapshot, request)
+        };
+        assert_eq!(c2_observation::strict_routes(), 0, "no strict route");
+        assert_eq!(
+            c2_observation::legacy_routes(),
+            usize::from(expect_route),
+            "legacy route expectation"
+        );
+        assert_eq!(physical::strict_evaluator_calls(), 0, "no evaluator");
+        result
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U01 — static dispatch matrix
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u01_static_dispatch_matrix() {
+        let fixture = Fixture::new(&[documents(24)]);
+        // Control: the exact eligible shape must take the physical route.
+        let eligible = request_asc(term_common(), 5);
+        let response = strict(&fixture, &eligible);
+        assert_eq!(response.total_hits, 24);
+        assert_eq!(keys(&response), expected_ascending_keys(24, 5));
+
+        let ineligible_queries: Vec<(&str, Query)> = vec![
+            ("and", Query::And(vec![term_common()])),
+            ("or", Query::Or(vec![term_common()])),
+            (
+                "not_not",
+                Query::Not(Box::new(Query::Not(Box::new(term_common())))),
+            ),
+            ("match_all", Query::MatchAll),
+            (
+                "phrase",
+                Query::Phrase {
+                    field: "body".to_owned(),
+                    terms: vec!["alpha beta".to_owned()],
+                },
+            ),
+            (
+                "prefix",
+                Query::Prefix {
+                    field: "grp".to_owned(),
+                    prefix: "comm".to_owned(),
+                },
+            ),
+            (
+                "glob",
+                Query::Glob {
+                    field: "grp".to_owned(),
+                    pattern: "comm*".to_owned(),
+                },
+            ),
+            (
+                "regex",
+                Query::Regex {
+                    field: "grp".to_owned(),
+                    pattern: "comm.*".to_owned(),
+                },
+            ),
+            (
+                "fuzzy",
+                Query::Fuzzy {
+                    field: "grp".to_owned(),
+                    value: "commom".to_owned(),
+                    max_edits: 1,
+                    transpositions: true,
+                },
+            ),
+            (
+                "typed_range",
+                Query::Range {
+                    field: "n".to_owned(),
+                    lower: Bound::Included(FieldValue::I64(0)),
+                    upper: Bound::Included(FieldValue::I64(3)),
+                },
+            ),
+            (
+                "typed_exists",
+                Query::Exists {
+                    field: "n".to_owned(),
+                },
+            ),
+            (
+                "geo",
+                Query::GeoBoundingBox {
+                    field: "loc".to_owned(),
+                    bbox: GeoBoundingBox::new(-1.0, -1.0, 90.0, 90.0).expect("bbox"),
+                },
+            ),
+        ];
+        for (label, query) in ineligible_queries {
+            let request = request_asc(query, 5);
+            reset_witnesses();
+            // Some shapes are legitimately empty; the point is the route.
+            let response = run_ineligible(&fixture, &request);
+            assert!(response.is_ok(), "{label} must not error");
+            assert_eq!(c2_observation::strict_routes(), 0, "{label} stays legacy");
+            assert_eq!(c2_observation::legacy_routes(), 1, "{label} legacy body");
+            assert_eq!(physical::strict_evaluator_calls(), 0, "{label}");
+        }
+        // Sanity: the counters above were accumulated, so reset and prove that a
+        // matched term under `And` still returns every hit through Legacy.
+        reset_witnesses();
+        let wrapped = request_asc(Query::And(vec![term_common()]), 5);
+        let response = legacy(&fixture, &wrapped);
+        assert_eq!(response.total_hits, 24);
+        assert_eq!(keys(&response), expected_ascending_keys(24, 5));
+        assert_eq!(forced_legacy(&fixture, &wrapped).total_hits, 24);
+
+        // Sort-shape ineligibility on the same strict term.
+        let relevance = request(term_common(), 5, Sort::default());
+        legacy(&fixture, &relevance);
+
+        let mut two_fields = UnifiedRequest::new(term_common(), TopK::new(5).expect("k"));
+        two_fields.sort = Sort::new(vec![
+            SortField::new("doc_id", SortDirection::Asc),
+            SortField::new("n", SortDirection::Asc),
+        ]);
+        legacy(&fixture, &two_fields);
+
+        let mut multivalue = UnifiedRequest::new(term_common(), TopK::new(5).expect("k"));
+        multivalue.sort = Sort::new(vec![
+            SortField::new("doc_id", SortDirection::Asc).with_multi(MultiValueSelector::Min),
+        ]);
+        legacy(&fixture, &multivalue);
+
+        // A non-columnar sort field is rejected by the accepted sort validator:
+        // that established typed error must not become a C2 route.
+        let mut non_columnar = UnifiedRequest::new(term_common(), TopK::new(5).expect("k"));
+        non_columnar.sort = Sort::new(vec![SortField::new("grp", SortDirection::Asc)]);
+        reset_witnesses();
+        assert!(run_ineligible(&fixture, &non_columnar).is_err());
+        assert_eq!(c2_observation::strict_routes(), 0);
+        assert_eq!(physical::strict_evaluator_calls(), 0);
+
+        // A multi-cardinality columnar sort field is not C2-eligible.
+        let mut multi_cardinality = UnifiedRequest::new(term_common(), TopK::new(5).expect("k"));
+        multi_cardinality.sort = Sort::new(vec![
+            SortField::new("tag", SortDirection::Asc).with_multi(MultiValueSelector::Min),
+        ]);
+        legacy(&fixture, &multi_cardinality);
+
+        // A malformed sort keeps its established typed error before any segment.
+        let mut invalid = request_asc(term_common(), 5);
+        invalid.sort.fields[0].field = "no_such_field".to_owned();
+        reset_witnesses();
+        assert!(run_ineligible(&fixture, &invalid).is_err());
+        assert_eq!(c2_observation::strict_routes(), 0);
+        assert_eq!(c2_observation::legacy_routes(), 0);
+        assert_eq!(physical::strict_evaluator_calls(), 0);
+
+        // Batch requests never select the physical route.
+        reset_witnesses();
+        let mut meter = BatchExecutionMeter::new(1_000_000, 1_000_000, 1_000_000);
+        fixture
+            .searcher(SearchLimits::default(), TopKDuplicateConfig::default())
+            .search_with_batch(&eligible, &Budgets::new(), &NeverCancel, &mut meter)
+            .expect("batch search");
+        assert_eq!(c2_observation::strict_routes(), 0, "batch stays legacy");
+        assert_eq!(c2_observation::legacy_routes(), 1);
+        assert_eq!(physical::strict_evaluator_calls(), 0);
+
+        // Aggregation is reachable only through the batch entry point and is
+        // therefore also ineligible.
+        reset_witnesses();
+        let aggregation = Aggregation::new();
+        let mut meter = BatchExecutionMeter::new(1_000_000_000, 1_000_000_000, 1_000_000_000);
+        fixture
+            .searcher(SearchLimits::default(), TopKDuplicateConfig::default())
+            .search_with_batch_aggregation_retained(
+                &eligible,
+                Some(&aggregation),
+                &Budgets::new(),
+                &NeverCancel,
+                &mut meter,
+            )
+            .expect("aggregation search");
+        assert_eq!(
+            c2_observation::strict_routes(),
+            0,
+            "aggregation stays legacy"
+        );
+
+        // A cursor request never selects the physical route.
+        let first = strict(&fixture, &eligible);
+        let cursor = first.next_cursor.expect("cursor");
+        let mut second = request_asc(term_common(), 5);
+        second.after = Some(cursor);
+        legacy(&fixture, &second);
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U02 — cardinality boundary
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u02_cardinality_boundary() {
+        for top_k in [1usize, 10, 31, 32, 100] {
+            for delta in [-2i64, -1, 0, 1, 2] {
+                let matches = (top_k as i64 + 1 + delta).max(0) as usize;
+                if matches > 130 {
+                    continue;
+                }
+                let fixture = if matches == 0 {
+                    Fixture::new(&[documents(8)])
+                } else {
+                    Fixture::new(&[documents(matches)])
+                };
+                let query = if matches == 0 {
+                    term_absent()
+                } else {
+                    term_common()
+                };
+                let request = request_asc(query, top_k);
+                reset_witnesses();
+                let response = run_ineligible(&fixture, &request).expect("search");
+                let expected_route = matches > top_k + 1;
+                assert_eq!(
+                    c2_observation::strict_routes(),
+                    usize::from(expected_route),
+                    "k={top_k} m={matches}"
+                );
+                assert_eq!(response.total_hits as usize, matches);
+                assert_eq!(response.hits.len(), matches.min(top_k));
+                assert_eq!(
+                    response.next_cursor.is_some(),
+                    matches > top_k,
+                    "k={top_k} m={matches}"
+                );
+                reset_witnesses();
+            }
+        }
+        // Multi-segment: the certificate is request-wide (M), while each segment
+        // is still processed independently, including a zero-match segment.
+        let split = Fixture::new(&[
+            other_documents(3, 100),
+            documents(1),
+            documents(12).into_iter().skip(1).collect(),
+        ]);
+        let request = request_asc(term_common(), 10);
+        let response = strict(&split, &request);
+        assert_eq!(response.total_hits, 12);
+        assert_eq!(response.hits.len(), 10);
+        assert!(response.next_cursor.is_some());
+        assert_eq!(physical::strict_evaluator_calls(), 3);
+        assert_eq!(physical::callbacks(), 12);
+        // The witness counts decoded effective-live postings (1 + 0 + 11); the
+        // zero-match segment is still entered (3 evaluator calls) and still pays
+        // its N examination charge inside the evaluator.
+        assert_eq!(physical::strict_membership_observations(), 12);
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U03 — validation precedence
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u03_validation_precedence() {
+        let fixture = Fixture::new(&[documents(16)]);
+        // Query/sort/projection/TopK validation all precede any segment work.
+        let bad_query = request_asc(
+            Query::Term {
+                field: "no_such_field".to_owned(),
+                value: FieldValue::Keyword("common".to_owned()),
+            },
+            4,
+        );
+        let error = run_ineligible(&fixture, &bad_query).expect_err("bad query");
+        assert!(matches!(error, SearchError::Query(_)), "{error:?}");
+
+        let mut bad_projection = request_asc(term_common(), 4);
+        bad_projection.projection = Projection::Fields(vec!["missing_field".to_owned()]);
+        assert!(run_ineligible(&fixture, &bad_projection).is_err());
+
+        // A two-field sort is legal but not C2-eligible (proved in C2-U01).
+
+        // No physical evaluator or segment setup ran for any of the above.
+        assert_eq!(c2_observation::strict_routes(), 0);
+        assert_eq!(physical::strict_evaluator_calls(), 0);
+
+        // A cursor from a different snapshot binding is rejected before segments.
+        let other = Fixture::new(&[documents(16)]);
+        let first = strict(&fixture, &request_asc(term_common(), 2));
+        let foreign = first.next_cursor.expect("cursor");
+        let foreign = UnifiedCursor::new(
+            foreign.snapshot_binding().wrapping_add(1),
+            [0u8; 32],
+            foreign.last_sort_values().to_vec(),
+            foreign.last_score(),
+            foreign.last_key().clone(),
+        );
+        let mut request = request_asc(term_common(), 2);
+        request.after = Some(foreign);
+        reset_witnesses();
+        assert!(run_ineligible(&other, &request).is_err());
+        assert_eq!(c2_observation::strict_routes(), 0);
+        assert_eq!(physical::strict_evaluator_calls(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U04 — runtime shape and complete stream decoding
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u04_runtime_shape_and_decoder() {
+        let fixture = Fixture::new(&[documents(40)]);
+        let request = request_asc(term_common(), 3);
+        reset_witnesses();
+        let response = strict(&fixture, &request);
+        // Every decoded posting was visited (complete stream, no early K stop) and
+        // every match was scored and handed over before any candidate existed.
+        assert_eq!(physical::strict_membership_observations(), 40);
+        assert_eq!(physical::converted_rows(), 40);
+        assert_eq!(physical::callbacks(), 40);
+        assert_eq!(response.total_hits, 40);
+        // The strict root performs no per-document membership relookup and no
+        // typed predicate evaluation.
+        assert_eq!(execute::test_observation::term_membership_lookups(), 0);
+        assert_eq!(execute::test_observation::predicate_calls(), 0);
+        // The malformed-posting and malformed-shape cases are executed by the
+        // crate unit tests in `execute::c2_physical_tests`, which rebuild a
+        // checksum-valid segment container.
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U05 — N work and scanned-frequency charging parity
+    // -----------------------------------------------------------------------
+
+    fn verdict(response: &SearchResult<UnifiedResponse>) -> Result<u64, String> {
+        match response {
+            Ok(value) => Ok(value.total_hits),
+            Err(SearchError::ResourceLimit { limit, requested }) => {
+                Err(format!("limit {limit} requested {requested}"))
+            }
+            Err(other) => Err(format!("{other:?}")),
+        }
+    }
+
+    fn document_with_body(index: usize, alpha_repeats: usize, padding: usize) -> Document {
+        let mut document = document(index);
+        let mut words: Vec<&str> = vec!["alpha"; alpha_repeats];
+        words.extend(std::iter::repeat_n("gamma", padding));
+        document
+            .insert(
+                "body",
+                FieldValues::Single(FieldValue::Text(words.join(" "))),
+            )
+            .expect("body");
+        document
+    }
+
+    fn term_body() -> Query {
+        Query::Term {
+            field: "body".to_owned(),
+            value: FieldValue::Text("alpha".to_owned()),
+        }
+    }
+
+    fn body_documents(count: usize) -> Vec<Document> {
+        (0..count)
+            .map(|index| document_with_body(index, 1 + index % 4, index % 5))
+            .collect()
+    }
+
+    #[test]
+    fn c2_u05_n_work_and_scanned_freq() {
+        // Every document contains `alpha` with a distinct term frequency, so the
+        // scanned-occurrence charge is `freq`-based rather than candidate-based.
+        let fixture = Fixture::new(&[body_documents(60)]);
+        let request = request_asc(term_body(), 5);
+        let mut routed = 0usize;
+        for limit in [
+            1u64, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597, 2584, 4181,
+        ] {
+            let c2_limits = SearchLimits::default()
+                .with_max_total_work_units(limit)
+                .expect("work limit");
+            reset_witnesses();
+            let c2 = verdict(&run_with(
+                &fixture,
+                &request,
+                c2_limits,
+                TopKDuplicateConfig::default(),
+            ));
+            if c2_observation::strict_routes() == 1 {
+                routed += 1;
+            }
+            let legacy_result = {
+                let _forced = c2_observation::ForceLegacy::apply();
+                run_with(
+                    &fixture,
+                    &request,
+                    c2_limits,
+                    TopKDuplicateConfig::default(),
+                )
+            };
+            assert_eq!(c2, verdict(&legacy_result), "work limit {limit} parity");
+
+            let c2_scanned = SearchLimits::default()
+                .with_max_scanned_posting_occurrences(limit)
+                .expect("scanned limit");
+            reset_witnesses();
+            let c2 = verdict(&run_with(
+                &fixture,
+                &request,
+                c2_scanned,
+                TopKDuplicateConfig::default(),
+            ));
+            let legacy_result = {
+                let _forced = c2_observation::ForceLegacy::apply();
+                run_with(
+                    &fixture,
+                    &request,
+                    c2_scanned,
+                    TopKDuplicateConfig::default(),
+                )
+            };
+            assert_eq!(c2, verdict(&legacy_result), "scanned limit {limit} parity");
+        }
+        assert!(
+            routed >= 8,
+            "only {routed} limits reached the physical route"
+        );
+        // At least one boundary must actually reject, so the parity above is not
+        // vacuous: limit 1 is strictly below the request's real work.
+        reset_witnesses();
+        let error = run_with(
+            &fixture,
+            &request,
+            SearchLimits::default()
+                .with_max_total_work_units(1)
+                .expect("limit"),
+            TopKDuplicateConfig::default(),
+        )
+        .expect_err("limit 1 must reject");
+        assert!(
+            matches!(error, SearchError::ResourceLimit { .. }),
+            "{error:?}"
+        );
+
+        // A live mask keeps the N examination at the effective-live count while
+        // the decoder still charges the dead posting's frequency.
+        let masked_fixture = Fixture::new(&[documents(20), Vec::new()]);
+        let snapshot = {
+            let mut writer = masked_fixture.writer();
+            writer
+                .apply(MutationRequest::delete(
+                    DocumentKey::new(bounded_key(0)).expect("key"),
+                ))
+                .expect("delete");
+            writer.refresh().expect("refresh")
+        };
+        let masked = Fixture {
+            schema: masked_fixture.schema.clone(),
+            registry: AnalyzerRegistry::builtin(),
+            index: masked_fixture.index,
+            snapshot,
+        };
+        reset_witnesses();
+        let response = run_ineligible(&masked, &request_asc(term_common(), 3)).expect("search");
+        assert_eq!(response.total_hits, 19);
+        assert_eq!(physical::converted_rows(), 19);
+        assert_eq!(physical::strict_membership_observations(), 19);
+        assert_eq!(physical::callbacks(), 19);
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U06 — exact total_hits and K+1 lookahead
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u06_exact_total_hits() {
+        let fixture = Fixture::new(&[documents(100)]);
+        // K=10 and K=90 both leave M=100 > K+1, so both take the physical route.
+        for top_k in [10usize, 90] {
+            let request = request_asc(term_common(), top_k);
+            let response = strict(&fixture, &request);
+            assert_eq!(response.total_hits, 100);
+            assert_eq!(response.hits.len(), top_k);
+            assert_eq!(keys(&response), expected_ascending_keys(100, top_k));
+            assert!(response.next_cursor.is_some());
+            assert_eq!(physical::converted_rows(), 100);
+        }
+        // K = M - 1 is the K+1 boundary: the accepted code retains every match as
+        // lookahead, so it stays on Legacy with the exact same public answer.
+        let boundary = request_asc(term_common(), 99);
+        let response = legacy(&fixture, &boundary);
+        assert_eq!(response.total_hits, 100);
+        assert_eq!(response.hits.len(), 99);
+        assert!(response.next_cursor.is_some());
+        // Distribution 0 + 1 + M: the single-hit segment keeps the selected-key
+        // optimization but still contributes its exact count.
+        let split = Fixture::new(&[
+            other_documents(4, 200),
+            documents(1),
+            documents(60).into_iter().skip(1).collect(),
+        ]);
+        let response = strict(&split, &request_asc(term_common(), 10));
+        assert_eq!(response.total_hits, 60);
+        assert_eq!(response.hits.len(), 10);
+        assert!(response.next_cursor.is_some());
+        assert_eq!(physical::strict_evaluator_calls(), 3);
+        assert_eq!(physical::callbacks(), 60);
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U07 — late score error precedes every candidate key decision
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u07_late_score_error_beats_key_error() {
+        let fixture = Fixture::new(&[documents(30)]);
+        let request = request_asc(term_common(), 3);
+        reset_witnesses();
+        let error = {
+            let _arm = physical::ScoreFailureArm::arm(29);
+            run_ineligible(&fixture, &request).expect_err("injected score fault")
+        };
+        assert!(
+            matches!(error, SearchError::InvalidScore { detail } if detail == "injected C2 score failure"),
+            "{error:?}"
+        );
+        assert_eq!(
+            physical::callbacks(),
+            0,
+            "no callback is reached for that segment"
+        );
+        // Evidence class: INJECTED_C2_ONLY structural error-order witness. The
+        // forced-Legacy path has no injector, so it is deliberately not cited as
+        // same-fault parity. Real (uninjected) score behaviour is proved by the
+        // bit-parity tests; shared-source corruption parity is proved in the
+        // execute-module adversarial tests.
+        reset_witnesses();
+        let baseline = forced_legacy(&fixture, &request);
+        assert_eq!(baseline.total_hits, 30);
+
+        // A mid-segment fault releases every reservation and leaves no sticky
+        // state: the same snapshot queried again succeeds.
+        let error = {
+            let _arm = physical::ScoreFailureArm::arm(17);
+            run_ineligible(&fixture, &request).expect_err("injected score fault")
+        };
+        assert!(matches!(error, SearchError::InvalidScore { .. }));
+        reset_witnesses();
+        let response = strict(&fixture, &request);
+        assert_eq!(response.total_hits, 30);
+        assert_eq!(keys(&response), expected_ascending_keys(30, 3));
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U08 — score bit parity against forced Legacy
+    // -----------------------------------------------------------------------
+
+    /// Deterministic xorshift used only to generate bounded fixtures.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            let mut value = self.0;
+            value ^= value << 13;
+            value ^= value >> 7;
+            value ^= value << 17;
+            self.0 = value;
+            value
+        }
+
+        fn below(&mut self, bound: usize) -> usize {
+            (self.next() % bound as u64) as usize
+        }
+    }
+
+    fn seeded_documents(rng: &mut Rng, count: usize) -> Vec<Document> {
+        (0..count)
+            .map(|index| {
+                let repeats = 1 + rng.below(4);
+                let padding = rng.below(6);
+                document_with_body(index, repeats, padding)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn c2_u08_score_bit_parity() {
+        let mut rng = Rng(0x00C2_0208_1125_0001);
+        let mut compared = 0usize;
+        for case in 0..64usize {
+            let count = 12 + rng.below(80);
+            let segments = 1 + rng.below(3);
+            let mut rows = seeded_documents(&mut rng, count);
+            let mut buckets: Vec<Vec<Document>> = vec![Vec::new(); segments];
+            for (index, row) in rows.drain(..).enumerate() {
+                buckets[index % segments].push(row);
+            }
+            let fixture = Fixture::new(&buckets);
+            let top_k = [1usize, 10, 100][case % 3];
+            if count <= top_k + 1 {
+                continue;
+            }
+            for direction in [SortDirection::Asc, SortDirection::Desc] {
+                let request = request(
+                    term_body(),
+                    top_k,
+                    doc_id_sort(direction, MissingValuePosition::Last),
+                );
+                reset_witnesses();
+                let physical_response = run_ineligible(&fixture, &request).expect("c2");
+                assert_eq!(c2_observation::strict_routes(), 1, "case {case}");
+                let legacy_response = forced_legacy(&fixture, &request);
+                assert_eq!(
+                    bits(&physical_response),
+                    bits(&legacy_response),
+                    "case {case}"
+                );
+                assert_eq!(
+                    keys(&physical_response),
+                    keys(&legacy_response),
+                    "case {case}"
+                );
+                assert_eq!(physical_response.total_hits, legacy_response.total_hits);
+                assert_eq!(
+                    physical_response.next_cursor.is_some(),
+                    legacy_response.next_cursor.is_some()
+                );
+                assert_eq!(
+                    projected(&physical_response),
+                    projected(&legacy_response),
+                    "case {case}"
+                );
+                for hit in &physical_response.hits {
+                    assert!(hit.score.is_some(), "explicit sort keeps its lexical score");
+                }
+                compared += 1;
+            }
+        }
+        assert!(compared >= 40, "compared {compared} physical cases");
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U09 — in-place allocation identity
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u09_inplace_allocation_identity() {
+        let fixture = Fixture::new(&[body_documents(50)]);
+        let request = request_asc(term_body(), 4);
+        reset_witnesses();
+        let response = strict(&fixture, &request);
+        assert_eq!(response.total_hits, 50);
+        assert!(
+            physical::inplace_preserved(),
+            "the decoded posting vector kept its address and capacity"
+        );
+        assert_eq!(physical::converted_rows(), 50);
+        assert_eq!(physical::callbacks(), 50);
+        // The accepted strict-term scorer (which allocates a second full-M vector)
+        // never ran, and the single validated postings move happened once.
+        assert_eq!(execute::test_observation::single_term_scorer_calls(), 0);
+        assert_eq!(execute::test_observation::generic_scorer_calls(), 0);
+        assert_eq!(execute::test_observation::postings_moves(), 1);
+        assert_eq!(execute::test_observation::postings_rejection_fallbacks(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U10 — virtual ledger exact boundaries
+    // -----------------------------------------------------------------------
+
+    /// `m = 3`, `K = 1` gives the first eligible boundary: logical peak is
+    /// `3*m = 9` entries and `P + S + T = 16m + 48m + 64m = 384` bytes.
+    #[test]
+    fn c2_u10_virtual_ledger_exact_boundaries() {
+        // Three worksheet shapes: (documents = m, top_k, expected peak entries, bytes)
+        // where `bytes = 128m` and `entries = 3m` because P=16m, S=48m, T=64m.
+        for (m, top_k) in [(3usize, 1usize), (12, 10), (102, 100)] {
+            assert_eq!(m, top_k + 2, "K+2 boundary shape");
+            let peak_entries = 3 * m as u64;
+            let peak_bytes = 128 * m as u64;
+            assert_eq!(peak_bytes, 16 * m as u64 + 48 * m as u64 + 64 * m as u64);
+            let fixture = Fixture::new(&[body_documents(m)]);
+            let request = request_asc(term_body(), top_k);
+            // Exact segment-phase boundaries. The matched/scored admissions must
+            // reject at exactly one entry or one byte below `3m` / `128m`.
+            for (entries, bytes) in [
+                (peak_entries - 1, peak_bytes),
+                (peak_entries, peak_bytes - 1),
+            ] {
+                let limits = SearchLimits::default()
+                    .with_max_segment_candidate_entries(entries)
+                    .expect("entries")
+                    .with_max_total_candidate_bytes(bytes)
+                    .expect("bytes");
+                reset_witnesses();
+                let c2 = run_with(&fixture, &request, limits, TopKDuplicateConfig::default());
+                assert_eq!(c2_observation::strict_routes(), 1, "m={m} selected");
+                let legacy = {
+                    let _forced = c2_observation::ForceLegacy::apply();
+                    run_with(&fixture, &request, limits, TopKDuplicateConfig::default())
+                };
+                assert_eq!(verdict(&c2), verdict(&legacy), "m={m} parity");
+                match c2 {
+                    Err(SearchError::ResourceLimit { limit, requested })
+                        if entries == peak_entries - 1 =>
+                    {
+                        assert_eq!((limit, requested), (peak_entries - 1, peak_entries));
+                    }
+                    Err(SearchError::ResourceLimit { limit, requested }) => {
+                        assert_eq!((limit, requested), (peak_bytes - 1, peak_bytes));
+                    }
+                    other => panic!("m={m} {entries}/{bytes} must reject: {other:?}"),
+                }
+            }
+            // At the exact peak the segment phase is admitted; any remaining
+            // rejection comes from the accepted K+1 heap accounting and must agree
+            // with the Legacy route byte for byte.
+            let exact = SearchLimits::default()
+                .with_max_segment_candidate_entries(peak_entries)
+                .expect("entries")
+                .with_max_total_candidate_bytes(peak_bytes)
+                .expect("bytes");
+            reset_witnesses();
+            let c2 = run_with(&fixture, &request, exact, TopKDuplicateConfig::default());
+            assert_eq!(c2_observation::strict_routes(), 1, "m={m} exact peak");
+            let legacy = {
+                let _forced = c2_observation::ForceLegacy::apply();
+                run_with(&fixture, &request, exact, TopKDuplicateConfig::default())
+            };
+            assert_eq!(verdict(&c2), verdict(&legacy), "m={m} exact-peak parity");
+            // A generous budget must admit and answer exactly.
+            let generous = SearchLimits::default()
+                .with_max_segment_candidate_entries(peak_entries)
+                .expect("entries")
+                .with_max_total_candidate_bytes(peak_bytes * 4)
+                .expect("bytes");
+            reset_witnesses();
+            let admitted = run_with(&fixture, &request, generous, TopKDuplicateConfig::default())
+                .expect("generous budget");
+            assert_eq!(c2_observation::strict_routes(), 1);
+            assert_eq!(admitted.total_hits, m as u64);
+            assert_eq!(admitted.hits.len(), top_k);
+            assert!(admitted.next_cursor.is_some());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U11 — preflight atomicity and RAII unwind
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u11_preflight_atomic_and_raii() {
+        let fixture = Fixture::new(&[body_documents(6)]);
+        let request = request_asc(term_body(), 2);
+        // A late score fault must surface as the score error, never as a corrupted
+        // ledger ("segment ledger still owns reservations at finish").
+        for doc in [0u64, 3, 5] {
+            reset_witnesses();
+            let error = {
+                let _arm = physical::ScoreFailureArm::arm(doc);
+                run_ineligible(&fixture, &request).expect_err("score fault")
+            };
+            assert!(
+                matches!(error, SearchError::InvalidScore { .. }),
+                "doc {doc}: {error:?}"
+            );
+            assert_eq!(physical::callbacks(), 0);
+        }
+        // Exact-peak admission plus a fault: the fault wins and no partial page is
+        // returned. The ledger is released by RAII, so a repeat query succeeds.
+        let limits = SearchLimits::default()
+            .with_max_segment_candidate_entries(18)
+            .expect("entries")
+            .with_max_total_candidate_bytes(768)
+            .expect("bytes");
+        reset_witnesses();
+        let error = {
+            let _arm = physical::ScoreFailureArm::arm(4);
+            run_with(&fixture, &request, limits, TopKDuplicateConfig::default())
+                .expect_err("score fault")
+        };
+        assert!(
+            matches!(error, SearchError::InvalidScore { .. }),
+            "{error:?}"
+        );
+        reset_witnesses();
+        let response = run_with(&fixture, &request, limits, TopKDuplicateConfig::default())
+            .expect("clean retry");
+        assert_eq!(response.total_hits, 6);
+        // A key/heap preflight failure is the accepted typed resource error on both
+        // routes and produces no response.
+        let tight = SearchLimits::default()
+            .with_max_total_candidate_bytes(64)
+            .expect("bytes");
+        reset_witnesses();
+        let c2 = run_with(&fixture, &request, tight, TopKDuplicateConfig::default());
+        let legacy = {
+            let _forced = c2_observation::ForceLegacy::apply();
+            run_with(&fixture, &request, tight, TopKDuplicateConfig::default())
+        };
+        assert!(
+            matches!(c2, Err(SearchError::ResourceLimit { .. })),
+            "{c2:?}"
+        );
+        assert!(
+            matches!(legacy, Err(SearchError::ResourceLimit { .. })),
+            "{legacy:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U13 — cancellation progress and cleanup
+    // -----------------------------------------------------------------------
+
+    struct CancelAfter {
+        polls: AtomicU64,
+        cancel_at: u64,
+    }
+
+    impl Cancellation for CancelAfter {
+        fn is_cancelled(&self) -> bool {
+            let poll = self.polls.fetch_add(1, Ordering::Relaxed) + 1;
+            self.cancel_at != 0 && poll >= self.cancel_at
+        }
+    }
+
+    #[test]
+    fn c2_u13_cancellation_progress() {
+        let fixture = Fixture::new(&[body_documents(40)]);
+        let request = request_asc(term_body(), 3);
+
+        // A flag cancelled before the request returns the accepted typed error on
+        // both routes and never reaches a candidate.
+        let flag = CancellationFlag::new();
+        flag.cancel();
+        reset_witnesses();
+        let c2 = fixture
+            .searcher(SearchLimits::default(), TopKDuplicateConfig::default())
+            .search(&request, &Budgets::new(), &flag);
+        assert!(matches!(c2, Err(SearchError::Cancelled)), "{c2:?}");
+        let legacy = {
+            let _forced = c2_observation::ForceLegacy::apply();
+            fixture
+                .searcher(SearchLimits::default(), TopKDuplicateConfig::default())
+                .search(&request, &Budgets::new(), &flag)
+        };
+        assert!(matches!(legacy, Err(SearchError::Cancelled)), "{legacy:?}");
+
+        // Sweep the cancellation point across decode, N charge, scoring and
+        // candidate handoff: both routes must agree on success/cancellation.
+        for cancel_at in 1..=90u64 {
+            reset_witnesses();
+            let cancel = CancelAfter {
+                polls: AtomicU64::new(0),
+                cancel_at,
+            };
+            let c2 = fixture
+                .searcher(SearchLimits::default(), TopKDuplicateConfig::default())
+                .search(&request, &Budgets::new(), &cancel);
+            let legacy = {
+                let _forced = c2_observation::ForceLegacy::apply();
+                let cancel = CancelAfter {
+                    polls: AtomicU64::new(0),
+                    cancel_at,
+                };
+                fixture
+                    .searcher(SearchLimits::default(), TopKDuplicateConfig::default())
+                    .search(&request, &Budgets::new(), &cancel)
+            };
+            match (&c2, &legacy) {
+                (Ok(_), Ok(_)) => {}
+                (Err(SearchError::Cancelled), Err(SearchError::Cancelled)) => {}
+                (
+                    Err(SearchError::ResourceLimit { .. }),
+                    Err(SearchError::ResourceLimit { .. }),
+                ) => {}
+                (left, right) => panic!("cancel_at={cancel_at} mismatch: {left:?} vs {right:?}"),
+            }
+        }
+        // No leaked charge: after the sweep the same snapshot answers normally.
+        reset_witnesses();
+        let response = strict(&fixture, &request);
+        assert_eq!(response.total_hits, 40);
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U14 — numeric rank, null/missing and exact key ties
+    // -----------------------------------------------------------------------
+
+    #[derive(Clone, Copy, Debug)]
+    enum Rank {
+        Missing,
+        Null,
+        Value(&'static str),
+    }
+
+    fn ranked_document(index: usize, rank: Rank) -> Document {
+        let mut document = document(index);
+        let values = match rank {
+            Rank::Missing => None,
+            Rank::Null => Some(FieldValues::ExplicitNull),
+            Rank::Value(value) => Some(FieldValues::Single(FieldValue::Keyword(value.to_owned()))),
+        };
+        if let Some(values) = values {
+            document.insert("rank", values).expect("rank");
+        }
+        document
+    }
+
+    fn rank_sort(direction: SortDirection, missing: MissingValuePosition) -> Sort {
+        let mut field = SortField::new("rank", direction);
+        field.missing = missing;
+        Sort::new(vec![field])
+    }
+
+    #[test]
+    fn c2_u14_numeric_rank_null_missing_multione() {
+        let ranks = [
+            Rank::Value("b"),
+            Rank::Missing,
+            Rank::Value("a"),
+            Rank::Null,
+            Rank::Value("b"),
+            Rank::Value("c"),
+            Rank::Value("a"),
+            Rank::Value("b"),
+        ];
+        let fixture = Fixture::new(&[ranks
+            .iter()
+            .enumerate()
+            .map(|(index, rank)| ranked_document(index, *rank))
+            .collect()]);
+        for direction in [SortDirection::Asc, SortDirection::Desc] {
+            for missing in [MissingValuePosition::First, MissingValuePosition::Last] {
+                let request = request(term_common(), 3, rank_sort(direction, missing));
+                reset_witnesses();
+                let physical_response = run_ineligible(&fixture, &request).expect("c2");
+                assert_eq!(
+                    c2_observation::strict_routes(),
+                    1,
+                    "{direction:?}/{missing:?}"
+                );
+                let legacy_response = forced_legacy(&fixture, &request);
+                assert_eq!(
+                    projected(&physical_response),
+                    projected(&legacy_response),
+                    "{direction:?}/{missing:?}"
+                );
+                assert_eq!(
+                    physical_response.next_cursor.is_some(),
+                    legacy_response.next_cursor.is_some()
+                );
+            }
+        }
+        // `MultiOne` sort states remain the established B2 handler's responsibility;
+        // they are exercised unchanged by the retained `b2_` regressions.
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U15 — duplicate identity is exact-key based
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u15_duplicate_collision_and_loser() {
+        // Upserts of one logical key across segments stay one live document: the
+        // exact-key identity, never a fingerprint, decides identity.
+        let fixture = Fixture::new(&[documents(5)]);
+        let request = request_asc(term_common(), 1);
+        let snapshot = {
+            let mut writer = fixture.writer();
+            writer
+                .apply(MutationRequest::upsert(document(1)))
+                .expect("upsert");
+            writer
+                .apply(MutationRequest::upsert(document(1)))
+                .expect("upsert");
+            writer.commit().expect("commit");
+            writer.refresh().expect("refresh")
+        };
+        let updated = Fixture {
+            schema: fixture.schema.clone(),
+            registry: AnalyzerRegistry::builtin(),
+            index: fixture.index,
+            snapshot,
+        };
+        reset_witnesses();
+        let response = run_ineligible(&updated, &request).expect("search");
+        assert_eq!(
+            response.total_hits, 5,
+            "one live physical document per logical key"
+        );
+        assert_eq!(c2_observation::strict_routes(), 1, "5 > K+1");
+        // The retained duplicate scan and the exact byte comparison still run on
+        // the physical route for the deduplicated snapshot.
+        reset_witnesses();
+        b3_observation::reset();
+        let response = strict(&updated, &request_asc(term_common(), 1));
+        assert_eq!(response.total_hits, 5);
+        assert!(
+            b3_observation::hash_collision_exact_checks() > 0
+                || b3_observation::one_time_heap_hash_audits() > 0,
+            "the established B3 duplicate machinery ran"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U16 — cursor sentinel and Legacy continuation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u16_cursor_sentinel_and_legacy_continuation() {
+        for top_k in [1usize, 10] {
+            let fixture = Fixture::new(&[documents(30)]);
+            let mut collected: Vec<String> = Vec::new();
+            let mut request = request_asc(term_common(), top_k);
+            let mut page = 0usize;
+            loop {
+                reset_witnesses();
+                let response = run_ineligible(&fixture, &request).expect("page");
+                if page == 0 {
+                    assert_eq!(c2_observation::strict_routes(), 1, "first page is C2");
+                    assert_eq!(physical::converted_rows(), 30);
+                } else {
+                    assert_eq!(c2_observation::strict_routes(), 0, "later pages Legacy");
+                    assert_eq!(c2_observation::legacy_routes(), 1);
+                }
+                collected.extend(keys(&response));
+                match response.next_cursor {
+                    Some(cursor) => {
+                        request = request_asc(term_common(), top_k);
+                        request.after = Some(cursor);
+                        page += 1;
+                        assert!(page < 40, "bounded paging");
+                    }
+                    None => break,
+                }
+            }
+            assert_eq!(collected, expected_ascending_keys(30, 30), "k={top_k}");
+            assert_eq!(
+                collected.len(),
+                collected
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len(),
+                "no duplicate pages"
+            );
+        }
+        // A cursor bound to a different snapshot is rejected.
+        let fixture = Fixture::new(&[documents(30)]);
+        let other = Fixture::new(&[documents(30)]);
+        let first = strict(&fixture, &request_asc(term_common(), 1));
+        let mut request = request_asc(term_common(), 1);
+        request.after = first.next_cursor;
+        reset_witnesses();
+        assert!(run_ineligible(&other, &request).is_err());
+        assert_eq!(c2_observation::strict_routes(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U17 — B1 optional unavailability and B3 optional refusal
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u17_ordinal_unavailable_and_b3_refusal() {
+        use crate::index::KeywordOrdinalUnavailable;
+        use crate::segment::reader::{
+            B3Probe, B3ProbeOutcome, b3_build_attempts, b3_directory_builds,
+            b3_preflight_fallbacks, clear_b3_probe, reset_b3_counters, set_b3_probe,
+        };
+
+        // The physical route requires a `Ready` request-wide map: every documented
+        // optional outcome maps to `None`, which can never satisfy the route's
+        // `Some(map)` match arm, so the whole request takes Legacy before any
+        // candidate. (A `Ready` map is proved by the differential tests above.)
+        for reason in [
+            KeywordOrdinalUnavailable::LegacySegment,
+            KeywordOrdinalUnavailable::ResourceBudget,
+            KeywordOrdinalUnavailable::Allocation,
+            KeywordOrdinalUnavailable::UnsupportedField,
+        ] {
+            assert!(
+                ordinal_ready_from_preparation(KeywordOrdinalPreparation::NotAvailable(reason))
+                    .is_none(),
+                "{reason:?} must not produce a map"
+            );
+        }
+        // A genuine B1 error is never converted into `NotAvailable`.
+        let mapped = ordinal_preparation_error(crate::index::IndexError::Cancelled);
+        assert!(matches!(mapped, SearchError::Cancelled), "{mapped:?}");
+        let mapped = ordinal_preparation_error(crate::index::IndexError::WriterBusy);
+        assert!(matches!(mapped, SearchError::Index(_)), "{mapped:?}");
+
+        // -------------------------------------------------------------------
+        // F1-I02: an actual, injected per-segment B3 allocation refusal.
+        // -------------------------------------------------------------------
+
+        #[allow(clippy::too_many_arguments)]
+        fn assert_refusal_response(
+            fixture: &Fixture,
+            request: &UnifiedRequest,
+            config: TopKDuplicateConfig,
+            segments: usize,
+            builds: u64,
+            directories: u64,
+            refusals: u64,
+            fallbacks: Vec<usize>,
+            collected: Vec<(usize, usize, u64)>,
+            response: &UnifiedResponse,
+        ) {
+            assert_eq!(
+                c2_observation::strict_routes(),
+                1,
+                "the request stays on C2"
+            );
+            assert_eq!(c2_observation::legacy_routes(), 0, "no Legacy replay");
+            assert_eq!(
+                physical::strict_evaluator_calls(),
+                segments,
+                "one evaluator call per segment"
+            );
+            assert_eq!(physical::converted_rows(), 40);
+            assert_eq!(physical::callbacks(), 40, "every match completed");
+            assert_eq!(b2_observation::numeric_candidates(), 40);
+            assert_eq!(b2_observation::bound_columns(), segments);
+            assert_eq!(b3_build_attempts(), builds, "directory build attempts");
+            assert_eq!(b3_directory_builds(), directories, "published directories");
+            assert_eq!(b3_preflight_fallbacks(), refusals, "optional refusals");
+            assert_eq!(
+                c2_observation::owned_key_fallback_segments(),
+                fallbacks,
+                "recorded owned-key fallback segments"
+            );
+            assert_eq!(c2_observation::collected_segments(), collected);
+            assert_eq!(response.total_hits, 40);
+            assert_eq!(
+                keys(response),
+                vec![bounded_key(0), bounded_key(1), bounded_key(2)]
+            );
+            assert!(response.next_cursor.is_some());
+            eprintln!(
+                "C2-F1 U17 refusal: segments={segments} attempts={builds} directories={directories} refusals={refusals} fallbacks={fallbacks:?} collected={collected:?}"
+            );
+            // Complete-response parity against forced Legacy of the same request,
+            // snapshot and duplicate configuration.
+            let reference = forced_legacy_with(fixture, request, SearchLimits::default(), config)
+                .expect("forced Legacy reference");
+            assert_c2_f1_full_response(response, &reference, "U17 refusal");
+        }
+
+        let two_segments =
+            || Fixture::new(&[documents(20), documents(40).into_iter().skip(20).collect()]);
+
+        // Case 1: a single segment refuses. Fresh, never-searched fixture so the
+        // sticky key-directory cache cannot mask the probe.
+        {
+            let fixture = Fixture::new(&[documents(40)]);
+            let request = request_asc(term_common(), 3);
+            let config = linear_config();
+            reset_witnesses();
+            b2_observation::reset();
+            b3_observation::reset();
+            reset_b3_counters();
+            let _probe = B3ProbeReset::new();
+            let fired = std::rc::Rc::new(std::cell::Cell::new(0usize));
+            let counter = std::rc::Rc::clone(&fired);
+            set_b3_probe(B3Probe::BeforeHashAllocation, move || {
+                counter.set(counter.get() + 1);
+                Ok(B3ProbeOutcome::RefuseAllocation)
+            });
+            let response = run_with(&fixture, &request, SearchLimits::default(), config)
+                .expect("a refused segment keeps the C2 route");
+            assert_eq!(fired.get(), 1, "the refusal callback fired exactly once");
+            assert_refusal_response(
+                &fixture,
+                &request,
+                config,
+                1,
+                1,
+                0,
+                1,
+                vec![0],
+                vec![(0, 4, 40)],
+                &response,
+            );
+        }
+
+        // Case 2: the first of two segments refuses; the second still publishes.
+        {
+            let fixture = two_segments();
+            let request = request_asc(term_common(), 3);
+            let config = linear_config();
+            reset_witnesses();
+            b2_observation::reset();
+            b3_observation::reset();
+            reset_b3_counters();
+            let _probe = B3ProbeReset::new();
+            let fired = std::rc::Rc::new(std::cell::Cell::new(0usize));
+            let counter = std::rc::Rc::clone(&fired);
+            set_b3_probe(B3Probe::BeforeHashAllocation, move || {
+                counter.set(counter.get() + 1);
+                Ok(B3ProbeOutcome::RefuseAllocation)
+            });
+            let response = run_with(&fixture, &request, SearchLimits::default(), config)
+                .expect("the second segment stays on C2");
+            assert_eq!(fired.get(), 1);
+            assert_refusal_response(
+                &fixture,
+                &request,
+                config,
+                2,
+                2,
+                1,
+                1,
+                vec![0],
+                vec![(0, 4, 20), (1, 4, 40)],
+                &response,
+            );
+        }
+
+        // Case 3: the first segment publishes, the second refuses.
+        {
+            let fixture = two_segments();
+            let request = request_asc(term_common(), 3);
+            let config = linear_config();
+            reset_witnesses();
+            b2_observation::reset();
+            b3_observation::reset();
+            reset_b3_counters();
+            let _probe = B3ProbeReset::new();
+            let fired = std::rc::Rc::new(std::cell::Cell::new(0usize));
+            let counter = std::rc::Rc::clone(&fired);
+            let rearm = std::rc::Rc::clone(&fired);
+            set_b3_probe(B3Probe::BeforeHashAllocation, move || {
+                counter.set(counter.get() + 1);
+                let inner = std::rc::Rc::clone(&rearm);
+                set_b3_probe(B3Probe::BeforeHashAllocation, move || {
+                    inner.set(inner.get() + 1);
+                    Ok(B3ProbeOutcome::RefuseAllocation)
+                });
+                Ok(B3ProbeOutcome::Continue)
+            });
+            let response = run_with(&fixture, &request, SearchLimits::default(), config)
+                .expect("only the second segment falls back");
+            assert_eq!(fired.get(), 2, "both probes fired");
+            assert_refusal_response(
+                &fixture,
+                &request,
+                config,
+                2,
+                2,
+                1,
+                1,
+                vec![1],
+                vec![(0, 4, 20), (1, 4, 40)],
+                &response,
+            );
+        }
+
+        // Case 4: no refusal at all — both segments publish a directory.
+        {
+            let fixture = two_segments();
+            let request = request_asc(term_common(), 3);
+            let config = linear_config();
+            reset_witnesses();
+            b2_observation::reset();
+            b3_observation::reset();
+            reset_b3_counters();
+            let _probe = B3ProbeReset::new();
+            let response = run_with(&fixture, &request, SearchLimits::default(), config)
+                .expect("ready segments stay on C2");
+            assert_refusal_response(
+                &fixture,
+                &request,
+                config,
+                2,
+                2,
+                2,
+                0,
+                Vec::new(),
+                vec![(0, 4, 20), (1, 4, 40)],
+                &response,
+            );
+        }
+
+        // Case 5: the distinct ExactSet control never attempts the directory, so
+        // both segments take the owned B2 key path without any directory build.
+        {
+            let fixture = two_segments();
+            let request = request_asc(term_common(), 3);
+            let config = exact_set_config_threshold_one();
+            reset_witnesses();
+            b2_observation::reset();
+            b3_observation::reset();
+            reset_b3_counters();
+            let _probe = B3ProbeReset::new();
+            let response = run_with(&fixture, &request, SearchLimits::default(), config)
+                .expect("ExactSet stays on C2");
+            assert_refusal_response(
+                &fixture,
+                &request,
+                config,
+                2,
+                0,
+                0,
+                0,
+                vec![0, 1],
+                vec![(0, 4, 20), (1, 4, 40)],
+                &response,
+            );
+        }
+
+        // -------------------------------------------------------------------
+        // INJECTED_C2_ONLY — no-eager-binding structural evidence.
+        //
+        // A scoring failure on the *final local document* of the first evaluated
+        // segment must occur before the second segment's column binding or
+        // evaluator checkpoint. This is not genuine column-corruption evidence: the
+        // later columns are never injected, and no same-fault Legacy score
+        // comparison is claimed.
+        // -------------------------------------------------------------------
+        let native = Fixture::new(&[
+            body_documents(6),
+            body_documents(40).into_iter().skip(6).collect(),
+        ]);
+        assert_native_boundary_fixture(&native);
+        let native_request = request_asc(term_body(), 2);
+        let native_config = linear_config();
+
+        clear_b3_probe();
+        reset_witnesses();
+        b2_observation::reset();
+        b3_observation::reset();
+        reset_b3_counters();
+        let result = {
+            let _arm = physical::ScoreFailureArm::arm(33);
+            run_with(
+                &native,
+                &native_request,
+                SearchLimits::default(),
+                native_config,
+            )
+        };
+        let error = result.expect_err("the first segment's final score must fail");
+        assert!(
+            matches!(
+                error,
+                SearchError::InvalidScore { detail } if detail == "injected C2 score failure"
+            ),
+            "{error:?}"
+        );
+        assert_eq!(c2_observation::strict_routes(), 1, "strict route");
+        assert_eq!(c2_observation::legacy_routes(), 0, "legacy route");
+        assert_eq!(b2_observation::bound_columns(), 1, "only segment 0 bound");
+        assert_eq!(physical::strict_evaluator_calls(), 1, "evaluator calls");
+        assert_eq!(
+            physical::strict_membership_observations(),
+            34,
+            "the 34-document first segment was enumerated"
+        );
+        assert_eq!(
+            physical::converted_rows(),
+            0,
+            "no whole segment completed the score-conversion observation"
+        );
+        assert_eq!(physical::callbacks(), 0, "completed callbacks");
+        assert_eq!(
+            b2_observation::numeric_candidates(),
+            0,
+            "numeric candidates"
+        );
+        assert_eq!(c2_observation::collected_segments(), Vec::new());
+        assert_eq!(c2_observation::owned_key_fallback_segments(), Vec::new());
+        assert_eq!(b3_build_attempts(), 0, "no candidate key binding happened");
+        eprintln!(
+            "C2-F1-A1 U17 INJECTED_C2_ONLY — no-eager-binding structural evidence: routes=1/0 bound_columns=1 evaluators=1 membership=34 converted=0 callbacks=0 numeric=0 collected=[] fallbacks=[] attempts=0"
+        );
+
+        // Unarmed recovery on the same snapshot: both segments bind and complete.
+        reset_witnesses();
+        b2_observation::reset();
+        b3_observation::reset();
+        let recovered = run_with(
+            &native,
+            &native_request,
+            SearchLimits::default(),
+            native_config,
+        )
+        .expect("unarmed recovery");
+        assert_eq!(recovered.total_hits, 40);
+        assert_eq!(keys(&recovered), vec![bounded_key(0), bounded_key(1)]);
+        assert!(recovered.next_cursor.is_some());
+        assert_eq!(b2_observation::bound_columns(), 2, "both segments bound");
+        assert_eq!(physical::strict_evaluator_calls(), 2);
+        assert_eq!(physical::strict_membership_observations(), 40);
+        assert_eq!(physical::converted_rows(), 40);
+        assert_eq!(physical::callbacks(), 40);
+        assert_eq!(b2_observation::numeric_candidates(), 40);
+        assert_eq!(
+            c2_observation::collected_segments(),
+            vec![(0, 3, 34), (1, 3, 40)]
+        );
+        let reference = forced_legacy_with(
+            &native,
+            &native_request,
+            SearchLimits::default(),
+            native_config,
+        )
+        .expect("forced Legacy recovery reference");
+        assert_c2_f1_full_response(&recovered, &reference, "U17 structural recovery");
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U12 — selected/unselected key corruption and multi-fault precedence
+    // -----------------------------------------------------------------------
+
+    #[derive(Clone, Copy, Debug)]
+    enum U12Expected {
+        DocKey,
+        ZeroFrequency,
+        SortColumn,
+        InjectedScore,
+    }
+
+    /// Structural match on the complete variant/wrapper and every specified field.
+    fn assert_u12_error(error: SearchError, expected: U12Expected, row: &str) {
+        match expected {
+            U12Expected::DocKey => assert!(
+                matches!(
+                    error,
+                    SearchError::Segment(crate::segment::SegmentError::InvalidUtf8 {
+                        context: "doc key"
+                    })
+                ),
+                "{row}: {error:?}"
+            ),
+            U12Expected::ZeroFrequency => assert!(
+                matches!(
+                    error,
+                    SearchError::Segment(crate::segment::SegmentError::ZeroFrequency {
+                        doc_id: 29
+                    })
+                ),
+                "{row}: {error:?}"
+            ),
+            U12Expected::SortColumn => assert!(
+                matches!(
+                    error,
+                    SearchError::Index(crate::index::IndexError::Segment(
+                        crate::segment::SegmentError::InvalidUtf8 { context: "keyword" }
+                    ))
+                ),
+                "{row}: {error:?}"
+            ),
+            U12Expected::InjectedScore => assert!(
+                matches!(
+                    error,
+                    SearchError::InvalidScore { detail } if detail == "injected C2 score failure"
+                ),
+                "{row}: {error:?}"
+            ),
+        }
+    }
+
+    /// DOC_KEYS layout guard plus one-byte invalid UTF-8 at record `record`.
+    fn u12_corrupt_doc_key(copied: &mut CopiedSegment, record: usize) {
+        let body = copied.body_mut(crate::segment::SectionKind::DocKeys);
+        assert_eq!(body.len(), 10 + 32 * 11, "DOC_KEYS layout");
+        assert_eq!(&body[0..2], &1u16.to_le_bytes(), "DOC_KEYS version");
+        assert_eq!(&body[2..10], &32u64.to_le_bytes(), "DOC_KEYS count");
+        for index in 0..32usize {
+            let start = 10 + 11 * index;
+            assert_eq!(
+                &body[start..start + 2],
+                &9u16.to_le_bytes(),
+                "record {index} length"
+            );
+            assert_eq!(
+                &body[start + 2..start + 11],
+                bounded_key(index).as_bytes(),
+                "record {index} payload"
+            );
+        }
+        let at = 12 + 11 * record;
+        assert_eq!(body[at], b'd', "target byte is record {record}'s first 'd'");
+        body[at] = 0xFF;
+    }
+
+    /// POSTINGS payload guard plus one-byte zero frequency in the final matching
+    /// posting (`grp/common`, doc 29). The settled encoder emits the compact-short
+    /// **positional** family: an 8-byte header, 30 document bytes, 30 frequency
+    /// bytes and a 150-byte position stream (218 bytes total). The final frequency
+    /// is at relative byte 67; the position bytes are preserved unchanged.
+    fn u12_corrupt_final_posting(copied: &mut CopiedSegment, offset: u64, length: u64) {
+        assert_eq!(
+            length, 218,
+            "grp/common compact-short positional payload length"
+        );
+        let start = usize::try_from(offset).expect("postings offset");
+        let end = start
+            .checked_add(218)
+            .expect("bounded postings payload end");
+        let body = copied.body_mut(crate::segment::SectionKind::Postings);
+        assert!(end <= body.len(), "postings payload inside section");
+        {
+            let payload = &body[start..end];
+            assert_eq!(&payload[0..8], &[7u8, 1, 30, 30, 30, 30, 0x96, 0x01]);
+            assert_eq!(payload[8], 0, "first document delta");
+            assert!(payload[9..38].iter().all(|byte| *byte == 1));
+            assert!(payload[38..68].iter().all(|byte| *byte == 1));
+            assert_eq!(payload[68..218].len(), 150);
+        }
+        let original_body = body.clone();
+        let target = start
+            .checked_add(67)
+            .expect("bounded final frequency offset");
+        assert_eq!(body[target], 1);
+        body[target] = 0;
+        assert_eq!(body.len(), original_body.len());
+        assert_eq!(&body[start + 68..end], &original_body[start + 68..end]);
+        let changed_offsets: Vec<usize> = body
+            .iter()
+            .zip(original_body.iter())
+            .enumerate()
+            .filter_map(|(index, (after, before))| (after != before).then_some(index))
+            .collect();
+        assert_eq!(
+            changed_offsets,
+            vec![target],
+            "exactly one POSTINGS byte changed"
+        );
+        assert_eq!(body[target], 0);
+    }
+
+    /// COLUMNS guard plus one-byte invalid UTF-8 in the sortable `doc_id` value of
+    /// logical document `record`.
+    fn u12_corrupt_sort_column(copied: &mut CopiedSegment, record: usize) {
+        let needle = bounded_key(record);
+        let body = copied.body_mut(crate::segment::SectionKind::Columns);
+        let hits: Vec<usize> = body
+            .windows(needle.len())
+            .enumerate()
+            .filter(|(_, window)| *window == needle.as_bytes())
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(hits.len(), 1, "exactly one literal {needle} payload");
+        let at = hits[0];
+        assert_eq!(body[at], b'd', "target byte is the value's first 'd'");
+        body[at] = 0xFF;
+    }
+
+    /// Direct decoder probe: the rebuilt container opens lazily, the key decoder
+    /// rejects the corrupted record, and the pristine bytes stay untouched.
+    fn u12_probe_doc_keys(rebuilt: &[u8]) {
+        let reader = crate::segment::SegmentReader::open(
+            rebuilt.to_vec(),
+            crate::segment::SegmentLimits::default(),
+        )
+        .expect("key payload validation is lazy");
+        let error = reader.doc_key(0).expect_err("corrupt doc keys");
+        assert!(
+            matches!(
+                error,
+                crate::segment::SegmentError::InvalidUtf8 { context: "doc key" }
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// Direct decoder probe: docs 0..28 decode, then the zero frequency surfaces as
+    /// the exact `ZeroFrequency` error for doc 29.
+    fn u12_probe_final_posting(rebuilt: &[u8]) {
+        let reader = crate::segment::SegmentReader::open(
+            rebuilt.to_vec(),
+            crate::segment::SegmentLimits::default(),
+        )
+        .expect("postings validation is lazy");
+        let field_id = reader.schema().field_id("grp").expect("grp field id");
+        let mut postings = reader
+            .postings(field_id, "common")
+            .expect("postings lookup")
+            .expect("postings present")
+            .into_doc_freq();
+        let mut seen = Vec::new();
+        loop {
+            match postings.next_with(&NeverCancel) {
+                Ok(Some(posting)) => {
+                    assert_eq!(
+                        posting.freq, 1,
+                        "undisturbed frequency for doc {}",
+                        posting.doc_id
+                    );
+                    seen.push(posting.doc_id);
+                }
+                Ok(None) => panic!("the corrupt final posting must not decode"),
+                Err(error) => {
+                    assert!(
+                        matches!(
+                            error,
+                            crate::segment::SegmentError::ZeroFrequency { doc_id: 29 }
+                        ),
+                        "{error:?}"
+                    );
+                    break;
+                }
+            }
+        }
+        assert_eq!(seen, (0..29u64).collect::<Vec<u64>>());
+    }
+
+    /// Direct parser probe: the native v2 column dictionary is validated eagerly.
+    fn u12_probe_sort_column(rebuilt: &[u8]) {
+        let error = match crate::segment::SegmentReader::open(
+            rebuilt.to_vec(),
+            crate::segment::SegmentLimits::default(),
+        ) {
+            Ok(_) => panic!("eager column validation must reject the mutated dictionary"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                error,
+                crate::segment::SegmentError::InvalidUtf8 { context: "keyword" }
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn c2_u12_corrupt_selected_unselected_and_multi_fault() {
+        // --- pristine 32-row corpus: 30 matching rows, K = 3, K+1 = 4 --------
+        let mut rows = documents(30);
+        rows.extend(other_documents(2, 30));
+        let fixture = Fixture::new(&[rows]);
+        let request = request_asc(term_common(), 3);
+
+        let (pristine, postings_offset, postings_length) = {
+            let guard = fixture.snapshot.open_segment_reader(0).expect("guard");
+            let reader = guard.reader();
+            assert_eq!(reader.doc_count(), 32, "pristine physical document count");
+            let live = fixture
+                .snapshot
+                .effective_live_docs(0, reader)
+                .expect("pristine effective-live mask");
+            assert_eq!(live.len(), 32, "pristine effective-live mask length");
+            assert!(
+                live.iter().all(|flag| *flag),
+                "all32 pristine documents are effective-live"
+            );
+            let physical: Vec<String> = reader
+                .doc_keys()
+                .expect("keys")
+                .iter()
+                .map(|key| key.as_str().to_owned())
+                .collect();
+            assert_eq!(
+                physical,
+                (0..32).map(bounded_key).collect::<Vec<String>>(),
+                "pristine physical DOC_KEYS order"
+            );
+            let grp_field = reader.schema().field_id("grp").expect("grp field id");
+            assert!(
+                reader
+                    .field_norms()
+                    .and_then(|norms| norms.field(grp_field))
+                    .is_some(),
+                "grp field norms are persisted, so statistics never scan postings"
+            );
+            let entry = reader
+                .dictionary()
+                .expect("dictionary")
+                .lookup(grp_field, "common")
+                .expect("grp/common entry");
+            assert_eq!(entry.doc_freq, 30, "grp/common document frequency");
+            (
+                reader.bytes().to_vec(),
+                entry.postings_offset,
+                entry.postings_length,
+            )
+        };
+
+        // Healthy control on the untouched snapshot.
+        reset_witnesses();
+        let healthy = run_ineligible(&fixture, &request).expect("pristine matched query");
+        assert_eq!(healthy.total_hits, 30);
+        assert_eq!(
+            keys(&healthy),
+            vec![bounded_key(0), bounded_key(1), bounded_key(2)]
+        );
+        assert!(healthy.next_cursor.is_some());
+        assert_eq!(c2_observation::strict_routes(), 1, "healthy control is C2");
+        let healthy_legacy = forced_legacy(&fixture, &request);
+        assert_c2_f1_full_response(&healthy, &healthy_legacy, "U12 pristine");
+
+        // --- row runner ------------------------------------------------------
+        struct U12Row {
+            id: &'static str,
+            doc_key_record: Option<usize>,
+            final_posting: bool,
+            sort_column_record: Option<usize>,
+            injected_score: Option<u64>,
+            /// Whether the fault is reached only after the route was selected.
+            routed: bool,
+            converted: usize,
+            callbacks: usize,
+            numeric: usize,
+            membership: usize,
+        }
+
+        let zero_request = request_asc(
+            Query::Term {
+                field: "grp".to_owned(),
+                value: FieldValue::Keyword("no-such-group".to_owned()),
+            },
+            3,
+        );
+
+        let run_row = |row: U12Row| {
+            let mut copied = CopiedSegment::parse(&pristine);
+            if let Some(record) = row.doc_key_record {
+                u12_corrupt_doc_key(&mut copied, record);
+            }
+            if row.final_posting {
+                u12_corrupt_final_posting(&mut copied, postings_offset, postings_length);
+            }
+            if let Some(record) = row.sort_column_record {
+                u12_corrupt_sort_column(&mut copied, record);
+            }
+            let rebuilt = copied.rebuild();
+            assert_ne!(rebuilt, pristine, "{}: rebuilt bytes differ", row.id);
+            let snapshot = c2_f1_snapshot(row.id, &copied, rebuilt.clone());
+
+            // Direct decoder probes on the made bytes, in accepted error-precedence
+            // order: an eagerly validated malformed column prevents every deeper
+            // probe, so a combined column row runs only the column probe.
+            if row.sort_column_record.is_some() {
+                u12_probe_sort_column(&rebuilt);
+            } else {
+                if row.final_posting {
+                    u12_probe_final_posting(&rebuilt);
+                }
+                if row.doc_key_record.is_some() {
+                    u12_probe_doc_keys(&rebuilt);
+                }
+            }
+
+            // A zero-match query must succeed without key resolution for the
+            // posting/key rows; a malformed column is authoritative regardless.
+            if row.sort_column_record.is_none() {
+                reset_witnesses();
+                let zero = c2_f1_run_snapshot(&fixture, &snapshot, &zero_request)
+                    .expect("zero-match query must succeed");
+                assert_eq!(zero.total_hits, 0, "{}: zero-match count", row.id);
+                assert!(zero.hits.is_empty(), "{}: zero-match hits", row.id);
+                assert!(zero.next_cursor.is_none(), "{}: zero-match cursor", row.id);
+            }
+
+            // The actual row.
+            reset_witnesses();
+            b2_observation::reset();
+            let result = {
+                let _arm = row.injected_score.map(physical::ScoreFailureArm::arm);
+                c2_f1_run_snapshot(&fixture, &snapshot, &request)
+            };
+            let expected = match row.id {
+                "D0" | "D29" | "D31" => U12Expected::DocKey,
+                "P29" | "P29+D0" => U12Expected::ZeroFrequency,
+                "C0" | "C29" | "C29+P29+D0" => U12Expected::SortColumn,
+                "S29+D0" => U12Expected::InjectedScore,
+                other => panic!("unknown U12 row {other}"),
+            };
+            assert_u12_error(result.expect_err("row must fail"), expected, row.id);
+            assert_eq!(
+                c2_observation::strict_routes(),
+                usize::from(row.routed),
+                "{}: strict route",
+                row.id
+            );
+            assert_eq!(
+                c2_observation::legacy_routes(),
+                0,
+                "{}: no legacy route",
+                row.id
+            );
+            assert_eq!(
+                physical::strict_evaluator_calls(),
+                usize::from(row.routed),
+                "{}: evaluator calls",
+                row.id
+            );
+            assert_eq!(
+                physical::converted_rows(),
+                row.converted,
+                "{}: completed converted rows",
+                row.id
+            );
+            assert_eq!(
+                physical::callbacks(),
+                row.callbacks,
+                "{}: completed callbacks",
+                row.id
+            );
+            assert_eq!(
+                b2_observation::numeric_candidates(),
+                row.numeric,
+                "{}: entered numeric candidates",
+                row.id
+            );
+            assert_eq!(
+                physical::strict_membership_observations(),
+                row.membership,
+                "{}: membership observations",
+                row.id
+            );
+            if row.converted > 0 {
+                assert!(
+                    physical::inplace_preserved(),
+                    "{}: the whole segment was converted in place",
+                    row.id
+                );
+            }
+            eprintln!(
+                "C2-F1 U12 {}: routed={} converted={} callbacks={} numeric={} membership={}",
+                row.id, row.routed, row.converted, row.callbacks, row.numeric, row.membership
+            );
+
+            // Repeat each *real byte fault* on the same immutable corrupted
+            // snapshot: the same exact error. The synthetic score fault has no
+            // repeat: its arm is gone, so the underlying byte fault surfaces.
+            if row.injected_score.is_none() {
+                reset_witnesses();
+                b2_observation::reset();
+                let repeat = c2_f1_run_snapshot(&fixture, &snapshot, &request);
+                assert_u12_error(repeat.expect_err("repeat must fail"), expected, row.id);
+            }
+
+            // Same-query Legacy comparison. The injected-score row is C2-only, so
+            // its unarmed controls are compared instead.
+            if row.injected_score.is_some() {
+                let unarmed = c2_f1_forced_legacy_on_snapshot(&fixture, &snapshot, &request, true);
+                assert_u12_error(
+                    unarmed.expect_err("unarmed legacy"),
+                    U12Expected::DocKey,
+                    row.id,
+                );
+                reset_witnesses();
+                let unarmed_c2 = c2_f1_run_snapshot(&fixture, &snapshot, &request);
+                assert_u12_error(
+                    unarmed_c2.expect_err("unarmed C2"),
+                    U12Expected::DocKey,
+                    row.id,
+                );
+            } else {
+                let legacy =
+                    c2_f1_forced_legacy_on_snapshot(&fixture, &snapshot, &request, row.routed);
+                assert_u12_error(legacy.expect_err("legacy"), expected, row.id);
+            }
+
+            // The original committed bytes were never mutated.
+            assert_eq!(
+                pristine.as_slice(),
+                fixture.snapshot.segments()[0].bytes(),
+                "{}: original immutable bytes unchanged",
+                row.id
+            );
+            // And the pristine fixture still answers exactly as before.
+            reset_witnesses();
+            let after = run_ineligible(&fixture, &request).expect("pristine recovery");
+            assert_eq!(keys(&after), keys(&healthy), "{}: pristine keys", row.id);
+            assert_c2_f1_full_response(&after, &healthy, row.id);
+            row.id
+        };
+
+        let row = |id: &'static str, doc_key_record, final_posting, sort_column_record| U12Row {
+            id,
+            doc_key_record,
+            final_posting,
+            sort_column_record,
+            injected_score: None,
+            routed: true,
+            converted: 30,
+            callbacks: 0,
+            numeric: 1,
+            membership: 30,
+        };
+
+        let posting_row = |id: &'static str, final_posting, doc_key_record| U12Row {
+            id,
+            doc_key_record,
+            final_posting,
+            sort_column_record: None,
+            injected_score: None,
+            routed: true,
+            converted: 0,
+            callbacks: 0,
+            numeric: 0,
+            membership: 0,
+        };
+
+        let column_row =
+            |id: &'static str, sort_column_record, final_posting, doc_key_record| U12Row {
+                id,
+                doc_key_record,
+                final_posting,
+                sort_column_record: Some(sort_column_record),
+                injected_score: None,
+                routed: false,
+                converted: 0,
+                callbacks: 0,
+                numeric: 0,
+                membership: 0,
+            };
+
+        let completed_rows: [&'static str; 9] = [
+            run_row(row("D0", Some(0), false, None)),
+            run_row(row("D29", Some(29), false, None)),
+            run_row(row("D31", Some(31), false, None)),
+            run_row(posting_row("P29", true, None)),
+            run_row(posting_row("P29+D0", true, Some(0))),
+            run_row(column_row("C0", 0, false, None)),
+            run_row(column_row("C29", 29, false, None)),
+            run_row(column_row("C29+P29+D0", 29, true, Some(0))),
+            run_row(U12Row {
+                id: "S29+D0",
+                doc_key_record: Some(0),
+                final_posting: false,
+                sort_column_record: None,
+                injected_score: Some(29),
+                routed: true,
+                converted: 0,
+                callbacks: 0,
+                numeric: 0,
+                membership: 30,
+            }),
+        ];
+        assert_eq!(
+            completed_rows,
+            [
+                "D0",
+                "D29",
+                "D31",
+                "P29",
+                "P29+D0",
+                "C0",
+                "C29",
+                "C29+P29+D0",
+                "S29+D0"
+            ]
+        );
+        eprintln!("C2-F1-A1 U12 completed=9 ids={completed_rows:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U18 — PIT mutation and mixed segments
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u18_pit_mutation_and_mixed_segments() {
+        let fixture = Fixture::new(&[documents(6), documents(12).into_iter().skip(6).collect()]);
+        let request = request_asc(term_common(), 3);
+        let old = fixture.snapshot.clone();
+        reset_witnesses();
+        let before = run_ineligible(&fixture, &request).expect("old view");
+        assert_eq!(before.total_hits, 12);
+        assert_eq!(c2_observation::strict_routes(), 1);
+
+        // Delete three matching documents and add a new segment.
+        let new_snapshot = {
+            let mut writer = fixture.writer();
+            for index in [0usize, 4, 9] {
+                writer
+                    .apply(MutationRequest::delete(
+                        DocumentKey::new(bounded_key(index)).expect("key"),
+                    ))
+                    .expect("delete");
+            }
+            writer
+                .apply(MutationRequest::insert(document(500)))
+                .expect("insert");
+            let outcome = writer.commit().expect("commit");
+            assert!(outcome.generation > 0);
+            writer.refresh().expect("refresh")
+        };
+        let updated = Fixture {
+            schema: fixture.schema.clone(),
+            registry: AnalyzerRegistry::builtin(),
+            index: fixture.index,
+            snapshot: new_snapshot,
+        };
+        reset_witnesses();
+        let after = run_ineligible(&updated, &request).expect("new view");
+        assert_eq!(after.total_hits, 10, "12 - 3 deleted + 1 added");
+        assert_eq!(after.view_ordinal, updated.snapshot.view_ordinal());
+        // The pinned old snapshot still sees exactly its own generation.
+        let pinned = Fixture {
+            schema: fixture.schema.clone(),
+            registry: AnalyzerRegistry::builtin(),
+            index: updated.index,
+            snapshot: old,
+        };
+        reset_witnesses();
+        let still_old = run_ineligible(&pinned, &request).expect("pinned view");
+        assert_eq!(still_old.total_hits, 12);
+        assert_eq!(
+            still_old.generation, before.generation,
+            "the pinned generation is unchanged"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U19 — sibling paths untouched
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u19_sibling_paths_untouched() {
+        let fixture = Fixture::new(&[documents(20)]);
+        let searcher = fixture.searcher(SearchLimits::default(), TopKDuplicateConfig::default());
+        // Complete-membership mutation seam.
+        reset_witnesses();
+        let selection = searcher
+            .select_keys(&term_common(), 1_000, &Budgets::new(), &NeverCancel)
+            .expect("select keys");
+        match selection {
+            CompleteKeySelection::Complete(keys) => assert_eq!(keys.len(), 20),
+            CompleteKeySelection::LimitExceeded { .. } => panic!("unbounded selection"),
+        }
+        assert_eq!(c2_observation::strict_routes(), 0);
+        assert_eq!(physical::strict_evaluator_calls(), 0);
+
+        // Batch (already proved in C2-U01) and aggregation keep their contracts.
+        let mut meter = BatchExecutionMeter::new(1_000_000_000, 1_000_000_000, 1_000_000_000);
+        reset_witnesses();
+        let batched = searcher
+            .search_with_batch(
+                &request_asc(term_common(), 3),
+                &Budgets::new(),
+                &NeverCancel,
+                &mut meter,
+            )
+            .expect("batch");
+        assert_eq!(batched.total_hits, 20);
+        assert_eq!(c2_observation::strict_routes(), 0);
+
+        // Typed-only and phrase queries stay on Legacy with their own semantics.
+        let typed = request_asc(
+            Query::Range {
+                field: "n".to_owned(),
+                lower: Bound::Included(FieldValue::I64(0)),
+                upper: Bound::Included(FieldValue::I64(2)),
+            },
+            10,
+        );
+        reset_witnesses();
+        let typed_response = run_ineligible(&fixture, &typed).expect("typed");
+        assert_eq!(typed_response.total_hits, 3);
+        assert_eq!(c2_observation::strict_routes(), 0);
+        for hit in &typed_response.hits {
+            assert!(hit.score.is_none(), "a typed hit has no lexical score");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U20 — generic hot-loop isolation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u20_generic_hot_loop_isolation() {
+        let fixture = Fixture::new(&[documents(24)]);
+        let request = request_asc(term_common(), 5);
+        // Forced Legacy executes the accepted generic body only, with no physical
+        // selector per candidate and no C2 evaluator call.
+        reset_witnesses();
+        let legacy_response = {
+            let _forced = c2_observation::ForceLegacy::apply();
+            run_ineligible(&fixture, &request).expect("legacy")
+        };
+        assert_eq!(c2_observation::strict_routes(), 0);
+        assert_eq!(c2_observation::legacy_routes(), 1);
+        assert_eq!(physical::strict_evaluator_calls(), 0);
+        assert_eq!(physical::callbacks(), 0);
+        // The accepted strict-term scorer (a separate, already-shipped path) still
+        // runs on Legacy; C2 must not have replaced it there.
+        assert_eq!(execute::test_observation::single_term_scorer_calls(), 1);
+        // A low-hit (absent term) request is guaranteed Legacy.
+        reset_witnesses();
+        let absent = run_ineligible(&fixture, &request_asc(term_absent(), 5)).expect("absent");
+        assert_eq!(absent.total_hits, 0);
+        assert_eq!(c2_observation::strict_routes(), 0);
+        assert_eq!(c2_observation::legacy_routes(), 1);
+        // And the physical response is identical to the accepted Legacy response
+        // for the same request.
+        reset_witnesses();
+        let physical_response = run_ineligible(&fixture, &request).expect("physical");
+        assert_eq!(c2_observation::strict_routes(), 1);
+        assert_eq!(projected(&physical_response), projected(&legacy_response));
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U21 — later-segment failure aborts the whole request
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u21_work_budget_exhaustion_after_prior_segment() {
+        let fixture = Fixture::new(&[
+            body_documents(6),
+            body_documents(40).into_iter().skip(6).collect(),
+        ]);
+        let request = request_asc(term_body(), 2);
+        let config = linear_config();
+        assert_native_boundary_fixture(&fixture);
+
+        // Global document `i` has alpha frequency `1 + i % 4`. In native query
+        // order segment 0 holds global 6..39 (total 87, final local doc 33 has
+        // frequency 4) and segment 1 holds global 0..5 (1,2,3,4,1,2 = 13), so the
+        // request total is exactly 100 scanned occurrences. Persisted norms plus the
+        // all-live guard keep statistics preparation scan-free.
+        let expected_recovery_keys = vec![bounded_key(0), bounded_key(1)];
+
+        struct Row {
+            id: &'static str,
+            cap: u64,
+            failure: Option<(u64, u64)>,
+            evaluators: usize,
+            membership: usize,
+            converted: usize,
+            callbacks: usize,
+            numeric: usize,
+            bound_columns: usize,
+            collected: Vec<(usize, usize, u64)>,
+        }
+        let rows = [
+            Row {
+                id: "U21-A86",
+                cap: 86,
+                failure: Some((86, 87)),
+                evaluators: 1,
+                membership: 0,
+                converted: 0,
+                callbacks: 0,
+                numeric: 0,
+                bound_columns: 1,
+                collected: Vec::new(),
+            },
+            Row {
+                id: "U21-A87",
+                cap: 87,
+                failure: Some((87, 88)),
+                evaluators: 2,
+                membership: 34,
+                converted: 34,
+                callbacks: 34,
+                numeric: 34,
+                bound_columns: 2,
+                collected: vec![(0, 3, 34)],
+            },
+            Row {
+                id: "U21-A99",
+                cap: 99,
+                failure: Some((99, 100)),
+                evaluators: 2,
+                membership: 34,
+                converted: 34,
+                callbacks: 34,
+                numeric: 34,
+                bound_columns: 2,
+                collected: vec![(0, 3, 34)],
+            },
+            Row {
+                id: "U21-A100",
+                cap: 100,
+                failure: None,
+                evaluators: 2,
+                membership: 40,
+                converted: 40,
+                callbacks: 40,
+                numeric: 40,
+                bound_columns: 2,
+                collected: vec![(0, 3, 34), (1, 3, 40)],
+            },
+        ];
+
+        // Forced-Legacy success reference for the exact-cap comparison.
+        let success_limits = SearchLimits::default()
+            .with_max_scanned_posting_occurrences(100)
+            .expect("scanned");
+        let reference = forced_legacy_with(&fixture, &request, success_limits, config)
+            .expect("forced Legacy success at the exact limit");
+        assert_eq!(reference.total_hits, 40);
+
+        for row in rows {
+            let limits = SearchLimits::default()
+                .with_max_scanned_posting_occurrences(row.cap)
+                .expect("scanned");
+            reset_witnesses();
+            b2_observation::reset();
+            b3_observation::reset();
+            let result = run_with(&fixture, &request, limits, config);
+            // Capture every observation before any reference/retry call resets them.
+            let strict_routes = c2_observation::strict_routes();
+            let legacy_routes = c2_observation::legacy_routes();
+            let evaluators = physical::strict_evaluator_calls();
+            let membership = physical::strict_membership_observations();
+            let converted = physical::converted_rows();
+            let callbacks = physical::callbacks();
+            let numeric = b2_observation::numeric_candidates();
+            let bound_columns = b2_observation::bound_columns();
+            let collected = c2_observation::collected_segments();
+
+            assert_eq!(strict_routes, 1, "{}: strict route", row.id);
+            assert_eq!(legacy_routes, 0, "{}: legacy route", row.id);
+            assert_eq!(evaluators, row.evaluators, "{}: evaluators", row.id);
+            assert_eq!(membership, row.membership, "{}: membership", row.id);
+            assert_eq!(converted, row.converted, "{}: converted rows", row.id);
+            assert_eq!(callbacks, row.callbacks, "{}: callbacks", row.id);
+            assert_eq!(numeric, row.numeric, "{}: numeric candidates", row.id);
+            assert_eq!(
+                bound_columns, row.bound_columns,
+                "{}: bound columns",
+                row.id
+            );
+            assert_eq!(collected, row.collected, "{}: completed segments", row.id);
+
+            match row.failure {
+                Some((limit, requested)) => {
+                    let error = result.expect_err("this row must be rejected");
+                    match error {
+                        SearchError::ResourceLimit {
+                            limit: got_limit,
+                            requested: got_requested,
+                        } => assert_eq!(
+                            (got_limit, got_requested),
+                            (limit, requested),
+                            "{}: exact resource payload",
+                            row.id
+                        ),
+                        other => panic!(
+                            "{}: expected ResourceLimit {{{limit}, {requested}}}, got {other:?}",
+                            row.id
+                        ),
+                    }
+                    eprintln!(
+                        "C2-F1-A1 {}: ResourceLimit{{{limit},{requested}}} evaluators={evaluators} membership={membership} converted={converted} callbacks={callbacks} numeric={numeric} bound={bound_columns} collected={collected:?}",
+                        row.id
+                    );
+                    // The same request/snapshot/limits/config under forced Legacy
+                    // must produce the identical typed payload.
+                    let legacy = forced_legacy_with(&fixture, &request, limits, config)
+                        .expect_err("forced Legacy must reject identically");
+                    match legacy {
+                        SearchError::ResourceLimit {
+                            limit: got_limit,
+                            requested: got_requested,
+                        } => assert_eq!(
+                            (got_limit, got_requested),
+                            (limit, requested),
+                            "{}: Legacy resource parity",
+                            row.id
+                        ),
+                        other => panic!("{}: unexpected Legacy outcome {other:?}", row.id),
+                    }
+                }
+                None => {
+                    let response = result.expect("this row must succeed");
+                    assert_eq!(response.total_hits, 40, "{}: total hits", row.id);
+                    assert_eq!(
+                        keys(&response),
+                        expected_recovery_keys,
+                        "{}: literal keys",
+                        row.id
+                    );
+                    assert!(response.next_cursor.is_some(), "{}: cursor present", row.id);
+                    assert_eq!(
+                        response.generation,
+                        fixture.snapshot.generation(),
+                        "{}: generation",
+                        row.id
+                    );
+                    assert_eq!(
+                        response.view_ordinal,
+                        fixture.snapshot.view_ordinal(),
+                        "{}: view ordinal",
+                        row.id
+                    );
+                    assert_c2_f1_full_response(&response, &reference, row.id);
+                    eprintln!(
+                        "C2-F1-A1 {}: success total=40 evaluators={evaluators} membership={membership} converted={converted} callbacks={callbacks} numeric={numeric} bound={bound_columns} collected={collected:?}",
+                        row.id
+                    );
+                }
+            }
+
+            // Independent same-snapshot recovery at the exact admitted cap.
+            reset_witnesses();
+            b2_observation::reset();
+            b3_observation::reset();
+            let recovered = run_with(&fixture, &request, success_limits, config)
+                .expect("same-snapshot recovery at the exact cap");
+            assert_eq!(
+                physical::strict_evaluator_calls(),
+                2,
+                "{}: recovery evaluators",
+                row.id
+            );
+            assert_eq!(
+                physical::strict_membership_observations(),
+                40,
+                "{}: recovery membership",
+                row.id
+            );
+            assert_eq!(
+                physical::converted_rows(),
+                40,
+                "{}: recovery converted",
+                row.id
+            );
+            assert_eq!(physical::callbacks(), 40, "{}: recovery callbacks", row.id);
+            assert_eq!(
+                b2_observation::numeric_candidates(),
+                40,
+                "{}: recovery numeric",
+                row.id
+            );
+            assert_eq!(
+                b2_observation::bound_columns(),
+                2,
+                "{}: recovery bound columns",
+                row.id
+            );
+            assert_eq!(
+                c2_observation::collected_segments(),
+                vec![(0, 3, 34), (1, 3, 40)],
+                "{}: recovery collected",
+                row.id
+            );
+            assert_eq!(recovered.total_hits, 40, "{}: recovery total", row.id);
+            assert_eq!(
+                keys(&recovered),
+                expected_recovery_keys,
+                "{}: recovery keys",
+                row.id
+            );
+            assert!(
+                recovered.next_cursor.is_some(),
+                "{}: recovery cursor",
+                row.id
+            );
+            assert_c2_f1_full_response(&recovered, &reference, "U21 recovery");
+            eprintln!(
+                "C2-F1-A1 {}: recovery-ok total=40 evaluators=2 membership=40 converted=40 callbacks=40 numeric=40 bound=2",
+                row.id
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U22 — seeded differential matrix
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u22_seeded_differential_matrix() {
+        let mut rng = Rng(0x00C2_2026_1125_0001);
+        let mut fixtures = Vec::new();
+        for distribution in 0..8usize {
+            let segments = 1 + distribution % 4;
+            let total = 20 + distribution * 30;
+            let mut buckets: Vec<Vec<Document>> = vec![Vec::new(); segments];
+            for index in 0..total {
+                buckets[index % segments].push(document_with_body(
+                    index,
+                    1 + (index * 7 + distribution) % 4,
+                    (index + distribution) % 5,
+                ));
+            }
+            fixtures.push(Fixture::new(&buckets));
+        }
+        let top_ks = [1usize, 10, 31, 32, 100];
+        let directions = [SortDirection::Asc, SortDirection::Desc];
+        let missing = [MissingValuePosition::First, MissingValuePosition::Last];
+        let mut cases = 0usize;
+        for fixture in &fixtures {
+            for _ in 0..16 {
+                let top_k = top_ks[rng.below(top_ks.len())];
+                let direction = directions[rng.below(directions.len())];
+                let position = missing[rng.below(missing.len())];
+                let request = request(term_body(), top_k, doc_id_sort(direction, position));
+                reset_witnesses();
+                let c2 = run_ineligible(fixture, &request).expect("c2");
+                let route = c2_observation::strict_routes();
+                let callbacks = physical::callbacks();
+                let legacy = forced_legacy(fixture, &request);
+                assert_eq!(
+                    projected(&c2),
+                    projected(&legacy),
+                    "case {cases} k={top_k} {direction:?} {position:?}"
+                );
+                assert_eq!(c2.total_hits, legacy.total_hits, "case {cases}");
+                assert_eq!(c2.generation, legacy.generation, "case {cases} generation");
+                assert_eq!(
+                    c2.view_ordinal, legacy.view_ordinal,
+                    "case {cases} view ordinal"
+                );
+                assert_eq!(
+                    c2.next_cursor.is_some(),
+                    legacy.next_cursor.is_some(),
+                    "case {cases} cursor presence"
+                );
+                if route == 1 {
+                    assert!(callbacks > 0, "case {cases}");
+                }
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 128, "executed exactly 128 seeded cases");
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U23 — B1/B2/B3 reuse witness
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u23_b1_b2_b3_reuse_witness() {
+        let fixture = Fixture::new(&[documents(40)]);
+        let request = request_asc(term_common(), 3);
+        reset_witnesses();
+        b2_observation::reset();
+        b3_observation::reset();
+        let response = run_ineligible(&fixture, &request).expect("search");
+        assert_eq!(c2_observation::strict_routes(), 1);
+        assert_eq!(response.total_hits, 40);
+        // The request-wide B1 map preparation and the per-segment binding ran once.
+        assert_eq!(b2_observation::map_preparations(), 1);
+        assert_eq!(b2_observation::ready_uses(), 1);
+        assert_eq!(b2_observation::bound_columns(), 1);
+        // The established B2/B3 numeric candidate handlers processed every match.
+        assert_eq!(b2_observation::numeric_candidates(), 40);
+        assert_eq!(b3_observation::one_time_heap_hash_audits(), 1);
+        // Losing candidates own nothing on the compact path.
+        assert!(
+            b2_observation::single_rejected_without_copy() > 0,
+            "the accepted loser fast path is reused"
+        );
+        assert_eq!(physical::callbacks(), 40);
+    }
+
+    // -----------------------------------------------------------------------
+    // C2-U24 — no sticky state across requests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c2_u24_zero_effect_and_error_repetition() {
+        let fixture = Fixture::new(&[documents(30)]);
+        let request = request_asc(term_common(), 3);
+        let first = strict(&fixture, &request);
+        // A fault in a *different* request leaves nothing behind.
+        reset_witnesses();
+        {
+            let _arm = physical::ScoreFailureArm::arm(11);
+            assert!(run_ineligible(&fixture, &request).is_err());
+        }
+        reset_witnesses();
+        let after_fault = strict(&fixture, &request);
+        assert_eq!(projected(&first), projected(&after_fault));
+        // Repeated identical requests are stable and each performs its own work.
+        for _ in 0..3 {
+            reset_witnesses();
+            let repeat = strict(&fixture, &request);
+            assert_eq!(projected(&request_response(&repeat)), projected(&first));
+        }
+        // A cancelled request leaves nothing behind either.
+        let flag = CancellationFlag::new();
+        flag.cancel();
+        reset_witnesses();
+        assert!(
+            fixture
+                .searcher(SearchLimits::default(), TopKDuplicateConfig::default())
+                .search(&request, &Budgets::new(), &flag)
+                .is_err()
+        );
+        reset_witnesses();
+        let recovered = strict(&fixture, &request);
+        assert_eq!(projected(&recovered), projected(&first));
+    }
+
+    fn request_response(response: &UnifiedResponse) -> UnifiedResponse {
+        response.clone()
+    }
+}
+// C2_TESTS_CLOSE_MARKER
