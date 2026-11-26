@@ -18,8 +18,8 @@
 | BASE | `46ccab0a606a56a8b9034ab4db5c9c4df969d098` (= `origin/dev/perf06-c2` at admission) |
 | START | `46ccab0a606a56a8b9034ab4db5c9c4df969d098` |
 | TESTED | `564fd7853d41adc77c84c766f59e29bae113d7b0` (source, tests, verbatim plan) |
-| FINAL | `_to be recorded_` — documentation-only commit after TESTED; see §11 |
-| Remote-verified SHA | `_to be recorded_` — see §11 |
+| FINAL | `07e56d882637c0119abeeb627b417d9584ba8532` (documentation/evidence only); `git diff TESTED..FINAL -- crates/ Cargo.toml Cargo.lock rust-toolchain.toml .github/ benchmarks/` is **empty** |
+| Remote-verified SHA | recorded in §11 after the ordinary push |
 | Toolchains | stable `1.98.1` (pinned by CI), MSRV `1.85.0` |
 | Worktree at admission | clean except the foreign untracked `docs/pr-artifacts/perf-06-b/evidence/f2-ci-status.txt` (D07: recorded, untouched) |
 
@@ -399,3 +399,22 @@ ordinary concurrency and passed on first attempt).
   `evidence/c2-f1-d14-postings-layout-stop.txt`.
 - PR #131 stays draft and unmerged; C3/C4 remain unstarted; no performance claim is
   made.
+
+### Delivery note
+
+- `TESTED` = `564fd7853d41adc77c84c766f59e29bae113d7b0` (source, tests, verbatim plan).
+- `FINAL` = `07e56d882637c0119abeeb627b417d9584ba8532` (report, errata, evidence, status
+  links). The protected-path diff `TESTED..FINAL` is empty, so the §7 QA results
+  remain valid for `FINAL`.
+- The identity block was completed in a further documentation-only commit; it
+  changes this report only.
+- Protected-path verification from START: only
+  `crates/quervant-core/src/search/{execute.rs,unified.rs}` and
+  `crates/quervant-core/tests/perf06_c2_physical.rs` changed under `crates/`.
+  `score.rs`, `work.rs`, `memory.rs`, `plan.rs`, `unified_plan.rs`, the typed
+  modules, `topk.rs`, `unified_cursor.rs`, `limits.rs`, `error.rs`, `index/**`,
+  `segment/**`, `storage/**`, `quervant-objectstore/**`, `quervant-distributed/**`,
+  the B1–B3 tests/fixtures, manifests, lockfiles, toolchains, workflows,
+  `benchmarks/**`, the C1 contract, `docs/architecture/**`, the authoring guide,
+  `AGENTS.md`, `docs/TESTING.md`, the original C2 plan and the C1 source audit are
+  all byte-identical to START.
