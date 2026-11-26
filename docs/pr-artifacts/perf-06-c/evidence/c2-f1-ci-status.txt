@@ -1,0 +1,24 @@
+# Hosted CI on PR #131 for the C2-F1 head
+# PR: https://github.com/yduchesne/quervant/pull/131 (draft, base main)
+# Workflow: "Rust CI" (unchanged; F1 modifies no workflow/trigger)
+# Run: https://github.com/yduchesne/quervant/actions/runs/45825576316
+# headSha: 19cf038dcdaa90f12582423c4536f351a460d6d0
+# status: completed   conclusion: success
+#
+# job                          conclusion  duration  job id
+benchmark-adapter-contract     pass        1m33s     139928736675
+msrv                           pass        12m23s    139928736488
+python-benchmark-framework     pass        3m20s     139928736005
+rust                           pass        16m41s    139928736522
+rustfs                         pass        2m52s     139928736513
+#
+# `rustfs` executed real-service test bodies (32 `test result: ok` lines, 0 failed),
+# e.g. S3 adapter acceptance 8 passed, 5 passed; core remote acceptance 5 passed
+# (+5 filtered) and 1 passed per suite; the mutation/compact/fault suites as before.
+#
+# The F1 feature acceptance (`perf06_c2_physical`, `c2_tests`, `c2_physical_tests`)
+# ran inside the `rust` job's workspace test step; it is independent of the RustFS
+# regression job.
+#
+# Source equivalence: this head is TESTED 564fd7853d41adc77c84c766f59e29bae113d7b0
+# plus documentation-only commits; `git diff TESTED..head -- crates/` is empty.

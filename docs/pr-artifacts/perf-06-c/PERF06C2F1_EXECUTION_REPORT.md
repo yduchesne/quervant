@@ -19,7 +19,7 @@
 | START | `46ccab0a606a56a8b9034ab4db5c9c4df969d098` |
 | TESTED | `564fd7853d41adc77c84c766f59e29bae113d7b0` (source, tests, verbatim plan) |
 | FINAL | `07e56d882637c0119abeeb627b417d9584ba8532` (documentation/evidence only); `git diff TESTED..FINAL -- crates/ Cargo.toml Cargo.lock rust-toolchain.toml .github/ benchmarks/` is **empty** |
-| Remote-verified SHA | recorded in §11 after the ordinary push |
+| Remote-verified SHA | `19cf038dcdaa90f12582423c4536f351a460d6d0` (verified equal to `origin/dev/perf06-c2`; CI head, source-equivalent to TESTED) |
 | Toolchains | stable `1.98.1` (pinned by CI), MSRV `1.85.0` |
 | Worktree at admission | clean except the foreign untracked `docs/pr-artifacts/perf-06-b/evidence/f2-ci-status.txt` (D07: recorded, untouched) |
 
@@ -297,10 +297,17 @@ writer → committed `MemoryDirectory`/`FsDirectory` bytes → snapshot →
 ownership/identity for the copied-and-rebuilt U12 containers. No mock decoder,
 scorer or directory substitutes for it.
 
-Ordinary CI evidence for the F1 head is recorded in §11 after the push; the
-required jobs are `rust`, `msrv`, `python-benchmark-framework`,
-`benchmark-adapter-contract` and `rustfs`. No workflow, trigger or branch filter was
-changed.
+Ordinary CI on the F1 head: run
+[45825576316](https://github.com/yduchesne/quervant/actions/runs/45825576316) at
+`19cf038dcdaa90f12582423c4536f351a460d6d0` — all five required jobs
+(`rust`, `msrv`, `python-benchmark-framework`, `benchmark-adapter-contract`,
+`rustfs`) reported `pass` with `conclusion: success`, and the `rustfs` job executed
+real-service bodies (32 `test result: ok` lines, 0 failed). Receipt:
+`evidence/c2-f1-ci-status.txt`. The required jobs are `rust`, `msrv`,
+`python-benchmark-framework`, `benchmark-adapter-contract` and `rustfs`; no
+workflow, trigger or branch filter was changed, and no duplicate equivalent
+workflow was launched. The head is `TESTED` plus documentation-only commits, so
+`git diff TESTED..head -- crates/` is empty (D27).
 
 ## 9. Failures, diagnostics and open gates
 
