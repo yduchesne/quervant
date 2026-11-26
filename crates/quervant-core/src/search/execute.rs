@@ -1966,6 +1966,108 @@ pub(crate) mod test_observation {
     }
 }
 
+/// PERF-06-C2 test-only structural witnesses and one synthetic score-fault seam.
+///
+/// Deliberately thread-local and compiled out of every non-test build: no
+/// production counter, no runtime strategy flag, no environment variable and no
+/// `tracing` dependency. The score fault injector deliberately does **not** modify
+/// [`super::score::FieldStats::bm25_score`]; it only proves the C2 error/heap
+/// precedence structure and its evidence is labelled `INJECTED_C2_ONLY`.
+#[cfg(test)]
+pub(crate) mod c2_observation {
+    use std::cell::Cell;
+
+    thread_local! {
+        static STRICT_EVALUATOR_CALLS: Cell<usize> = const { Cell::new(0) };
+        static STRICT_MEMBERSHIP_OBSERVATIONS: Cell<usize> = const { Cell::new(0) };
+        static CONVERTED_ROWS: Cell<usize> = const { Cell::new(0) };
+        static CALLBACKS: Cell<usize> = const { Cell::new(0) };
+        static INPLACE_POINTER: Cell<usize> = const { Cell::new(0) };
+        static INPLACE_CAPACITY: Cell<usize> = const { Cell::new(0) };
+        static INPLACE_PRESERVED: Cell<bool> = const { Cell::new(false) };
+        static SCORE_FAILURE_DOC: Cell<Option<u64>> = const { Cell::new(None) };
+    }
+
+    pub(crate) fn reset() {
+        STRICT_EVALUATOR_CALLS.with(|value| value.set(0));
+        STRICT_MEMBERSHIP_OBSERVATIONS.with(|value| value.set(0));
+        CONVERTED_ROWS.with(|value| value.set(0));
+        CALLBACKS.with(|value| value.set(0));
+        INPLACE_POINTER.with(|value| value.set(0));
+        INPLACE_CAPACITY.with(|value| value.set(0));
+        INPLACE_PRESERVED.with(|value| value.set(false));
+        SCORE_FAILURE_DOC.with(|value| value.set(None));
+    }
+
+    pub(crate) fn strict_evaluator_calls() -> usize {
+        STRICT_EVALUATOR_CALLS.with(Cell::get)
+    }
+
+    pub(crate) fn strict_membership_observations() -> usize {
+        STRICT_MEMBERSHIP_OBSERVATIONS.with(Cell::get)
+    }
+
+    pub(crate) fn converted_rows() -> usize {
+        CONVERTED_ROWS.with(Cell::get)
+    }
+
+    pub(crate) fn callbacks() -> usize {
+        CALLBACKS.with(Cell::get)
+    }
+
+    /// Whether the sole decoded posting vector kept both its address and its
+    /// capacity across the in-place frequency -> score-bits rewrite.
+    pub(crate) fn inplace_preserved() -> bool {
+        INPLACE_PRESERVED.with(Cell::get)
+    }
+
+    pub(crate) fn record_strict_evaluator_call() {
+        STRICT_EVALUATOR_CALLS.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn record_strict_membership_observation() {
+        STRICT_MEMBERSHIP_OBSERVATIONS.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn record_callback() {
+        CALLBACKS.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn record_inplace_start(postings: &Vec<(u64, u64)>) {
+        INPLACE_POINTER.with(|value| value.set(postings.as_ptr() as usize));
+        INPLACE_CAPACITY.with(|value| value.set(postings.capacity()));
+        INPLACE_PRESERVED.with(|value| value.set(false));
+    }
+
+    pub(crate) fn record_inplace_finish(postings: &Vec<(u64, u64)>) {
+        CONVERTED_ROWS.with(|value| value.set(value.get() + postings.len()));
+        let same_pointer = INPLACE_POINTER.with(Cell::get) == postings.as_ptr() as usize;
+        let same_capacity = INPLACE_CAPACITY.with(Cell::get) == postings.capacity();
+        INPLACE_PRESERVED.with(|value| value.set(same_pointer && same_capacity));
+    }
+
+    /// Whether the armed synthetic score fault targets this document.
+    pub(crate) fn injected_score_failure(doc_id: u64) -> bool {
+        SCORE_FAILURE_DOC.with(Cell::get) == Some(doc_id)
+    }
+
+    /// Thread-local RAII arm for the synthetic C2 score fault.
+    pub(crate) struct ScoreFailureArm;
+
+    impl ScoreFailureArm {
+        pub(crate) fn arm(doc_id: u64) -> Self {
+            SCORE_FAILURE_DOC.with(|value| value.set(Some(doc_id)));
+            Self
+        }
+    }
+
+    impl Drop for ScoreFailureArm {
+        fn drop(&mut self) {
+            SCORE_FAILURE_DOC.with(|value| value.set(None));
+        }
+    }
+}
+
 /// Control returned by a membership visitor callback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VisitControl {
@@ -2255,6 +2357,746 @@ where
         memory.as_deref_mut(),
     )?;
     Ok(scored_vec)
+}
+
+/// PERF-06-C2: the strict-term, in-place scored-posting executor.
+///
+/// Preconditions (checked again at runtime, fail-closed):
+///
+/// * `leaves` is exactly one [`CompiledLeaf::Term`] with exactly one analyzed
+///   term, `positive == {0}`, and no typed examination is involved (C2 never
+///   admits a typed leaf, so there is no argument for it).
+/// * the caller already proved the request-wide C1 eligibility, the request-wide
+///   B1 ordinal map is `Ready`, and the effective-live document frequency of that
+///   single term exceeds `top_k + 1`.
+///
+/// Mechanism (see the C2 plan §4.2): the sole validated `(doc_id, freq)` posting
+/// allocation produced by [`build_leaf_data`] is kept, every matched document is
+/// scored eagerly with the unchanged [`super::score::FieldStats::bm25_score`], and its
+/// frequency word is rewritten **in place** as `score.to_bits()`. Only after the
+/// whole segment is scored, every logical reservation has been released in the
+/// accepted order and `ledger.finish()` succeeded, the caller's callback receives
+/// `(doc_id, f64::from_bits(bits))` for every matched document, in ascending
+/// physical `doc_id` order. No second full-M scored vector, score array, second
+/// postings reader or second BM25 implementation exists.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn visit_strict_term_scored_with<F>(
+    reader: &SegmentReader,
+    leaves: &[CompiledLeaf],
+    expansion: &Expansion,
+    stats: &SnapshotStats<'_>,
+    positive: &BTreeSet<usize>,
+    segment_index: usize,
+    live: &[bool],
+    budget: &mut CandidateBudget,
+    meter: &mut MixedWorkMeter<'_>,
+    cancel: &dyn Cancellation,
+    mut on_scored: F,
+) -> SearchResult<()>
+where
+    F: FnMut(u64, f64, usize, &mut CandidateBudget) -> SearchResult<()>,
+{
+    #[cfg(test)]
+    c2_observation::record_strict_evaluator_call();
+
+    let mut ledger = SegmentCandidateLedger::new(budget)?;
+    // Standalone-only path: no batch memory sink (batch requests stay Legacy).
+    let (mut leaf_data, leaf_charges) = {
+        let mut work = SearchWork::shared(meter);
+        build_leaf_data(
+            reader,
+            leaves,
+            expansion,
+            segment_index,
+            live,
+            &mut work,
+            &mut ledger,
+            None,
+            cancel,
+        )?
+    };
+
+    // Runtime guard: the statically eligible shape must still hold. Capture only
+    // the field id; no `&str` borrow into `leaf_data` is retained across the
+    // upcoming mutable `take_strict_one_term_postings` call.
+    let field_id = match leaf_data.as_slice() {
+        [LeafData::Term { field_id, terms }] if terms.len() == 1 => *field_id,
+        _ => return Err(strict_term_shape_error()),
+    };
+    if positive.len() != 1 || !positive.contains(&0) {
+        return Err(strict_term_shape_error());
+    }
+
+    // Accepted strict N examination charge: once per effective-live document, not
+    // once per candidate posting. Same polls, same order as `evaluate_lexical_with`.
+    let verified_live_count = stats.verified_segment_live_count(segment_index, live.len())?;
+    let live_count = effective_live_examination_count(live, verified_live_count, meter)?;
+    if live_count > 0 {
+        meter.charge_lexical(live_count)?;
+    }
+    meter.check_cancelled()?;
+
+    // Enumerate every decoded posting while the sole leaf allocation is still
+    // intact. The root is exactly this term, so every decoded (already
+    // effective-live filtered) posting is a true match: no membership relookup and
+    // no typed/Boolean evaluation is performed. Cancellation is polled per
+    // posting exactly as the accepted strict callback loop did.
+    {
+        let postings = match leaf_data.as_slice() {
+            [LeafData::Term { terms, .. }] => terms[0].postings.as_slice(),
+            _ => return Err(strict_term_shape_error()),
+        };
+        let mut last: Option<u64> = None;
+        for (doc_id, _freq) in postings {
+            meter.check_cancelled()?;
+            debug_assert!(last.is_none_or(|previous| previous < *doc_id));
+            last = Some(*doc_id);
+            #[cfg(test)]
+            c2_observation::record_strict_membership_observation();
+        }
+    }
+
+    // Move the sole posting allocation out of the validated leaf data. The term
+    // string stays owned by `leaf_data`, so it is borrowed only now.
+    let mut scored_postings = take_strict_one_term_postings(&mut leaf_data, false)?;
+    let term = match leaf_data.as_slice() {
+        [LeafData::Term { field_id: f, terms }] if terms.len() == 1 && *f == field_id => {
+            terms[0].term.as_str()
+        }
+        _ => return Err(strict_term_shape_error()),
+    };
+
+    let m = u64::try_from(scored_postings.len()).map_err(|_| SearchError::ResourceLimit {
+        limit: u64::MAX,
+        requested: u64::MAX,
+    })?;
+    // Accepted logical matched-set admission (no physical tree is created).
+    let matched_bytes = bytes_for_count(m, SET_BYTES_PER_ENTRY)?;
+    ledger.reserve_with_memory(m, matched_bytes, None)?;
+    // Accepted logical scored-map admission, kept even though the physical map is
+    // replaced by the in-place rewrite. Removing it would weaken a resource limit.
+    let scored_bytes = bytes_for_count(m, SCORED_MAP_BYTES_PER_ENTRY)?;
+    ledger.reserve_with_memory(m, scored_bytes, None)?;
+
+    #[cfg(test)]
+    c2_observation::record_inplace_start(&scored_postings);
+    let field_stats = if positive.contains(&0) {
+        stats.field(field_id)
+    } else {
+        None
+    };
+    // Eager, complete scoring of every matched document, including those that
+    // will lose numeric Top-K. One deliberate `+0.0` accumulation per document
+    // preserves the accepted float grouping and signed-zero behavior.
+    for row in &mut scored_postings {
+        let (doc_id, freq) = *row;
+        #[cfg(test)]
+        if c2_observation::injected_score_failure(doc_id) {
+            return Err(SearchError::InvalidScore {
+                detail: "injected C2 score failure",
+            });
+        }
+        let mut score = 0.0_f64;
+        if let Some(field) = field_stats {
+            let dl = field.length(segment_index, doc_id);
+            let contribution = field.bm25_score(term, freq, dl)?;
+            score += contribution;
+        }
+        row.1 = score.to_bits();
+    }
+    #[cfg(test)]
+    c2_observation::record_inplace_finish(&scored_postings);
+
+    // The term borrow ends here; discard the now-empty leaf allocation and
+    // release the logical charges in the accepted order.
+    drop(leaf_data);
+    ledger.release_with_memory(m, matched_bytes, None)?;
+    ledger.release_with_memory(leaf_charges.entries, leaf_charges.bytes, None)?;
+    ledger.release_with_memory(m, scored_bytes, None)?;
+    ledger.finish()?;
+    drop(ledger);
+
+    let matched_count = usize::try_from(m).map_err(|_| SearchError::ResourceLimit {
+        limit: u64::MAX,
+        requested: u64::MAX,
+    })?;
+    for (doc_id, score_bits) in &scored_postings {
+        on_scored(*doc_id, f64::from_bits(*score_bits), matched_count, budget)?;
+        #[cfg(test)]
+        c2_observation::record_callback();
+    }
+    Ok(())
+}
+
+/// The established C2 runtime-shape failure. Never a fallback and never a panic.
+fn strict_term_shape_error() -> SearchError {
+    SearchError::CorruptIndex {
+        detail: "single-term postings eligibility mismatch".to_owned(),
+    }
+}
+
+/// PERF-06-C2 crate-level adversarial tests for the in-place evaluator.
+///
+/// These are the only tests that exercise the evaluator directly, which is what
+/// makes two things provable that the public search path cannot express:
+///
+/// * a runtime shape disagreement returns the established typed corruption
+///   instead of a panic or a silent fallback, and
+/// * a checksum-valid segment container rebuilt with a corrupted `POSTINGS` or
+///   `DOC_KEYS` body proves that the *whole* posting stream is validated before
+///   any candidate callback and that a late scoring failure precedes every key
+///   resolution (the synthetic fault is labelled `INJECTED_C2_ONLY`).
+#[cfg(test)]
+mod c2_physical_tests {
+    use super::*;
+    use crate::analysis::{AnalysisLimits, AnalyzerRegistry, NeverCancel};
+    use crate::contract::document::{Cardinality, Document, DocumentKey, FieldValues};
+    use crate::contract::query::Query;
+    use crate::contract::schema::{FieldDefinition, FieldOptions, Schema};
+    use crate::contract::value::{FieldType, FieldValue};
+    use crate::index::{Index, IndexLimits};
+    use crate::segment::SegmentReader;
+    use crate::segment::{
+        ContainerBuilder, ContainerKind, SectionKind, SegmentLimits, parse_container,
+    };
+    use crate::storage::{Directory, MemoryDirectory};
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    fn schema() -> Schema {
+        Schema::new(
+            vec![
+                FieldDefinition::new(
+                    "grp",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, false, false),
+                ),
+                FieldDefinition::new(
+                    "doc_id",
+                    FieldType::Keyword,
+                    Cardinality::Single,
+                    FieldOptions::new(true, true, true),
+                )
+                .with_normalizer("keyword"),
+            ],
+            None,
+        )
+        .expect("schema")
+    }
+
+    fn document(index: usize) -> Document {
+        let key = format!("doc{index:06}");
+        let mut document = Document::new(DocumentKey::new(key.clone()).expect("key"));
+        document
+            .insert(
+                "grp",
+                FieldValues::Single(FieldValue::Keyword("common".to_owned())),
+            )
+            .expect("grp");
+        document
+            .insert("doc_id", FieldValues::Single(FieldValue::Keyword(key)))
+            .expect("doc_id");
+        document
+    }
+
+    fn term_query() -> Query {
+        Query::Term {
+            field: "grp".to_owned(),
+            value: FieldValue::Keyword("common".to_owned()),
+        }
+    }
+
+    /// A real native single-segment index and its snapshot.
+    fn index(count: usize) -> (Index, Arc<crate::index::ReaderSnapshot>) {
+        let directory: Arc<dyn Directory> = Arc::new(MemoryDirectory::new());
+        let schema = schema();
+        let registry = AnalyzerRegistry::builtin();
+        let limits = IndexLimits::new()
+            .with_max_pending_docs(100_000)
+            .with_max_pending_bytes(64 * 1024 * 1024);
+        {
+            let index = Index::create_with_limits(
+                Arc::clone(&directory),
+                schema.clone(),
+                registry.clone(),
+                limits.clone(),
+            )
+            .expect("create");
+            let mut writer = index.writer().expect("writer");
+            for position in 0..count {
+                writer.insert(document(position)).expect("insert");
+            }
+            writer.commit().expect("commit");
+        }
+        let index = Index::open_with_limits(directory, schema, registry, limits).expect("reopen");
+        let snapshot = index.snapshot();
+        (index, snapshot)
+    }
+
+    struct StrictInputs<'a> {
+        leaves: Vec<CompiledLeaf>,
+        expansion: crate::search::expand::Expansion,
+        stats: SnapshotStats<'a>,
+        positive: BTreeSet<usize>,
+    }
+
+    /// Build the real compiled leaves, real expansion and real prepared statistics
+    /// for one single-term query, exactly as `collect_mixed` does.
+    fn strict_inputs<'a>(
+        readers: &'a [&'a SegmentReader],
+        live: &Rc<Vec<bool>>,
+    ) -> StrictInputs<'a> {
+        let schema = schema();
+        let registry = AnalyzerRegistry::builtin();
+        let limits = SearchLimits::default();
+        let compiled = crate::search::plan::compile(
+            &term_query(),
+            &schema,
+            &registry,
+            &limits,
+            &AnalysisLimits::default(),
+            &NeverCancel,
+        )
+        .expect("compile");
+        let live_rows: Vec<Rc<Vec<bool>>> = vec![Rc::clone(live)];
+        let mut meter = MixedWorkMeter::new(
+            limits.max_total_work_units(),
+            limits.max_typed_work_units(),
+            limits.max_scanned_posting_occurrences(),
+            &NeverCancel,
+        );
+        let expansion = {
+            let mut work = SearchWork::shared(&mut meter);
+            expand_query(readers, &compiled, &limits, &mut work, &NeverCancel).expect("expand")
+        };
+        let stats = {
+            let mut work = SearchWork::shared(&mut meter);
+            compute_stats(
+                readers,
+                &live_rows,
+                &compiled.scoring_field_ids,
+                expansion.positive_terms(),
+                &limits,
+                &mut work,
+                &NeverCancel,
+            )
+            .expect("stats")
+        };
+        let positive = compiled.positive_leaf_indices.clone();
+        StrictInputs {
+            leaves: compiled.leaves,
+            expansion,
+            stats,
+            positive,
+        }
+    }
+
+    fn live_all(reader: &SegmentReader) -> Rc<Vec<bool>> {
+        Rc::new(vec![true; reader.doc_count() as usize])
+    }
+
+    fn make_budget() -> CandidateBudget {
+        CandidateBudget::new(&SearchLimits::default())
+    }
+
+    fn make_meter() -> MixedWorkMeter<'static> {
+        MixedWorkMeter::new(u64::MAX, u64::MAX, u64::MAX, &NeverCancel)
+    }
+
+    #[test]
+    fn c2_p01_shape_mismatch_fails_closed() {
+        let (_index, snapshot) = index(8);
+        let guard = snapshot.open_segment_reader(0).expect("guard");
+        let reader = guard.reader();
+        let live = live_all(reader);
+        let readers = [reader];
+        let inputs = strict_inputs(&readers, &live);
+        // Wrong positive set.
+        let mut budget = make_budget();
+        let mut meter = make_meter();
+        let error = visit_strict_term_scored_with(
+            reader,
+            &inputs.leaves,
+            &inputs.expansion,
+            &inputs.stats,
+            &BTreeSet::from([1usize]),
+            0,
+            &live,
+            &mut budget,
+            &mut meter,
+            &NeverCancel,
+            |_, _, _, _| panic!("no callback on a shape mismatch"),
+        )
+        .expect_err("positive set mismatch");
+        assert!(
+            matches!(error, SearchError::CorruptIndex { ref detail } if detail == "single-term postings eligibility mismatch"),
+            "{error:?}"
+        );
+        // Extra leaf shape.
+        let mut leaves = inputs.leaves.clone();
+        leaves.push(leaves[0].clone());
+        let mut budget = make_budget();
+        let error = visit_strict_term_scored_with(
+            reader,
+            &leaves,
+            &inputs.expansion,
+            &inputs.stats,
+            &inputs.positive,
+            0,
+            &live,
+            &mut budget,
+            &mut meter,
+            &NeverCancel,
+            |_, _, _, _| panic!("no callback on a shape mismatch"),
+        )
+        .expect_err("two leaves");
+        assert!(
+            matches!(error, SearchError::CorruptIndex { .. }),
+            "{error:?}"
+        );
+        // Empty leaf list.
+        let mut budget = make_budget();
+        let error = visit_strict_term_scored_with(
+            reader,
+            &[],
+            &inputs.expansion,
+            &inputs.stats,
+            &inputs.positive,
+            0,
+            &live,
+            &mut budget,
+            &mut meter,
+            &NeverCancel,
+            |_, _, _, _| panic!("no callback on a shape mismatch"),
+        )
+        .expect_err("no leaves");
+        assert!(
+            matches!(error, SearchError::CorruptIndex { .. }),
+            "{error:?}"
+        );
+        // The budget is reusable: the failed attempts released every charge.
+        let mut budget = make_budget();
+        let mut meter = make_meter();
+        let mut callbacks = 0usize;
+        visit_strict_term_scored_with(
+            reader,
+            &inputs.leaves,
+            &inputs.expansion,
+            &inputs.stats,
+            &inputs.positive,
+            0,
+            &live,
+            &mut budget,
+            &mut meter,
+            &NeverCancel,
+            |_, score, matched, _| {
+                assert!(score.is_finite());
+                assert_eq!(matched, 8);
+                callbacks += 1;
+                Ok(())
+            },
+        )
+        .expect("happy path");
+        assert_eq!(callbacks, 8);
+    }
+
+    #[test]
+    fn c2_p02_inplace_reuse_and_callback_order() {
+        let (_index, snapshot) = index(40);
+        let guard = snapshot.open_segment_reader(0).expect("guard");
+        let reader = guard.reader();
+        let live = live_all(reader);
+        let readers = [reader];
+        let inputs = strict_inputs(&readers, &live);
+        c2_observation::reset();
+        let mut budget = make_budget();
+        let mut meter = make_meter();
+        let mut observed: Vec<(u64, u64)> = Vec::new();
+        visit_strict_term_scored_with(
+            reader,
+            &inputs.leaves,
+            &inputs.expansion,
+            &inputs.stats,
+            &inputs.positive,
+            0,
+            &live,
+            &mut budget,
+            &mut meter,
+            &NeverCancel,
+            |doc_id, score, matched, _| {
+                assert_eq!(matched, 40);
+                observed.push((doc_id, score.to_bits()));
+                Ok(())
+            },
+        )
+        .expect("strict evaluation");
+        assert!(c2_observation::inplace_preserved());
+        assert_eq!(c2_observation::converted_rows(), 40);
+        assert_eq!(c2_observation::callbacks(), 40);
+        // Ascending physical order, one entry per matched document.
+        let ids: Vec<u64> = observed.iter().map(|(doc, _)| *doc).collect();
+        assert_eq!(ids, (0..40u64).collect::<Vec<_>>());
+        // The accepted strict scorer never ran: no second full-M scored vector.
+        assert_eq!(test_observation::single_term_scorer_calls(), 0);
+        // The score of doc 0 equals the unchanged BM25 of an explicit recompute
+        // through the same prepared statistics.
+        let field_id = reader.schema().field_id("grp").expect("field");
+        let field = inputs.stats.field(field_id).expect("stats");
+        let expected = field.bm25_score("common", 1, 1).expect("bm25");
+        assert_eq!(observed[0].1, expected.to_bits());
+    }
+
+    /// Rebuild a checksum-valid container with one section body replaced.
+    fn rebuild_with(
+        original: &[u8],
+        kind: SectionKind,
+        mutate: impl FnOnce(Vec<u8>) -> Vec<u8>,
+    ) -> Vec<u8> {
+        let view = parse_container(original, &SegmentLimits::default()).expect("container");
+        let doc_count = view.doc_count();
+        let features: Vec<(u16, u16)> = view.required_features().to_vec();
+        let optional: Vec<(u16, u16)> = view.optional_features().to_vec();
+        let sections: Vec<(SectionKind, u16, u64, Vec<u8>)> = view
+            .sections()
+            .iter()
+            .map(|entry| {
+                (
+                    entry.kind,
+                    entry.flags,
+                    entry.aux,
+                    view.body(entry.kind).expect("body").to_vec(),
+                )
+            })
+            .collect();
+        let mut builder = ContainerBuilder::new(ContainerKind::Segment, doc_count);
+        for (id, version) in &features {
+            builder.require_feature(*id, *version);
+        }
+        for (id, version) in &optional {
+            builder.optional_feature(*id, *version);
+        }
+        let mut mutate = Some(mutate);
+        for (section, flags, aux, body) in &sections {
+            let body = match (mutate.take(), *section == kind) {
+                (Some(apply), true) => apply(body.clone()),
+                (taken, _) => {
+                    mutate = taken;
+                    body.clone()
+                }
+            };
+            builder.section(*section, *flags, *aux, body);
+        }
+        builder.build().expect("rebuild")
+    }
+
+    #[test]
+    fn c2_p03_corrupt_postings_precede_every_callback() {
+        let (_index, snapshot) = index(24);
+        let guard = snapshot.open_segment_reader(0).expect("guard");
+        let original = guard.reader().bytes().to_vec();
+        drop(guard);
+        let corrupted = rebuild_with(&original, SectionKind::Postings, |mut body| {
+            // Keep every section length (so the dictionary extent check still
+            // passes) but make the final varint unterminated.
+            let len = body.len();
+            for byte in &mut body[len.saturating_sub(4)..] {
+                *byte = 0xFF;
+            }
+            body
+        });
+        let reader = SegmentReader::open(corrupted, SegmentLimits::default())
+            .expect("a corrupt POSTINGS body is not validated at open");
+        let live = live_all(&reader);
+        let readers = [&reader];
+        let inputs = strict_inputs(&readers, &live);
+        c2_observation::reset();
+        let mut budget = make_budget();
+        let mut meter = make_meter();
+        let error = visit_strict_term_scored_with(
+            &reader,
+            &inputs.leaves,
+            &inputs.expansion,
+            &inputs.stats,
+            &inputs.positive,
+            0,
+            &live,
+            &mut budget,
+            &mut meter,
+            &NeverCancel,
+            |_, _, _, _| panic!("a malformed posting stream must not reach a candidate"),
+        )
+        .expect_err("corrupt postings");
+        assert!(
+            matches!(
+                error,
+                SearchError::Segment(_) | SearchError::Index(_) | SearchError::CorruptIndex { .. }
+            ),
+            "{error:?}"
+        );
+        assert_eq!(c2_observation::callbacks(), 0);
+        // No reservation leaked: a fresh ledger on the same budget succeeds.
+        let mut ledger = SegmentCandidateLedger::new(&mut budget).expect("fresh segment");
+        ledger.reserve(1, 16).expect("reserve");
+        ledger.release(1, 16).expect("release");
+        ledger.finish().expect("finish");
+    }
+
+    #[test]
+    fn c2_p04_late_score_fault_precedes_corrupt_doc_keys() {
+        let (_index, snapshot) = index(30);
+        let guard = snapshot.open_segment_reader(0).expect("guard");
+        let original = guard.reader().bytes().to_vec();
+        drop(guard);
+        let corrupted = rebuild_with(&original, SectionKind::DocKeys, |mut body| {
+            // Byte 12 is inside the first key body (u16 version + u64 count).
+            if body.len() > 12 {
+                body[12] ^= 0xFF;
+            }
+            body
+        });
+        let reader = SegmentReader::open(corrupted, SegmentLimits::default())
+            .expect("a corrupt DOC_KEYS body is not validated at open");
+        let live = live_all(&reader);
+        let readers = [&reader];
+        let inputs = strict_inputs(&readers, &live);
+
+        // Control: without a scoring fault, the callback's key resolution raises
+        // the original typed corruption (so the key error is genuinely reachable).
+        let mut budget = make_budget();
+        let mut meter = make_meter();
+        let mut key_errors = 0usize;
+        let outcome = visit_strict_term_scored_with(
+            &reader,
+            &inputs.leaves,
+            &inputs.expansion,
+            &inputs.stats,
+            &inputs.positive,
+            0,
+            &live,
+            &mut budget,
+            &mut meter,
+            &NeverCancel,
+            |doc_id, _, _, _| {
+                if reader.doc_key(doc_id).is_err() {
+                    key_errors += 1;
+                    return Err(SearchError::CorruptIndex {
+                        detail: "corrupt doc keys".to_owned(),
+                    });
+                }
+                Ok(())
+            },
+        );
+        assert!(outcome.is_err(), "the corrupt key must surface");
+        assert!(key_errors > 0);
+
+        // Structural adversarial case: a late synthetic scoring failure wins,
+        // because the whole segment is scored before any candidate exists.
+        // Evidence class: INJECTED_C2_ONLY.
+        c2_observation::reset();
+        let mut budget = make_budget();
+        let mut meter = make_meter();
+        let mut callbacks = 0usize;
+        let outcome = {
+            let _arm = c2_observation::ScoreFailureArm::arm(29);
+            visit_strict_term_scored_with(
+                &reader,
+                &inputs.leaves,
+                &inputs.expansion,
+                &inputs.stats,
+                &inputs.positive,
+                0,
+                &live,
+                &mut budget,
+                &mut meter,
+                &NeverCancel,
+                |_, _, _, _| {
+                    callbacks += 1;
+                    Ok(())
+                },
+            )
+        };
+        let error = outcome.expect_err("late score fault");
+        assert!(
+            matches!(error, SearchError::InvalidScore { detail } if detail == "injected C2 score failure"),
+            "{error:?}"
+        );
+        assert_eq!(callbacks, 0, "no candidate callback in that segment");
+    }
+
+    #[test]
+    fn c2_p05_n_examination_and_scanned_frequency() {
+        let (_index, snapshot) = index(20);
+        let guard = snapshot.open_segment_reader(0).expect("guard");
+        let reader = guard.reader();
+        let mut live = vec![true; reader.doc_count() as usize];
+        // Tombstone every third physical document.
+        for (position, flag) in live.iter_mut().enumerate() {
+            if position % 3 == 0 {
+                *flag = false;
+            }
+        }
+        let live_rows: Vec<Rc<Vec<bool>>> = vec![Rc::new(live.clone())];
+        let readers = [reader];
+        let inputs = strict_inputs(&readers, &live_rows[0]);
+        // Exact work/scanned boundaries: the N examination is the effective-live
+        // count, and each decoded posting charges its own frequency.
+        let scan_limit = 10u64;
+        let mut budget = make_budget();
+        let mut strict_meter = MixedWorkMeter::new(u64::MAX, u64::MAX, scan_limit, &NeverCancel);
+        let mut matched = 0usize;
+        let error = visit_strict_term_scored_with(
+            reader,
+            &inputs.leaves,
+            &inputs.expansion,
+            &inputs.stats,
+            &inputs.positive,
+            0,
+            &live,
+            &mut budget,
+            &mut strict_meter,
+            &NeverCancel,
+            |_, _, _, _| {
+                matched += 1;
+                Ok(())
+            },
+        )
+        .map(|()| matched);
+        // The scanned-positives cap is charged during decode, so this must fail
+        // before any callback regardless of the exact limit chosen.
+        match error {
+            Ok(count) => {
+                assert!(count > 0);
+            }
+            Err(SearchError::ResourceLimit { .. }) => {
+                assert_eq!(matched, 0, "decode failure precedes callbacks");
+            }
+            Err(other) => panic!("unexpected {other:?}"),
+        }
+        // A generous meter sees exactly the effective-live matches.
+        let mut budget = make_budget();
+        let mut meter = make_meter();
+        let mut count = 0usize;
+        visit_strict_term_scored_with(
+            reader,
+            &inputs.leaves,
+            &inputs.expansion,
+            &inputs.stats,
+            &inputs.positive,
+            0,
+            &live,
+            &mut budget,
+            &mut meter,
+            &NeverCancel,
+            |_, _, _, _| {
+                count += 1;
+                Ok(())
+            },
+        )
+        .expect("strict evaluation");
+        let expected = live.iter().filter(|flag| **flag).count();
+        assert_eq!(count, expected);
+    }
 }
 
 #[cfg(test)]
