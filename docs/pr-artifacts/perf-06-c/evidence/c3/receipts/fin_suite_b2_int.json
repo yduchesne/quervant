@@ -1,0 +1,38 @@
+{
+  "after": {
+    "head": "6ea6b7ce049d613a29864f1eae53dea5fd61e75f",
+    "index_tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af",
+    "tracked_status_b64": "",
+    "tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af"
+  },
+  "argv": [
+    "cargo",
+    "+1.98.1",
+    "test",
+    "-p",
+    "quervant-core",
+    "--test",
+    "perf06_b2_ordinals"
+  ],
+  "before": {
+    "head": "6ea6b7ce049d613a29864f1eae53dea5fd61e75f",
+    "index_tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af",
+    "tracked_status_b64": "",
+    "tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af"
+  },
+  "combined_output_base64": "ICAgQ29tcGlsaW5nIHF1ZXJ2YW50LWNvcmUgdjAuMS4wICgvaG9tZS95ZHVjaGVzbmUvRGV2L0dpdGh1Yi95ZHVjaGVzbmUvcXVlcnZhbnQvY3JhdGVzL3F1ZXJ2YW50LWNvcmUpCiAgICBGaW5pc2hlZCBgdGVzdGAgcHJvZmlsZSBbdW5vcHRpbWl6ZWQgKyBkZWJ1Z2luZm9dIHRhcmdldChzKSBpbiAwLjYxcwogICAgIFJ1bm5pbmcgdGVzdHMvcGVyZjA2X2IyX29yZGluYWxzLnJzICh0YXJnZXQvZGVidWcvZGVwcy9wZXJmMDZfYjJfb3JkaW5hbHMtNDg0NzdmN2Y1OTg4NjczYykKCnJ1bm5pbmcgOCB0ZXN0cwp0ZXN0IGIyX2kwOF9hZGFwdGVyX3Nlc3Npb25fa2VlcHNfb25lX3NuYXBzaG90X3Blcl9zZXNzaW9uIC4uLiBvawp0ZXN0IGIyX2kwNl9pbmVsaWdpYmxlX3NoYXBlc19rZWVwX2V4aXN0aW5nX2JlaGF2aW9yIC4uLiBvawp0ZXN0IGIyX2kwM19nZW51aW5lX3YxX2ZpeHR1cmVfZmFsbHNfYmFja190aGVuX2NvbXBhY3RzIC4uLiBvawp0ZXN0IGIyX2kwMl9jdXJzb3JfcGFnaW5hdGlvbl9yZWFzc2VtYmxlc190aGVfY29tcGxldGVfb3JkZXIgLi4uIG9rCnRlc3QgYjJfaTAxX2ZpbGVzeXN0ZW1fY29ycHVzX2Z1bGxfb3JkZXJfYW5kX3Byb2plY3Rpb24gLi4uIG9rCnRlc3QgYjJfaTA1X2lkZW50aXR5X2Fic2VudF9udWxsX2VtcHR5X2FuZF9tdWx0aV9vbmUgLi4uIG9rCnRlc3QgYjJfaTA3X2xvc2luZ19sb25nX3ZhbHVlX2FuZF9jb250YWluZXJfd3JhcHBlZF9jb3JydXB0aW9uIC4uLiBvawp0ZXN0IGIyX2kwNF9oZWxkX3BpdHNfa2VlcF9vbGRfcmFua3NfYWNyb3NzX2FwcGVuZF9kZWxldGVfY29tcGFjdCAuLi4gb2sKCnRlc3QgcmVzdWx0OiBvay4gOCBwYXNzZWQ7IDAgZmFpbGVkOyAwIGlnbm9yZWQ7IDAgbWVhc3VyZWQ7IDAgZmlsdGVyZWQgb3V0OyBmaW5pc2hlZCBpbiAwLjMwcwoK",
+  "combined_output_sha256": "1811f2a10fa9e63bc8368ac2d194fa2f7fe89279be8246890a21234cde4df4e2",
+  "combined_output_size": 909,
+  "command_exit_code": 0,
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "ended_utc": "2026-11-27T01:00:53.264080+00:00",
+  "expected_commit": "6ea6b7ce049d613a29864f1eae53dea5fd61e75f",
+  "label": "fin_suite_b2_int",
+  "removed_env_names": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE"
+  ],
+  "schema": "quervant-perf06-c3-receipt-v1",
+  "source_identity_valid": true,
+  "started_utc": "2026-11-27T01:00:52.328730+00:00"
+}

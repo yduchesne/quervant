@@ -400,3 +400,103 @@ decision about exactly 81 whitespace diagnostics in 41 unchanged frozen artifact
 claim is made: C3 has not started and C4 remains the only stage authorized to run the
 incremental warm qualification against the accepted A+B baseline. Independent review
 and maintainer merge remain open.
+
+## PERF-06-C2 merged and PERF-06-C3 implemented (2026-11-26)
+
+**C2 is merged.** PR [#131](https://github.com/yduchesne/quervant/pull/131) is
+`MERGED` at `main@6bc977e6a26c183609b7ca53eca51d3ab09ce337` (merged
+2026-11-26T23:00:00Z, reviewed head `da033ff19b3facd4f0a5319506a64e658156e93f`).
+The earlier sections in this file that describe C2 as open/unmerged, and the
+pre-merge G10/whitespace wording in the C2 artifacts, are retained verbatim as
+contemporaneous history; they are not current PR-state assertions.
+
+**C3 is implemented on a draft, unmerged branch** `dev/perf06-c3`, built from
+`B` exactly. Plan:
+[PERF06C3_DETAILED_IMPLEMENTATION_PLAN.md](pr-artifacts/perf-06-c/PERF06C3_DETAILED_IMPLEMENTATION_PLAN.md);
+report and evidence:
+[PERF06C3_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C3_EXECUTION_REPORT.md).
+
+- **Proof boundary.** C3 defers BM25 only under a request-local, read-only
+  certificate over immutable prepared statistics: `n > 0`, `df > 0`, `df <= n`,
+  finite `avgdl` in `[2^-64, 2^64]`, finite prepared IDF in `[0, 64]`. Under
+  those (sufficient, not necessary) bounds every valid decoded positive posting
+  yields a finite nonnegative score, so only the `K` returned hits are scored —
+  through the unchanged `FieldStats::bm25_score` and the same `+ 0.0`
+  accumulator, bit-equal to eager. C2 eligibility and the `M > K + 1` guard are
+  byte-identical; an unproven statistic keeps eager C2 and every originally
+  ineligible shape keeps Legacy.
+- **Unchanged.** Full posting validation, exact `total_hits`, `N`/scanned work
+  charges, virtual matched/scored admissions and release order, B1/B2/B3
+  validation, duplicate policy, fallible key/sort materialization for every
+  competitive provisional entry, cursor and projection. No new format, public
+  API, dependency or runtime telemetry. The physical heap entry grows by one
+  `u64` word (136 → 144 bytes); the logical charge formulas are unchanged.
+- **Evidence.** Red-first proof (40 → 3 scorer calls), 17 new unit tests and 3
+  real `FsDirectory` integration tests, exact old C2 eager regressions retained
+  (24/5/9), broader inventories 52 (`--lib c2_`) and 12 (`perf06_c2_physical`),
+  stable 1.98.1 and MSRV 1.85.0 format/clippy/tests in both feature regimes, and
+  coverage 93.85 % / 93.54 % lines against the 85 % floor.
+- **No performance sample.** **C4 has not started.** C4 remains the only stage
+  authorized to run the integrated incremental A+B→C warm qualification
+  (including absent/rare lanes and the entry-layout/codegen guard) and to report
+  the cumulative series. C3 must not be marked DONE and no baseline may be
+  promoted before G10 maintainer acceptance.
+
+## PERF-06-C3-F1 acceptance repair (2026-11-26)
+
+Acceptance repair and evidence closeout for PR
+[#132](https://github.com/yduchesne/quervant/pull/132). Plan:
+[PERF06C3F1_DETAILED_FIXUP_PLAN.md](pr-artifacts/perf-06-c/PERF06C3F1_DETAILED_FIXUP_PLAN.md);
+report:
+[PERF06C3F1_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C3F1_EXECUTION_REPORT.md).
+
+- **Production source is byte-frozen.** Every normal-build byte and every
+  unrelated test byte is identical to the reviewed C3 head
+  `ee77917d303b060b0d38ab88e5d9ae73625f6676`; only six existing test functions
+  plus the I02 paging helper changed, each verified by the supplied function-only
+  freeze checker.
+- **Repaired acceptance:** S01 isolates the two df guards with a valid prepared
+  IDF; U02 executes the literal 25-tuple `M ∈ {0,1,K,K+1,K+2}` domain and asserts
+  the six previously discarded sort/batch/aggregation responses; U04 validates
+  nine literal fault descriptors with an isolated `C29` and a same-snapshot
+  unarmed C3 check; U05 binds normal, eager and Legacy results to the literal
+  scanned-cap errors; U09 asserts twelve literal resource outcomes, seven
+  recoveries and the documented projection-after-finalization
+  `{13056,13160}` refusal with 100 private scores; I02 verifies every hit of all
+  five view phases (198 checks).
+- **Corrected reporting.** Historical region coverage had been labelled as line
+  coverage: the actual historical line figures were `93.50 %` / `93.09 %`. The
+  `U02` split diagnostic, the `C29` descriptor, the I02 later-page oracle scope,
+  the S01 guard independence, the U09 expectation, the U04 execution classes, the
+  parent/child test-count scopes and the `c3_` 26-vs-17 inventory are corrected by
+  dated errata in the original report.
+- **C4 has not started.** No performance sample, profiler, timing run or baseline
+  promotion. G10 remains maintainer-owned and open.
+
+## PERF-06-C3-F2 test-only conformance repair (2026-11-27)
+
+Continuation of C3/F1 on the existing PR
+[#132](https://github.com/yduchesne/quervant/pull/132). **Test-only.** Production
+source, the public API, codecs, accounting, projection order and every runtime
+branch are unchanged from the reviewed head
+`051104724125ba95d49a6d94b61500f974a3599f`.
+
+- **F2-01:** removed the F1-added `#[allow(clippy::too_many_arguments)]` and its
+  nested `recover_at` helper in `c3_u09_logical_budget_edges`, inlining the
+  identical recovery operations at the single call site. No lint suppression
+  remains.
+- **F2-02:** added explicit `aggregation.is_none()` assertions to the plain batch
+  response and its forced-Legacy reference, and corrected the nearby
+  average-length comment (`n = df = 24`, `avgdl = 1`).
+- **F2-03:** the historical F1 terminal archive was recovered and fully validated
+  (archive and Markdown hashes, archive integrity, member manifest and every
+  member digest) and is delivered unchanged; a complete new terminal package is
+  produced for the F2 head.
+- **Evidence:** 45 fresh final receipts (not relabelled historical results), 51
+  historical F1 receipts re-verified read-only, exact Appendix A source proof,
+  Lines coverage `93.53 %` / `93.13 %`, unchanged inventories `24/5/52/26/12`.
+  Report: [PERF06C3F2_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C3F2_EXECUTION_REPORT.md).
+- **Status:** current final-head CI and terminal closeout are supplied in the
+  live PR body and the external handoff. G10 remains maintainer-owned and open;
+  C4 is unstarted; nothing merged, no readiness change, no performance claim or
+  baseline promotion.

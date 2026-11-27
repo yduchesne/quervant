@@ -1,0 +1,106 @@
+C3 S01 completed=24 rows
+C3 S02 checked=108 uniform-bound cases plus degenerate rows
+C3 P01: total=18446744073709551615 scanned=10 failure=Some((10, 11)) callbacks=0 work=20
+C3 P01: total=18446744073709551615 scanned=19 failure=Some((19, 20)) callbacks=0 work=38
+C3 P01: total=18446744073709551615 scanned=20 failure=None callbacks=13 work=53
+C3 P01: total=18446744073709551615 scanned=21 failure=None callbacks=13 work=53
+C3 P01: total=52 scanned=20 failure=Some((52, 53)) callbacks=0 work=40
+C3 P01: total=53 scanned=20 failure=None callbacks=13 work=53
+C3 P01 misuse-guard=ok recovery=ok rows=6
+C3 U01 BM25 calls=3 expected=3
+C3 U02 dispatch-rows=25
+C3 U02 split segments=3 membership=12 final-calls=12
+C3 U02 ineligible-and-cursor-rows=ok
+C3 U03 base total=30 certified=ok
+C3 U03-01 INJECTED_SHARED_STATS routes=(1, 0, 1, 0, 1) callbacks=0 converted=0 numeric=0 bm25=1
+C3 U03-02 INJECTED_SHARED_STATS routes=(1, 0, 1, 0, 1) callbacks=0 converted=0 numeric=0 bm25=1
+C3 U03-03 INJECTED_SHARED_STATS routes=(1, 0, 1, 0, 1) callbacks=0 converted=0 numeric=0 bm25=1
+C3 U03-04 INJECTED_SHARED_STATS routes=(1, 0, 1, 0, 1) callbacks=0 converted=0 numeric=0 bm25=1
+C3 U03-05 INJECTED_SHARED_STATS routes=(1, 0, 1, 0, 1) callbacks=0 converted=0 numeric=0 bm25=1
+C3 U03-06 INJECTED_SHARED_STATS routes=(1, 0, 1, 0, 1) callbacks=0 converted=0 numeric=0 bm25=1
+C3 U03-07 INJECTED_SHARED_STATS routes=(1, 0, 1, 0, 1) callbacks=30 converted=30 numeric=30 bm25=30
+C3 U03-08 INJECTED_SHARED_STATS routes=(1, 0, 1, 0, 1) callbacks=30 converted=30 numeric=30 bm25=30
+C3 U03-09 INJECTED_SHARED_STATS routes=(1, 0, 1, 0, 1) callbacks=30 converted=30 numeric=30 bm25=30
+C3 U03-10 INJECTED_SHARED_STATS routes=(1, 0, 1, 0, 1) callbacks=30 converted=30 numeric=30 bm25=30
+C3 U03-11 INJECTED_SHARED_STATS routes=(1, 0, 1, 0, 1) callbacks=30 converted=30 numeric=30 bm25=30
+C3 U03-12 INJECTED_SHARED_STATS routes=(1, 0, 1, 0, 1) callbacks=30 converted=30 numeric=30 bm25=30
+C3 U03-13 INJECTED_SHARED_STATS routes=(1, 0, 1, 0, 1) callbacks=30 converted=30 numeric=30 bm25=30
+C3 U03-14 INJECTED_SHARED_STATS routes=(1, 0, 1, 0, 1) callbacks=30 converted=30 numeric=30 bm25=30
+C3 U03-15 INJECTED_SHARED_STATS routes=(0, 1, 0, 0, 0) callbacks=0 converted=0 numeric=30 bm25=30
+C3 U03-16 INJECTED_SHARED_STATS routes=(0, 1, 0, 0, 0) callbacks=0 converted=0 numeric=30 bm25=30
+C3 U03-17 INJECTED_SHARED_STATS routes=(0, 1, 0, 0, 0) callbacks=0 converted=0 numeric=30 bm25=0
+C3 U03 recovery certified=ok calls=3
+C3 U03-C1 INJECTED_SHARED_STATS beats corrupt key: routes=1/0/1 callbacks=0 bm25=1 b3=0
+C3 U03-C2 INJECTED_SHARED_STATS beats corrupt key: routes=1/0/1 callbacks=0 bm25=1 b3=0
+C3 U03 competing-fault rows=2 pristine-recovery=ok
+C3 U04 D0: DocKey strict=1 deferred=1 eager=0 membership=30 numeric=1 callbacks=0 bm25=0
+C3 U04 D29: DocKey strict=1 deferred=1 eager=0 membership=30 numeric=1 callbacks=0 bm25=0
+C3 U04 D31: DocKey strict=1 deferred=1 eager=0 membership=30 numeric=1 callbacks=0 bm25=0
+C3 U04 P29: ZeroFrequency strict=1 deferred=1 eager=0 membership=0 numeric=0 callbacks=0 bm25=0
+C3 U04 P29+D0: ZeroFrequency strict=1 deferred=1 eager=0 membership=0 numeric=0 callbacks=0 bm25=0
+C3 U04 C0: SortColumn strict=0 deferred=0 eager=0 membership=0 numeric=0 callbacks=0 bm25=0
+C3 U04 C29: SortColumn strict=0 deferred=0 eager=0 membership=0 numeric=0 callbacks=0 bm25=0
+C3 U04 C29+P29+D0: SortColumn strict=0 deferred=0 eager=0 membership=0 numeric=0 callbacks=0 bm25=0
+C3 U04 S29+D0: InjectedScore strict=1 deferred=0 eager=1 membership=30 numeric=0 callbacks=0 bm25=29
+C3 U04 completed=9 ids=["D0", "D29", "D31", "P29", "P29+D0", "C0", "C29", "C29+P29+D0", "S29+D0"]
+C3 U05-86: ResourceLimit{86,87} evaluators=1 membership=0 numeric=0 callbacks=0 collected=[] bm25=0
+C3 U05-86: recovery-ok total=40 bm25=2
+C3 U05-87: ResourceLimit{87,88} evaluators=2 membership=34 numeric=34 callbacks=34 collected=[(0, 3, 34)] bm25=0
+C3 U05-87: recovery-ok total=40 bm25=2
+C3 U05-99: ResourceLimit{99,100} evaluators=2 membership=34 numeric=34 callbacks=34 collected=[(0, 3, 34)] bm25=0
+C3 U05-99: recovery-ok total=40 bm25=2
+C3 U05-100: success total=40 evaluators=2 membership=40 numeric=40 callbacks=40 collected=[(0, 3, 34), (1, 3, 40)] bm25=2
+C3 U05-100: recovery-ok total=40 bm25=2
+C3 U05 rows=4 recovery-lines=4
+C3 U06 refusal: segments=1 attempts=1 directories=0 refusals=1 fallbacks=[0] collected=[(0, 4, 40)] bm25=3
+C3 U06 refusal: segments=2 attempts=2 directories=1 refusals=1 fallbacks=[0] collected=[(0, 4, 20), (1, 4, 40)] bm25=3
+C3 U06 refusal: segments=2 attempts=2 directories=1 refusals=1 fallbacks=[1] collected=[(0, 4, 20), (1, 4, 40)] bm25=3
+C3 U06 refusal: segments=2 attempts=2 directories=2 refusals=0 fallbacks=[] collected=[(0, 4, 20), (1, 4, 40)] bm25=3
+C3 U06 refusal: segments=2 attempts=0 directories=0 refusals=0 fallbacks=[0, 1] collected=[(0, 4, 20), (1, 4, 40)] bm25=3
+C3 U06 rows=5
+C3 U07 Asc: winners=["doc000000", "doc000001", "doc000002"] scores=3 compact-keys=4 rejections=36 b3-meta=40
+C3 U07 Desc: winners=["doc000039", "doc000038", "doc000037"] scores=3 compact-keys=40 rejections=0 b3-meta=40
+C3 U07 asc+desc=2 complete
+C3 U08 Asc/First: indices=[1, 3, 2] bm25=3
+C3 U08 Desc/First: indices=[1, 3, 5] bm25=3
+C3 U08 Asc/Last: indices=[2, 6, 0] bm25=3
+C3 U08 Desc/Last: indices=[5, 0, 4] bm25=3
+C3 U08 rows=4
+C3 U09 m=3 8/384: ResourceLimit{8,9} retry-ok
+C3 U09 m=3 9/383: ResourceLimit{383,384} retry-ok
+C3 U09 m=3 exact-peak verdict=Ok(3) checkpoint=admitted scores=1
+C3 U09 m=3 generous: total=3 k=1 bm25=1
+C3 U09 m=12 35/1536: ResourceLimit{35,36} retry-ok
+C3 U09 m=12 36/1535: ResourceLimit{1535,1536} retry-ok
+C3 U09 m=12 exact-peak verdict=Ok(12) checkpoint=admitted scores=10
+C3 U09 m=12 generous: total=12 k=10 bm25=10
+C3 U09 m=102 305/13056: ResourceLimit{305,306} retry-ok
+C3 U09 m=102 306/13055: ResourceLimit{13055,13056} retry-ok
+C3 U09 m=102 exact-peak verdict=Err("limit 13056 requested 13160") checkpoint=post-finalization-refusal scores=100
+C3 U09 m=102 generous: total=102 k=100 bm25=100
+C3 U09 rows=12
+C3 U10 deterministic polls P=96
+C3 U10 rows=97 cancellations=96 successes=1
+C3 U11 d=0 seed=0xc306202600000001 count=120 segments=1 rows-done=20
+C3 U11 d=1 seed=0xc306202600000001 count=123 segments=2 rows-done=40
+C3 U11 d=2 seed=0xc306202600000001 count=126 segments=3 rows-done=60
+C3 U11 d=3 seed=0xc306202600000001 count=129 segments=4 rows-done=80
+C3 U11 d=4 seed=0xc306202600000001 count=132 segments=1 rows-done=100
+C3 U11 d=5 seed=0xc306202600000001 count=135 segments=2 rows-done=120
+C3 U11 d=6 seed=0xc306202600000001 count=138 segments=3 rows-done=140
+C3 U11 d=7 seed=0xc306202600000001 count=141 segments=4 rows-done=160
+C3 U11 rows=160 seed=0xc306202600000001
+C3 U12 layout old=136/8 new=144/8 delta=8
+C3 U12 finalize k=2 bm25=2 lookahead-unscored=ok
+C3 U12 misuse-guard rows=4
+C3 U13 collision rows=5 deferred/eager error parity=ok
+C3 U14 rows=64 multione=64 compact-keys=6 bm25=5
+C3 I01 Asc k=1: total=40 page1=["s0000"] page2=["s0001"]
+C3 I01 Desc k=1: total=40 page1=["s0039"] page2=["s0038"]
+C3 I01 Asc k=3: total=40 page1=["s0000", "s0001", "s0002"] page2=["s0003", "s0004", "s0005"]
+C3 I01 Desc k=3: total=40 page1=["s0039", "s0038", "s0037"] page2=["s0036", "s0035", "s0034"]
+C3 I01 Asc k=10: total=40 page1=["s0000", "s0001", "s0002", "s0003", "s0004", "s0005", "s0006", "s0007", "s0008", "s0009"] page2=["s0010", "s0011", "s0012", "s0013", "s0014", "s0015", "s0016", "s0017", "s0018", "s0019"]
+C3 I01 Desc k=10: total=40 page1=["s0039", "s0038", "s0037", "s0036", "s0035", "s0034", "s0033", "s0032", "s0031", "s0030"] page2=["s0029", "s0028", "s0027", "s0026", "s0025", "s0024", "s0023", "s0022", "s0021", "s0020"]
+C3 I01 combinations=6
+C3 I02 old=40 new=39 new-total-length=173 merged-keys=["s0000", "s0001", "s0003"]
+C3 I03 caps=69/2944 failure={68,69}/{2943,2944} scanned=23 failure={22,23} total=23

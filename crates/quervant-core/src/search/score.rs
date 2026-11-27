@@ -111,6 +111,132 @@ pub(crate) mod idf_observation {
     }
 }
 
+/// PERF-06-C3: test-only observation of the actual number of
+/// [`FieldStats::bm25_score`] invocations on this thread.
+///
+/// This counts real calls through the one accepted scorer, including eager and
+/// reference calls. It never estimates candidates from M or the page length, and
+/// it is compiled out of every non-test build (no production counter, metric or
+/// synchronization primitive).
+#[cfg(test)]
+pub(crate) mod c3_score_observation {
+    use std::cell::Cell;
+
+    use super::{FieldStats, SnapshotStats};
+
+    thread_local! {
+        static BM25_CALLS: Cell<usize> = const { Cell::new(0) };
+        static STAT_FAULT: Cell<Option<StatFault>> = const { Cell::new(None) };
+    }
+
+    /// Reset the current thread's call counter (never the armed fault).
+    pub(crate) fn reset() {
+        BM25_CALLS.with(|value| value.set(0));
+    }
+
+    /// Read the current thread's counter.
+    pub(crate) fn calls() -> usize {
+        BM25_CALLS.with(Cell::get)
+    }
+
+    /// Record one actual `bm25_score` invocation.
+    pub(crate) fn record_call() {
+        BM25_CALLS.with(|value| value.set(value.get() + 1));
+    }
+
+    /// A synthetic per-field/term statistic mutation.
+    ///
+    /// These `INJECTED_SHARED_STATS` states cannot arise from a valid persisted
+    /// index; they exist only to exercise the *real* eager scoring branches and
+    /// their exact precedence. Nothing here fabricates an error return value.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub(crate) enum StatFault {
+        DfAboveN,
+        MissingIdf,
+        Idf(f64),
+        Avgdl(f64),
+        NZero,
+        ZeroDf,
+        MissingTerm,
+        MissingField,
+        ZeroAvgdlWithDfAboveN,
+    }
+
+    /// Thread-local RAII arm for one synthetic statistic mutation.
+    pub(crate) struct StatFaultArm {
+        previous: Option<StatFault>,
+    }
+
+    impl StatFaultArm {
+        pub(crate) fn arm(fault: StatFault) -> Self {
+            let previous = STAT_FAULT.with(|value| {
+                let previous = value.get();
+                value.set(Some(fault));
+                previous
+            });
+            Self { previous }
+        }
+    }
+
+    impl Drop for StatFaultArm {
+        fn drop(&mut self) {
+            STAT_FAULT.with(|value| value.set(self.previous));
+        }
+    }
+
+    /// Apply the armed synthetic mutation to the target field/term, if armed.
+    ///
+    /// A no-op on any other field or term, so unrelated scoring never changes.
+    pub(crate) fn apply_fault(stats: &mut SnapshotStats<'_>, field_id: u32, term: &str) {
+        let Some(fault) = STAT_FAULT.with(Cell::get) else {
+            return;
+        };
+        if fault == StatFault::MissingField {
+            stats.fields.remove(&field_id);
+            return;
+        }
+        let Some(field) = stats.fields.get_mut(&field_id) else {
+            return;
+        };
+        if fault == StatFault::MissingTerm {
+            field.df.remove(term);
+            return;
+        }
+        match fault {
+            StatFault::MissingField | StatFault::MissingTerm => unreachable!("handled above"),
+            StatFault::DfAboveN => {
+                let stat = field.df.get_mut(term).expect("synthetic term record");
+                stat.doc_freq = field.n.checked_add(1).expect("small synthetic n");
+            }
+            StatFault::ZeroAvgdlWithDfAboveN => {
+                field.avgdl = 0.0;
+                let stat = field.df.get_mut(term).expect("synthetic term record");
+                stat.doc_freq = field.n.checked_add(1).expect("small synthetic n");
+            }
+            StatFault::MissingIdf => {
+                let stat = field.df.get_mut(term).expect("synthetic term record");
+                stat.idf = None;
+            }
+            StatFault::Idf(value) => {
+                let stat = field.df.get_mut(term).expect("synthetic term record");
+                stat.idf = Some(value);
+            }
+            StatFault::Avgdl(value) => field.avgdl = value,
+            StatFault::NZero => field.n = 0,
+            StatFault::ZeroDf => {
+                let stat = field.df.get_mut(term).expect("synthetic term record");
+                stat.doc_freq = 0;
+                stat.idf = None;
+            }
+        }
+    }
+
+    /// Kept so the imported `FieldStats` type is used even when the module's
+    /// helper set changes; it documents the concrete stats shape being mutated.
+    #[allow(dead_code)]
+    fn _stats_shape(_: &FieldStats<'_>) {}
+}
+
 /// How one segment's lengths for one field are sourced.
 pub(crate) enum SegmentLengths<'a> {
     /// Immutable persisted norms (physical-doc order).
@@ -183,6 +309,8 @@ impl FieldStats<'_> {
     /// error, then the anomalous zero-frequency fallback, and only then the prepared
     /// arithmetic. No logarithm is evaluated on the prepared path.
     pub(crate) fn bm25_score(&self, term: &str, tf: u64, dl: u64) -> SearchResult<f64> {
+        #[cfg(test)]
+        c3_score_observation::record_call();
         let Some(stat) = self.df.get(term) else {
             return bm25(tf, 0, self.n, dl, self.avgdl);
         };
@@ -203,6 +331,81 @@ impl FieldStats<'_> {
             });
         };
         bm25_with_idf(tf, dl, self.avgdl, idf)
+    }
+}
+
+// PERF-06-C3: sufficient (not necessary) bounds on prepared BM25 arithmetic.
+//
+// See `docs/architecture/PERF06C_PHYSICAL_EXECUTION_CONTRACT.md` §5 and
+// `docs/pr-artifacts/perf-06-c/PERF06C3_EXECUTION_REPORT.md` for the proof. In
+// `compute_stats` both the total scoring-field length `T` and the live count `n`
+// are checked `u64`s and `avgdl = T as f64 / n as f64`. Because `u64::MAX as f64`
+// rounds to exactly 2^64, any positive `avgdl` is in the closed interval
+// `[2^-64, 2^64]`; these two bounds are exactly representable binary64 constants,
+// so no integer narrowing is needed and the norm-derived length 0 is covered.
+/// Largest `avgdl` for which the C3 deferred-score proof holds (2^64).
+const C3_AVGDL_MAX: f64 = 18_446_744_073_709_551_616.0;
+/// Smallest positive `avgdl` for which the C3 deferred-score proof holds.
+const C3_AVGDL_MIN: f64 = 1.0 / C3_AVGDL_MAX;
+/// Conservative upper bound on the prepared IDF (`ln(1 + 2^65) < 46 < 64`).
+const C3_IDF_MAX: f64 = 64.0;
+
+/// PERF-06-C3: request-local, read-only proof that every valid decoded match of
+/// one exact normalized term on one scoring field yields a finite nonnegative
+/// `FieldStats::bm25_score` and therefore cannot fail.
+///
+/// The token borrows the immutable prepared statistics and the exact term, so it
+/// cannot outlive them or refer to a different query. It never computes a second
+/// IDF and never caches a score: [`DeferredBm25::score`] calls the one accepted
+/// `bm25_score` with the original `+0.0` accumulation.
+pub(crate) struct DeferredBm25<'s, 'a> {
+    field: &'s FieldStats<'a>,
+    term: &'s str,
+}
+
+impl<'a> FieldStats<'a> {
+    /// Issue the C3 proof token, or `None` when this term/field is outside the
+    /// proven bounds.
+    ///
+    /// A rejected certificate is a successful *decision* to stay on eager C2; it
+    /// is never a `SearchError`. The guards are exactly the conservative
+    /// sufficient preconditions from the execution report §3.2.
+    pub(crate) fn certify_deferred<'s>(&'s self, term: &'s str) -> Option<DeferredBm25<'s, 'a>> {
+        let stat = self.df.get(term)?;
+        let idf = stat.idf?;
+        if self.n == 0
+            || stat.doc_freq == 0
+            || stat.doc_freq > self.n
+            || !self.avgdl.is_finite()
+            || !(C3_AVGDL_MIN..=C3_AVGDL_MAX).contains(&self.avgdl)
+            || !idf.is_finite()
+            || !(0.0..=C3_IDF_MAX).contains(&idf)
+        {
+            return None;
+        }
+        Some(DeferredBm25 { field: self, term })
+    }
+}
+
+impl DeferredBm25<'_, '_> {
+    /// Verify that the visitor's already validated shape boundary is the exact
+    /// scoring field and term this token was issued for.
+    pub(crate) fn matches(&self, field: &FieldStats<'_>, term: &str) -> bool {
+        std::ptr::eq(self.field, field) && self.term == term
+    }
+
+    /// The only deferred scorer: the unchanged prepared BM25 with the accepted
+    /// `+0.0` accumulator, for one retained physical hit.
+    pub(crate) fn score(
+        &self,
+        segment_index: usize,
+        doc_id: u64,
+        tf: std::num::NonZeroU64,
+    ) -> SearchResult<f64> {
+        let dl = self.field.length(segment_index, doc_id);
+        let mut score = 0.0_f64;
+        score += self.field.bm25_score(self.term, tf.get(), dl)?;
+        Ok(score)
     }
 }
 
@@ -1289,5 +1492,322 @@ mod tests {
             field.bm25_score("hello", 4, 0).unwrap().to_bits(),
             0.0f64.to_bits()
         );
+    }
+    // ===== PERF-06-C3: certified deferred BM25 =====
+
+    /// Build one stats object with an explicit persisted length slice.
+    fn cert_stats<'a>(
+        n: u64,
+        avgdl: f64,
+        term: Option<(&str, u64, Option<f64>)>,
+        lengths: &'a [u64],
+    ) -> FieldStats<'a> {
+        let mut df = HashMap::new();
+        if let Some((term, doc_freq, idf)) = term {
+            df.insert((term).to_owned(), PreparedTermStat { doc_freq, idf });
+        }
+        FieldStats {
+            n,
+            avgdl,
+            df,
+            lengths: vec![SegmentLengths::Persisted(lengths)],
+        }
+    }
+
+    /// The accepted base row of the C3 certificate decision table.
+    fn cert_base(lengths: &[u64]) -> FieldStats<'_> {
+        cert_stats(30, 2.0, Some(("alpha", 30, prepare_idf(30, 30))), lengths)
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn c3_s01_certificate_matrix() {
+        const LENGTHS: [u64; 3] = [0, 1, u64::MAX];
+        let mut completed: Vec<&'static str> = Vec::new();
+
+        let certify = |stats: &FieldStats<'_>, term: &str| stats.certify_deferred(term).is_some();
+
+        // S01-01 base row.
+        {
+            let stats = cert_base(&LENGTHS);
+            assert!(certify(&stats, "alpha"), "S01-01 base must certify");
+            // Identity: an independently created but numerically identical field is
+            // a different scoring field, so `matches` must reject it.
+            let twin = cert_base(&LENGTHS);
+            let cert = stats.certify_deferred("alpha").expect("base cert");
+            assert!(cert.matches(&stats, "alpha"), "same field/term");
+            assert!(!cert.matches(&twin, "alpha"), "distinct field object");
+            assert!(!cert.matches(&stats, "beta"), "distinct term");
+            // An absent term is never certified.
+            assert!(!certify(&stats, "beta"), "absent term");
+            completed.push("S01-01");
+        }
+
+        // S01-02 n = 0.
+        {
+            let stats = cert_stats(0, 2.0, Some(("alpha", 30, prepare_idf(30, 30))), &LENGTHS);
+            assert!(!certify(&stats, "alpha"), "S01-02 n=0");
+            completed.push("S01-02");
+        }
+        // S01-03 df = 0. The valid base prepared IDF is retained so this row can
+        // only be excluded by the `df == 0` guard, never by a masking missing-IDF.
+        {
+            let base_idf = prepare_idf(30, 30).expect("base prepared IDF");
+            let stats = cert_stats(30, 2.0, Some(("alpha", 0, Some(base_idf))), &LENGTHS);
+            let stat = stats.df.get("alpha").expect("S01-03 term record");
+            assert_eq!(stat.doc_freq, 0, "S01-03 literal df");
+            let idf = stat.idf.expect("S01-03 prepared IDF is present");
+            assert!(
+                idf.is_finite() && (0.0..=64.0).contains(&idf),
+                "S01-03 IDF is finite and in bounds"
+            );
+            assert_eq!(
+                idf.to_bits(),
+                base_idf.to_bits(),
+                "S01-03 retains the valid base prepared IDF"
+            );
+            assert_eq!(stats.n, 30, "S01-03 n");
+            assert_eq!(stats.avgdl.to_bits(), 2.0f64.to_bits(), "S01-03 avgdl");
+            assert!(!certify(&stats, "alpha"), "S01-03 df=0");
+            completed.push("S01-03");
+        }
+        // S01-04 df = 31 > n = 30, again with the valid base prepared IDF so the
+        // row isolates the `df > n` guard.
+        {
+            let base_idf = prepare_idf(30, 30).expect("base prepared IDF");
+            let stats = cert_stats(30, 2.0, Some(("alpha", 31, Some(base_idf))), &LENGTHS);
+            let stat = stats.df.get("alpha").expect("S01-04 term record");
+            assert_eq!(stat.doc_freq, 31, "S01-04 literal df");
+            let idf = stat.idf.expect("S01-04 prepared IDF is present");
+            assert!(
+                idf.is_finite() && (0.0..=64.0).contains(&idf),
+                "S01-04 IDF is finite and in bounds"
+            );
+            assert_eq!(
+                idf.to_bits(),
+                base_idf.to_bits(),
+                "S01-04 retains the valid base prepared IDF"
+            );
+            assert_eq!(stats.n, 30, "S01-04 n");
+            assert_eq!(stats.avgdl.to_bits(), 2.0f64.to_bits(), "S01-04 avgdl");
+            assert!(!certify(&stats, "alpha"), "S01-04 df=31");
+            completed.push("S01-04");
+        }
+        // S01-05 absent term record.
+        {
+            let stats = cert_stats(30, 2.0, None, &LENGTHS);
+            assert!(!certify(&stats, "alpha"), "S01-05 absent term");
+            completed.push("S01-05");
+        }
+        // S01-06 missing prepared IDF, with a valid df, as the independent case.
+        {
+            let stats = cert_stats(30, 2.0, Some(("alpha", 30, None)), &LENGTHS);
+            assert!(!certify(&stats, "alpha"), "S01-06 missing idf");
+            // The same valid-df/missing-IDF object keeps the accepted eager
+            // precedence: the tf==0 guard returns +0.0 before the missing-IDF
+            // refusal, and the positive-tf call lands on that refusal.
+            assert_eq!(
+                stats
+                    .bm25_score("alpha", 0, 3)
+                    .expect("tf zero guard")
+                    .to_bits(),
+                0.0f64.to_bits(),
+                "S01-06 tf == 0 precedes the missing-IDF error"
+            );
+            match stats.bm25_score("alpha", 1, 3) {
+                Err(SearchError::CorruptIndex { detail }) => {
+                    assert_eq!(detail, "prepared BM25 IDF missing for valid term")
+                }
+                other => panic!("S01-06 unexpected missing-idf outcome: {other:?}"),
+            }
+            completed.push("S01-06");
+        }
+        // S01-07..13 out-of-proof average lengths.
+        for (row, avgdl) in [
+            ("S01-07", 0.0f64),
+            ("S01-08", -1.0),
+            ("S01-09", f64::NAN),
+            ("S01-10", f64::INFINITY),
+            ("S01-11", f64::NEG_INFINITY),
+            ("S01-12", super::C3_AVGDL_MIN / 2.0),
+            ("S01-13", super::C3_AVGDL_MAX * 2.0),
+        ] {
+            let stats = cert_stats(
+                30,
+                avgdl,
+                Some(("alpha", 30, prepare_idf(30, 30))),
+                &LENGTHS,
+            );
+            assert!(!certify(&stats, "alpha"), "{row} avgdl={avgdl}");
+            completed.push(row);
+        }
+        // S01-14..16 in-bounds average lengths certify.
+        for (row, avgdl) in [
+            ("S01-14", super::C3_AVGDL_MIN),
+            ("S01-15", 1.0),
+            ("S01-16", super::C3_AVGDL_MAX),
+        ] {
+            let stats = cert_stats(
+                30,
+                avgdl,
+                Some(("alpha", 30, prepare_idf(30, 30))),
+                &LENGTHS,
+            );
+            assert!(certify(&stats, "alpha"), "{row} avgdl={avgdl}");
+            completed.push(row);
+        }
+        // S01-17..21 out-of-proof prepared IDF.
+        for (row, idf) in [
+            ("S01-17", f64::NAN),
+            ("S01-18", f64::INFINITY),
+            ("S01-19", f64::NEG_INFINITY),
+            ("S01-20", -1.0),
+            ("S01-21", 65.0),
+        ] {
+            let stats = cert_stats(30, 2.0, Some(("alpha", 30, Some(idf))), &LENGTHS);
+            assert!(!certify(&stats, "alpha"), "{row} idf={idf}");
+            completed.push(row);
+        }
+        // S01-22..24 in-bounds signed zero and the inclusive maximum certify.
+        for (row, idf) in [("S01-22", 0.0f64), ("S01-23", -0.0), ("S01-24", 64.0)] {
+            let stats = cert_stats(30, 2.0, Some(("alpha", 30, Some(idf))), &LENGTHS);
+            assert!(certify(&stats, "alpha"), "{row} idf={idf}");
+            completed.push(row);
+        }
+
+        assert_eq!(completed.len(), 24, "exactly 24 certificate rows");
+        assert_eq!(
+            completed,
+            vec![
+                "S01-01", "S01-02", "S01-03", "S01-04", "S01-05", "S01-06", "S01-07", "S01-08",
+                "S01-09", "S01-10", "S01-11", "S01-12", "S01-13", "S01-14", "S01-15", "S01-16",
+                "S01-17", "S01-18", "S01-19", "S01-20", "S01-21", "S01-22", "S01-23", "S01-24"
+            ]
+        );
+
+        // The eager `bm25_score` keeps its exact precedence even when the
+        // certificate refuses: tf == 0 returns +0.0 before the invalid df error,
+        // and the missing-IDF branch is only reached for a positive tf.
+        let invalid = cert_stats(30, 2.0, Some(("alpha", 31, None)), &LENGTHS);
+        assert!(!certify(&invalid, "alpha"));
+        assert_eq!(
+            invalid
+                .bm25_score("alpha", 0, 3)
+                .expect("tf zero guard")
+                .to_bits(),
+            0.0f64.to_bits(),
+            "tf == 0 precedes the invalid-df error"
+        );
+        match invalid.bm25_score("alpha", 1, 3) {
+            Err(SearchError::InvalidScore { detail }) => {
+                assert_eq!(detail, "document frequency exceeds the live-document count")
+            }
+            other => panic!("unexpected invalid-df outcome: {other:?}"),
+        }
+        let missing = cert_stats(30, 2.0, Some(("alpha", 30, None)), &LENGTHS);
+        assert!(!certify(&missing, "alpha"));
+        match missing.bm25_score("alpha", 1, 3) {
+            Err(SearchError::CorruptIndex { detail }) => {
+                assert_eq!(detail, "prepared BM25 IDF missing for valid term")
+            }
+            other => panic!("unexpected missing-idf outcome: {other:?}"),
+        }
+        eprintln!(
+            "C3 S01 isolated-df-rows: df=0 idf-present=true refused=true; df=31 idf-present=true refused=true"
+        );
+        eprintln!("C3 S01 completed={} rows", completed.len());
+        eprintln!("C3 F1 S01 rows=24 isolated-df-rows=2");
+    }
+
+    #[test]
+    fn c3_s02_uniform_bound_and_bits() {
+        use std::num::NonZeroU64;
+
+        const LENGTHS: [u64; 3] = [0, 1, u64::MAX];
+        let pairs: [(u64, u64); 4] = [
+            (1, 1),
+            (u64::MAX, 1),
+            (u64::MAX, u64::MAX),
+            (9_007_199_254_740_993, 9_007_199_254_740_992),
+        ];
+        let avgdls = [super::C3_AVGDL_MIN, 1.0, super::C3_AVGDL_MAX];
+        let tfs = [1u64, 9_007_199_254_740_993, u64::MAX];
+        let mut checked = 0usize;
+        for (n, df) in pairs {
+            for avgdl in avgdls {
+                let stats = cert_stats(n, avgdl, Some(("alpha", df, prepare_idf(df, n))), &LENGTHS);
+                let cert = stats
+                    .certify_deferred("alpha")
+                    .unwrap_or_else(|| panic!("must certify n={n} df={df} avgdl={avgdl}"));
+                for tf in tfs {
+                    for (doc_id, &dl) in LENGTHS.iter().enumerate() {
+                        let tf_nonzero = NonZeroU64::new(tf).expect("positive tf");
+                        let got = cert
+                            .score(0, doc_id as u64, tf_nonzero)
+                            .expect("certified score must not fail");
+                        let eager = 0.0_f64
+                            + stats
+                                .bm25_score("alpha", tf, dl)
+                                .expect("prepared eager score");
+                        let scalar = 0.0_f64
+                            + super::bm25(tf, df, n, dl, avgdl).expect("frozen scalar score");
+                        assert!(got.is_finite() && got >= 0.0, "finite nonnegative");
+                        assert_eq!(
+                            got.to_bits(),
+                            eager.to_bits(),
+                            "certificate bits vs prepared eager n={n} df={df} avgdl={avgdl} tf={tf} dl={dl}"
+                        );
+                        assert_eq!(
+                            got.to_bits(),
+                            scalar.to_bits(),
+                            "certificate bits vs frozen scalar n={n} df={df} avgdl={avgdl} tf={tf} dl={dl}"
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 108, "exactly 108 uniform-bound cases");
+
+        // Anomalous but certified-IDF values: the prepared eager bits are the
+        // oracle, never the scalar formula.
+        for (label, idf, expected_zero) in [
+            ("idf=0.0", 0.0f64, true),
+            ("idf=-0.0", -0.0f64, true),
+            ("idf=64.0", 64.0f64, false),
+        ] {
+            let stats = cert_stats(1, 1.0, Some(("alpha", 1, Some(idf))), &LENGTHS);
+            let cert = stats
+                .certify_deferred("alpha")
+                .unwrap_or_else(|| panic!("{label} must certify"));
+            let tf = NonZeroU64::new(1).expect("positive");
+            let got = cert.score(0, 1, tf).expect("certified anomalous idf");
+            let eager = 0.0_f64 + stats.bm25_score("alpha", 1, 1).expect("prepared eager");
+            assert_eq!(got.to_bits(), eager.to_bits(), "{label} prepared bits");
+            if expected_zero {
+                assert_eq!(got.to_bits(), 0.0f64.to_bits(), "{label} is +0.0");
+            } else {
+                assert!(got > 0.0, "{label} is positive");
+            }
+        }
+
+        // The length accessor's documented zero-on-absence behaviour is preserved:
+        // a nonexistent segment/document identity scores exactly like `dl = 0`.
+        let stats = cert_base(&LENGTHS);
+        let cert = stats.certify_deferred("alpha").expect("base cert");
+        let tf = NonZeroU64::new(3).expect("positive");
+        let absent = cert.score(7, 999, tf).expect("absent identity");
+        let dl_zero = 0.0_f64 + stats.bm25_score("alpha", 3, 0).expect("dl=0");
+        assert_eq!(absent.to_bits(), dl_zero.to_bits(), "absent length is dl=0");
+
+        // `bm25` keeps its own early-zero precedence for an invalid df.
+        assert_eq!(
+            super::bm25(0, 99, 5, 2, 4.0)
+                .expect("tf zero wins")
+                .to_bits(),
+            0.0f64.to_bits()
+        );
+
+        eprintln!("C3 S02 checked={checked} uniform-bound cases plus degenerate rows");
     }
 }

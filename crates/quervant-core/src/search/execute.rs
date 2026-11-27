@@ -33,7 +33,7 @@ use super::expand::{Expansion, expand_query};
 use super::limits::SearchLimits;
 use super::phrase::{PhraseMatch, PhraseTermData, match_phrase};
 use super::plan::{CompiledLeaf, CompiledNode, CompiledQuery, PhraseToken};
-use super::score::{SnapshotStats, compute_stats};
+use super::score::{DeferredBm25, SnapshotStats, compute_stats};
 use super::topk::TopKSelector;
 use super::{SearchHit, SearchResponse};
 
@@ -2051,6 +2051,14 @@ pub(crate) mod c2_observation {
         SCORE_FAILURE_DOC.with(Cell::get) == Some(doc_id)
     }
 
+    /// Whether the synthetic C2 score fault is armed at all, without resetting it.
+    ///
+    /// PERF-06-C3 uses this to force the eager C2 route so an armed synthetic
+    /// fault still surfaces exactly at its accepted score checkpoint.
+    pub(crate) fn score_failure_armed() -> bool {
+        SCORE_FAILURE_DOC.with(Cell::get).is_some()
+    }
+
     /// Thread-local RAII arm for the synthetic C2 score fault.
     pub(crate) struct ScoreFailureArm;
 
@@ -2380,7 +2388,7 @@ where
 /// physical `doc_id` order. No second full-M scored vector, score array, second
 /// postings reader or second BM25 implementation exists.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn visit_strict_term_scored_with<F>(
+fn visit_strict_term_payload_with<const DEFERRED: bool, F>(
     reader: &SegmentReader,
     leaves: &[CompiledLeaf],
     expansion: &Expansion,
@@ -2391,10 +2399,11 @@ pub(crate) fn visit_strict_term_scored_with<F>(
     budget: &mut CandidateBudget,
     meter: &mut MixedWorkMeter<'_>,
     cancel: &dyn Cancellation,
-    mut on_scored: F,
+    certificate: Option<&DeferredBm25<'_, '_>>,
+    mut on_payload: F,
 ) -> SearchResult<()>
 where
-    F: FnMut(u64, f64, usize, &mut CandidateBudget) -> SearchResult<()>,
+    F: FnMut(u64, u64, usize, &mut CandidateBudget) -> SearchResult<()>,
 {
     #[cfg(test)]
     c2_observation::record_strict_evaluator_call();
@@ -2466,6 +2475,20 @@ where
         _ => return Err(strict_term_shape_error()),
     };
 
+    // PERF-06-C3: the mode is a compile-time constant, so the certificate is
+    // verified once against the already validated shape boundary, never per
+    // document. A request-wide certificate rejection has already selected eager
+    // C2, so a mismatch here is only private internal misuse.
+    if DEFERRED {
+        let cert = certificate.ok_or_else(strict_term_shape_error)?;
+        let field = stats.field(field_id).ok_or_else(strict_term_shape_error)?;
+        if !cert.matches(field, term) {
+            return Err(strict_term_shape_error());
+        }
+    } else if certificate.is_some() {
+        return Err(strict_term_shape_error());
+    }
+
     let m = u64::try_from(scored_postings.len()).map_err(|_| SearchError::ResourceLimit {
         limit: u64::MAX,
         requested: u64::MAX,
@@ -2478,34 +2501,40 @@ where
     let scored_bytes = bytes_for_count(m, SCORED_MAP_BYTES_PER_ENTRY)?;
     ledger.reserve_with_memory(m, scored_bytes, None)?;
 
-    #[cfg(test)]
-    c2_observation::record_inplace_start(&scored_postings);
-    let field_stats = if positive.contains(&0) {
-        stats.field(field_id)
-    } else {
-        None
-    };
-    // Eager, complete scoring of every matched document, including those that
-    // will lose numeric Top-K. One deliberate `+0.0` accumulation per document
-    // preserves the accepted float grouping and signed-zero behavior.
-    for row in &mut scored_postings {
-        let (doc_id, freq) = *row;
+    // Under the certified `DEFERRED` mode this phase is absent: the decoder already
+    // proved every frequency positive, so the second word stays the raw integer
+    // term frequency and only retained returned hits are scored after heap
+    // selection. The eager statements below are the accepted C2 block verbatim.
+    if !DEFERRED {
         #[cfg(test)]
-        if c2_observation::injected_score_failure(doc_id) {
-            return Err(SearchError::InvalidScore {
-                detail: "injected C2 score failure",
-            });
+        c2_observation::record_inplace_start(&scored_postings);
+        let field_stats = if positive.contains(&0) {
+            stats.field(field_id)
+        } else {
+            None
+        };
+        // Eager, complete scoring of every matched document, including those that
+        // will lose numeric Top-K. One deliberate `+0.0` accumulation per document
+        // preserves the accepted float grouping and signed-zero behavior.
+        for row in &mut scored_postings {
+            let (doc_id, freq) = *row;
+            #[cfg(test)]
+            if c2_observation::injected_score_failure(doc_id) {
+                return Err(SearchError::InvalidScore {
+                    detail: "injected C2 score failure",
+                });
+            }
+            let mut score = 0.0_f64;
+            if let Some(field) = field_stats {
+                let dl = field.length(segment_index, doc_id);
+                let contribution = field.bm25_score(term, freq, dl)?;
+                score += contribution;
+            }
+            row.1 = score.to_bits();
         }
-        let mut score = 0.0_f64;
-        if let Some(field) = field_stats {
-            let dl = field.length(segment_index, doc_id);
-            let contribution = field.bm25_score(term, freq, dl)?;
-            score += contribution;
-        }
-        row.1 = score.to_bits();
+        #[cfg(test)]
+        c2_observation::record_inplace_finish(&scored_postings);
     }
-    #[cfg(test)]
-    c2_observation::record_inplace_finish(&scored_postings);
 
     // The term borrow ends here; discard the now-empty leaf allocation and
     // release the logical charges in the accepted order.
@@ -2520,12 +2549,99 @@ where
         limit: u64::MAX,
         requested: u64::MAX,
     })?;
-    for (doc_id, score_bits) in &scored_postings {
-        on_scored(*doc_id, f64::from_bits(*score_bits), matched_count, budget)?;
+    for (doc_id, word) in &scored_postings {
+        on_payload(*doc_id, *word, matched_count, budget)?;
         #[cfg(test)]
         c2_observation::record_callback();
     }
     Ok(())
+}
+
+/// PERF-06-C2: eager all-match scoring entry point (the accepted default).
+///
+/// This wrapper is byte-equivalent to the pre-C3 executor: it runs the shared
+/// const-generic body in eager mode and hands the caller the decoded score as
+/// `f64`. Every original C2 unit test and the production eager fallback call this.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn visit_strict_term_scored_with<F>(
+    reader: &SegmentReader,
+    leaves: &[CompiledLeaf],
+    expansion: &Expansion,
+    stats: &SnapshotStats<'_>,
+    positive: &BTreeSet<usize>,
+    segment_index: usize,
+    live: &[bool],
+    budget: &mut CandidateBudget,
+    meter: &mut MixedWorkMeter<'_>,
+    cancel: &dyn Cancellation,
+    mut on_scored: F,
+) -> SearchResult<()>
+where
+    F: FnMut(u64, f64, usize, &mut CandidateBudget) -> SearchResult<()>,
+{
+    visit_strict_term_payload_with::<false, _>(
+        reader,
+        leaves,
+        expansion,
+        stats,
+        positive,
+        segment_index,
+        live,
+        budget,
+        meter,
+        cancel,
+        None,
+        |doc_id, bits, matched_count, budget| {
+            on_scored(doc_id, f64::from_bits(bits), matched_count, budget)
+        },
+    )
+}
+
+/// PERF-06-C3: certified deferred-scoring entry point.
+///
+/// Identical decoding, `N` examination, membership polling, logical admissions
+/// and release order as [`visit_strict_term_scored_with`], but the raw positive
+/// integer term frequency is handed to the callback instead of a score. The
+/// caller holds a [`DeferredBm25`] certificate for this exact field/term.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn visit_strict_term_deferred_with<F>(
+    reader: &SegmentReader,
+    leaves: &[CompiledLeaf],
+    expansion: &Expansion,
+    stats: &SnapshotStats<'_>,
+    positive: &BTreeSet<usize>,
+    segment_index: usize,
+    live: &[bool],
+    budget: &mut CandidateBudget,
+    meter: &mut MixedWorkMeter<'_>,
+    cancel: &dyn Cancellation,
+    certificate: &DeferredBm25<'_, '_>,
+    mut on_candidate: F,
+) -> SearchResult<()>
+where
+    F: FnMut(u64, std::num::NonZeroU64, usize, &mut CandidateBudget) -> SearchResult<()>,
+{
+    visit_strict_term_payload_with::<true, _>(
+        reader,
+        leaves,
+        expansion,
+        stats,
+        positive,
+        segment_index,
+        live,
+        budget,
+        meter,
+        cancel,
+        Some(certificate),
+        |doc_id, tf, matched_count, budget| {
+            // Defensive only: the sole producer is the full decoder, which already
+            // rejects a zero frequency before any callback.
+            let tf = std::num::NonZeroU64::new(tf).ok_or(SearchError::Segment(
+                crate::segment::SegmentError::ZeroFrequency { doc_id },
+            ))?;
+            on_candidate(doc_id, tf, matched_count, budget)
+        },
+    )
 }
 
 /// The established C2 runtime-shape failure. Never a fallback and never a panic.
@@ -3199,6 +3315,262 @@ mod c2_physical_tests {
             assert_eq!(budget.segment_bytes, 0);
             assert_eq!(budget.global_bytes, 0);
         }
+    }
+
+    /// PERF-06-C3 P01: the deferred visitor is the same validated decoder, `N`
+    /// examination, membership poll, logical admissions and release sequence as
+    /// the eager one, but it hands the caller the raw positive integer frequency
+    /// and invokes no scorer at all.
+    #[test]
+    fn c3_p01_deferred_decode_and_ledger() {
+        use crate::search::score::c3_score_observation;
+
+        let (_index, snapshot) = index(20);
+        let guard = snapshot.open_segment_reader(0).expect("guard");
+        let reader = guard.reader();
+        let mut live = vec![true; reader.doc_count() as usize];
+        for (position, flag) in live.iter_mut().enumerate() {
+            if position % 3 == 0 {
+                *flag = false;
+            }
+        }
+        let expected_live: Vec<u64> = vec![1, 2, 4, 5, 7, 8, 10, 11, 13, 14, 16, 17, 19];
+        let live_rows: Vec<Rc<Vec<bool>>> = vec![Rc::new(live.clone())];
+        let readers = [reader];
+        let inputs = strict_inputs(&readers, &live_rows[0]);
+        let field_id = reader.schema().field_id("grp").expect("field");
+        let cert = inputs
+            .stats
+            .field(field_id)
+            .expect("grp stats")
+            .certify_deferred("common")
+            .expect("the 13-live-doc /grp/common fixture is certifiable");
+
+        struct Row {
+            total: u64,
+            scanned: u64,
+            failure: Option<(u64, u64)>,
+            callbacks: usize,
+            meter_total: u64,
+        }
+        let rows = [
+            Row {
+                total: u64::MAX,
+                scanned: 10,
+                failure: Some((10, 11)),
+                callbacks: 0,
+                meter_total: 20,
+            },
+            Row {
+                total: u64::MAX,
+                scanned: 19,
+                failure: Some((19, 20)),
+                callbacks: 0,
+                meter_total: 38,
+            },
+            Row {
+                total: u64::MAX,
+                scanned: 20,
+                failure: None,
+                callbacks: 13,
+                meter_total: 53,
+            },
+            Row {
+                total: u64::MAX,
+                scanned: 21,
+                failure: None,
+                callbacks: 13,
+                meter_total: 53,
+            },
+            Row {
+                total: 52,
+                scanned: 20,
+                failure: Some((52, 53)),
+                callbacks: 0,
+                meter_total: 40,
+            },
+            Row {
+                total: 53,
+                scanned: 20,
+                failure: None,
+                callbacks: 13,
+                meter_total: 53,
+            },
+        ];
+
+        let mut completed = 0usize;
+        for row in rows {
+            let mut budget = make_budget();
+            let mut meter = MixedWorkMeter::new(row.total, u64::MAX, row.scanned, &NeverCancel);
+            let mut observed: Vec<u64> = Vec::new();
+            c2_observation::reset();
+            c3_score_observation::reset();
+            let result = visit_strict_term_deferred_with(
+                reader,
+                &inputs.leaves,
+                &inputs.expansion,
+                &inputs.stats,
+                &inputs.positive,
+                0,
+                &live,
+                &mut budget,
+                &mut meter,
+                &NeverCancel,
+                &cert,
+                |doc_id, tf, matched, _| {
+                    assert_eq!(tf.get(), 1, "raw positive frequency is preserved");
+                    assert_eq!(matched, 13, "matched count is the live count");
+                    observed.push(doc_id);
+                    Ok(())
+                },
+            );
+            assert_eq!(
+                meter.total_used(),
+                row.meter_total,
+                "total work for total={} scanned={}",
+                row.total,
+                row.scanned
+            );
+            assert_eq!(
+                observed.len(),
+                row.callbacks,
+                "completed callbacks for total={} scanned={}",
+                row.total,
+                row.scanned
+            );
+            assert_eq!(
+                c3_score_observation::calls(),
+                0,
+                "deferred mode never scores"
+            );
+            assert_eq!(
+                c2_observation::converted_rows(),
+                0,
+                "no in-place frequency -> score rewrite happened"
+            );
+            match row.failure {
+                Some((limit, requested)) => {
+                    let error = result.expect_err("this row must be rejected");
+                    match error {
+                        SearchError::ResourceLimit {
+                            limit: got_limit,
+                            requested: got_requested,
+                        } => assert_eq!(
+                            (got_limit, got_requested),
+                            (limit, requested),
+                            "exact resource payload"
+                        ),
+                        other => {
+                            panic!("expected ResourceLimit {{{limit}, {requested}}}, got {other:?}")
+                        }
+                    }
+                }
+                None => {
+                    result.expect("this row must succeed");
+                    assert_eq!(observed, expected_live, "exact live doc-id order");
+                }
+            }
+            assert_eq!(budget.segment_entries, 0, "segment entries released");
+            assert_eq!(budget.segment_bytes, 0, "segment bytes released");
+            assert_eq!(budget.global_bytes, 0, "global bytes released");
+            eprintln!(
+                "C3 P01: total={} scanned={} failure={:?} callbacks={} work={}",
+                row.total, row.scanned, row.failure, row.callbacks, row.meter_total
+            );
+
+            // A rejected admission leaves the same budget reusable; the recovery
+            // run also never scores.
+            let mut recovery = make_meter_with(53, 20);
+            let mut recovered: Vec<u64> = Vec::new();
+            c3_score_observation::reset();
+            visit_strict_term_deferred_with(
+                reader,
+                &inputs.leaves,
+                &inputs.expansion,
+                &inputs.stats,
+                &inputs.positive,
+                0,
+                &live,
+                &mut budget,
+                &mut recovery,
+                &NeverCancel,
+                &cert,
+                |doc_id, tf, _, _| {
+                    assert_eq!(tf.get(), 1);
+                    recovered.push(doc_id);
+                    Ok(())
+                },
+            )
+            .expect("the same budget admits the recovery run");
+            assert_eq!(recovered, expected_live, "recovery doc-id order");
+            assert_eq!(recovery.total_used(), 53, "recovery work");
+            assert_eq!(c3_score_observation::calls(), 0, "recovery never scores");
+            assert_eq!(budget.segment_entries, 0);
+            assert_eq!(budget.segment_bytes, 0);
+            assert_eq!(budget.global_bytes, 0);
+            completed += 1;
+        }
+        assert_eq!(completed, 6, "six deferred ledger rows completed");
+
+        // Internal misuse guard: a certificate issued for a *different* prepared
+        // statistics object must fail closed before any callback, and the same
+        // budget must still admit a correct retry.
+        let other_inputs = strict_inputs(&readers, &live_rows[0]);
+        let other_cert = other_inputs
+            .stats
+            .field(field_id)
+            .expect("second grp stats")
+            .certify_deferred("common")
+            .expect("second stats are also certifiable");
+        let mut budget = make_budget();
+        let mut meter = make_meter();
+        c3_score_observation::reset();
+        let error = visit_strict_term_deferred_with(
+            reader,
+            &inputs.leaves,
+            &inputs.expansion,
+            &inputs.stats,
+            &inputs.positive,
+            0,
+            &live,
+            &mut budget,
+            &mut meter,
+            &NeverCancel,
+            &other_cert,
+            |_, _, _, _| panic!("no callback for a foreign certificate"),
+        )
+        .expect_err("a certificate for another stats object must be rejected");
+        assert!(
+            matches!(error, SearchError::CorruptIndex { ref detail } if detail == "single-term postings eligibility mismatch"),
+            "{error:?}"
+        );
+        assert_eq!(c3_score_observation::calls(), 0);
+        assert_eq!(budget.segment_entries, 0, "entries released on misuse");
+        assert_eq!(budget.segment_bytes, 0, "bytes released on misuse");
+        assert_eq!(budget.global_bytes, 0, "global bytes released on misuse");
+        let mut recovered: Vec<u64> = Vec::new();
+        visit_strict_term_deferred_with(
+            reader,
+            &inputs.leaves,
+            &inputs.expansion,
+            &inputs.stats,
+            &inputs.positive,
+            0,
+            &live,
+            &mut budget,
+            &mut meter,
+            &NeverCancel,
+            &cert,
+            |doc_id, tf, _, _| {
+                assert_eq!(tf.get(), 1);
+                recovered.push(doc_id);
+                Ok(())
+            },
+        )
+        .expect("the same budget and the correct certificate recover");
+        assert_eq!(recovered, expected_live, "recovery after misuse guard");
+        assert_eq!(c3_score_observation::calls(), 0, "recovery never scores");
+        eprintln!("C3 P01 misuse-guard=ok recovery=ok rows={completed}");
     }
 
     fn make_meter_with(total: u64, scanned: u64) -> MixedWorkMeter<'static> {

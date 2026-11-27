@@ -1,0 +1,1223 @@
+{
+  "receipts": [
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::score::tests::c3_s01_certificate_matrix",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        },
+        "kind": "exact",
+        "name": "search::score::tests::c3_s01_certificate_matrix",
+        "required_text": [
+          "C3 F1 S01 rows=24 isolated-df-rows=2"
+        ]
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_s01",
+      "path": "final/f2_fin_s01.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c3_u02_dispatch_and_count_matrix",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        },
+        "kind": "exact",
+        "name": "search::unified::c2_tests::c3_u02_dispatch_and_count_matrix",
+        "required_text": [
+          "C3 F1 U02 matrix-rows=25 certified=5 legacy=20 split-c3=10 ineligible-result-rows=6",
+          "C3 F2 U02 plain-batch aggregation=none normal+legacy"
+        ]
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_u02",
+      "path": "final/f2_fin_u02.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c3_u04_corruption_precedence",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        },
+        "kind": "exact",
+        "name": "search::unified::c2_tests::c3_u04_corruption_precedence",
+        "required_text": [
+          "C3 F1 U04 rows=9 isolated-C29=true unarmed-synthetic-snapshot=C3"
+        ]
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_u04",
+      "path": "final/f2_fin_u04.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c3_u05_native_later_segment_boundary",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        },
+        "kind": "exact",
+        "name": "search::unified::c2_tests::c3_u05_native_later_segment_boundary",
+        "required_text": [
+          "C3 F1 U05 rows=4 recoveries=4 literal-reference-errors=3"
+        ]
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_u05",
+      "path": "final/f2_fin_u05.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c3_u09_logical_budget_edges",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        },
+        "kind": "exact",
+        "name": "search::unified::c2_tests::c3_u09_logical_budget_edges",
+        "required_text": [
+          "C3 F1 U09 rows=12 failed-rows=7 recoveries=7 fixed-projection-failure=13056/13160/100"
+        ]
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_u09",
+      "path": "final/f2_fin_u09.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "perf06_c2_physical",
+        "c3_i02_real_pit_update_merge_and_paging",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        },
+        "kind": "exact",
+        "name": "c3_i02_real_pit_update_merge_and_paging",
+        "required_text": [
+          "C3 F1 I02 phases=5 checked-hits=198 old-pages=14 new-pages=13"
+        ]
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_i02",
+      "path": "final/f2_fin_i02.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c2_u",
+        "--",
+        "--list",
+        "--format",
+        "terse"
+      ],
+      "check": {
+        "kind": "inventory",
+        "names": [
+          "search::unified::c2_tests::c2_u01_static_dispatch_matrix",
+          "search::unified::c2_tests::c2_u02_cardinality_boundary",
+          "search::unified::c2_tests::c2_u03_validation_precedence",
+          "search::unified::c2_tests::c2_u04_runtime_shape_and_decoder",
+          "search::unified::c2_tests::c2_u05_n_work_and_scanned_freq",
+          "search::unified::c2_tests::c2_u06_exact_total_hits",
+          "search::unified::c2_tests::c2_u07_late_score_error_beats_key_error",
+          "search::unified::c2_tests::c2_u08_score_bit_parity",
+          "search::unified::c2_tests::c2_u09_inplace_allocation_identity",
+          "search::unified::c2_tests::c2_u10_virtual_ledger_exact_boundaries",
+          "search::unified::c2_tests::c2_u11_preflight_atomic_and_raii",
+          "search::unified::c2_tests::c2_u12_corrupt_selected_unselected_and_multi_fault",
+          "search::unified::c2_tests::c2_u13_cancellation_progress",
+          "search::unified::c2_tests::c2_u14_numeric_rank_null_missing_multione",
+          "search::unified::c2_tests::c2_u15_duplicate_collision_and_loser",
+          "search::unified::c2_tests::c2_u16_cursor_sentinel_and_legacy_continuation",
+          "search::unified::c2_tests::c2_u17_ordinal_unavailable_and_b3_refusal",
+          "search::unified::c2_tests::c2_u18_pit_mutation_and_mixed_segments",
+          "search::unified::c2_tests::c2_u19_sibling_paths_untouched",
+          "search::unified::c2_tests::c2_u20_generic_hot_loop_isolation",
+          "search::unified::c2_tests::c2_u21_work_budget_exhaustion_after_prior_segment",
+          "search::unified::c2_tests::c2_u22_seeded_differential_matrix",
+          "search::unified::c2_tests::c2_u23_b1_b2_b3_reuse_witness",
+          "search::unified::c2_tests::c2_u24_zero_effect_and_error_repetition"
+        ]
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_list_c2u",
+      "path": "final/f2_fin_list_c2u.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::execute::c2_physical_tests::c2_p",
+        "--",
+        "--list",
+        "--format",
+        "terse"
+      ],
+      "check": {
+        "kind": "inventory",
+        "names": [
+          "search::execute::c2_physical_tests::c2_p01_shape_mismatch_fails_closed",
+          "search::execute::c2_physical_tests::c2_p02_inplace_reuse_and_callback_order",
+          "search::execute::c2_physical_tests::c2_p03_corrupt_postings_precede_every_callback",
+          "search::execute::c2_physical_tests::c2_p04_late_score_fault_precedes_corrupt_doc_keys",
+          "search::execute::c2_physical_tests::c2_p05_n_examination_and_scanned_frequency"
+        ]
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_list_c2p",
+      "path": "final/f2_fin_list_c2p.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "c2_",
+        "--",
+        "--list",
+        "--format",
+        "terse"
+      ],
+      "check": {
+        "kind": "inventory",
+        "names": [
+          "search::execute::budget_tests::c2_cancel_phrase_cleanup",
+          "search::execute::budget_tests::c2_local_reject_no_batch_change",
+          "search::execute::budget_tests::c2_phrase_scratch_exact_and_one_over",
+          "search::execute::budget_tests::c2_postings_exact_and_one_over",
+          "search::execute::budget_tests::c2_release_underflow_no_mutation",
+          "search::execute::budget_tests::c2_scored_map_exact_and_one_over",
+          "search::execute::budget_tests::c2_segment_exact_and_one_over_atomic",
+          "search::execute::budget_tests::c2_standalone_none_parity",
+          "search::execute::budget_tests::c2_two_segment_reuse_single_scope",
+          "search::execute::c2_physical_tests::c2_p01_shape_mismatch_fails_closed",
+          "search::execute::c2_physical_tests::c2_p02_inplace_reuse_and_callback_order",
+          "search::execute::c2_physical_tests::c2_p03_corrupt_postings_precede_every_callback",
+          "search::execute::c2_physical_tests::c2_p04_late_score_fault_precedes_corrupt_doc_keys",
+          "search::execute::c2_physical_tests::c2_p05_n_examination_and_scanned_frequency",
+          "search::execute::c2_physical_tests::c3_p01_deferred_decode_and_ledger",
+          "search::memory::tests::c2_memory_preflight_release_balances",
+          "search::unified::c2_tests::c2_u01_static_dispatch_matrix",
+          "search::unified::c2_tests::c2_u02_cardinality_boundary",
+          "search::unified::c2_tests::c2_u03_validation_precedence",
+          "search::unified::c2_tests::c2_u04_runtime_shape_and_decoder",
+          "search::unified::c2_tests::c2_u05_n_work_and_scanned_freq",
+          "search::unified::c2_tests::c2_u06_exact_total_hits",
+          "search::unified::c2_tests::c2_u07_late_score_error_beats_key_error",
+          "search::unified::c2_tests::c2_u08_score_bit_parity",
+          "search::unified::c2_tests::c2_u09_inplace_allocation_identity",
+          "search::unified::c2_tests::c2_u10_virtual_ledger_exact_boundaries",
+          "search::unified::c2_tests::c2_u11_preflight_atomic_and_raii",
+          "search::unified::c2_tests::c2_u12_corrupt_selected_unselected_and_multi_fault",
+          "search::unified::c2_tests::c2_u13_cancellation_progress",
+          "search::unified::c2_tests::c2_u14_numeric_rank_null_missing_multione",
+          "search::unified::c2_tests::c2_u15_duplicate_collision_and_loser",
+          "search::unified::c2_tests::c2_u16_cursor_sentinel_and_legacy_continuation",
+          "search::unified::c2_tests::c2_u17_ordinal_unavailable_and_b3_refusal",
+          "search::unified::c2_tests::c2_u18_pit_mutation_and_mixed_segments",
+          "search::unified::c2_tests::c2_u19_sibling_paths_untouched",
+          "search::unified::c2_tests::c2_u20_generic_hot_loop_isolation",
+          "search::unified::c2_tests::c2_u21_work_budget_exhaustion_after_prior_segment",
+          "search::unified::c2_tests::c2_u22_seeded_differential_matrix",
+          "search::unified::c2_tests::c2_u23_b1_b2_b3_reuse_witness",
+          "search::unified::c2_tests::c2_u24_zero_effect_and_error_repetition",
+          "search::unified::c2_tests::c3_u01_winner_score_count",
+          "search::unified::c2_tests::c3_u02_dispatch_and_count_matrix",
+          "search::unified::c2_tests::c3_u03_uncertified_stats_eager_precedence",
+          "search::unified::c2_tests::c3_u04_corruption_precedence",
+          "search::unified::c2_tests::c3_u05_native_later_segment_boundary",
+          "search::unified::c2_tests::c3_u06_b3_refusal_matrix",
+          "search::unified::c2_tests::c3_u07_replacement_and_final_identity",
+          "search::unified::c2_tests::c3_u08_rank_ties_and_null_order",
+          "search::unified::c2_tests::c3_u09_logical_budget_edges",
+          "search::unified::c2_tests::c3_u10_cancel_poll_parity",
+          "search::unified::c2_tests::c3_u11_seeded_final_scores",
+          "search::unified::c2_tests::c3_u12_private_representation"
+        ]
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_list_c2_broad",
+      "path": "final/f2_fin_list_c2_broad.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "c3_",
+        "--",
+        "--list",
+        "--format",
+        "terse"
+      ],
+      "check": {
+        "kind": "inventory",
+        "names": [
+          "search::execute::c2_physical_tests::c3_p01_deferred_decode_and_ledger",
+          "search::score::tests::c3_s01_certificate_matrix",
+          "search::score::tests::c3_s02_uniform_bound_and_bits",
+          "search::unified::b3_tests::c3_u13_collision_with_deferred_frequency",
+          "search::unified::b3_tests::c3_u14_multione_deferred_scores",
+          "search::unified::c2_tests::c3_u01_winner_score_count",
+          "search::unified::c2_tests::c3_u02_dispatch_and_count_matrix",
+          "search::unified::c2_tests::c3_u03_uncertified_stats_eager_precedence",
+          "search::unified::c2_tests::c3_u04_corruption_precedence",
+          "search::unified::c2_tests::c3_u05_native_later_segment_boundary",
+          "search::unified::c2_tests::c3_u06_b3_refusal_matrix",
+          "search::unified::c2_tests::c3_u07_replacement_and_final_identity",
+          "search::unified::c2_tests::c3_u08_rank_ties_and_null_order",
+          "search::unified::c2_tests::c3_u09_logical_budget_edges",
+          "search::unified::c2_tests::c3_u10_cancel_poll_parity",
+          "search::unified::c2_tests::c3_u11_seeded_final_scores",
+          "search::unified::c2_tests::c3_u12_private_representation",
+          "search::unified::tests::c3_insert_exact_one_over_atomic",
+          "search::unified::tests::c3_path_batch_parity_and_memory_reject",
+          "search::unified::tests::c3_path_failed_then_success",
+          "search::unified::tests::c3_path_heap_exact_one_over",
+          "search::unified::tests::c3_path_larger_replacement",
+          "search::unified::tests::c3_path_noncompetitive_zero_charge",
+          "search::unified::tests::c3_path_smaller_replacement",
+          "search::unified::tests::c3_replacement_overlap_peak",
+          "search::unified::tests::c3_replacement_reject_atomic"
+        ]
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_list_c3",
+      "path": "final/f2_fin_list_c3.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "perf06_c2_physical",
+        "--",
+        "--list",
+        "--format",
+        "terse"
+      ],
+      "check": {
+        "kind": "inventory",
+        "names": [
+          "c2_i01_i10_b4_formula_exact_term_lanes",
+          "c2_i02_scores_full_projection_and_reverse_sort",
+          "c2_i03_pit_update_delete_merge_reopen",
+          "c2_i04_duplicates_and_optional_fallback",
+          "c2_i05_real_cursor_multi_page",
+          "c2_i06_corrupt_container_and_legacy_errors",
+          "c2_i07_batch_aggregate_and_unsupported_shapes",
+          "c2_i08_resource_cancellation_atomicity",
+          "c2_i09_empty_and_sparse_physical_segments",
+          "c3_i01_real_scores_and_explicit_cursor",
+          "c3_i02_real_pit_update_merge_and_paging",
+          "c3_i03_real_resource_and_cancellation_edges"
+        ]
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_list_integration",
+      "path": "final/f2_fin_list_integration.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "perf06_b1_ordinals"
+      ],
+      "check": {
+        "bench_smoke": {},
+        "expected": {
+          "failed": 0,
+          "ignored": 2,
+          "passed": 9
+        },
+        "kind": "workspace",
+        "targets": 1
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_b1_int",
+      "path": "final/f2_fin_suite_b1_int.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "b1_"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 65
+        },
+        "kind": "summary"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_b1_lib",
+      "path": "final/f2_fin_suite_b1_lib.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "perf06_b2_ordinals"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 8
+        },
+        "kind": "summary"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_b2_int",
+      "path": "final/f2_fin_suite_b2_int.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "b2_"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 31
+        },
+        "kind": "summary"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_b2_lib",
+      "path": "final/f2_fin_suite_b2_lib.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "perf06_b3_keys"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 8
+        },
+        "kind": "summary"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_b3_int",
+      "path": "final/f2_fin_suite_b3_int.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "b3_"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 32
+        },
+        "kind": "summary"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_b3_lib",
+      "path": "final/f2_fin_suite_b3_lib.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::execute::c2_physical_tests::c2_p",
+        "--",
+        "--test-threads=1"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 5
+        },
+        "kind": "summary"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_c2p_t1",
+      "path": "final/f2_fin_suite_c2p_t1.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::execute::c2_physical_tests::c2_p",
+        "--",
+        "--test-threads=8"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 5
+        },
+        "kind": "summary"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_c2p_t8",
+      "path": "final/f2_fin_suite_c2p_t8.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c2_u",
+        "--",
+        "--test-threads=1"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 24
+        },
+        "kind": "summary"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_c2u_t1",
+      "path": "final/f2_fin_suite_c2u_t1.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c2_u",
+        "--",
+        "--test-threads=8"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 24
+        },
+        "kind": "summary"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_c2u_t8",
+      "path": "final/f2_fin_suite_c2u_t8.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.85.0",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "--all-features",
+        "c3_",
+        "--",
+        "--test-threads=8"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 26
+        },
+        "kind": "summary"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_c3_msrv_af",
+      "path": "final/f2_fin_suite_c3_msrv_af.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "c3_",
+        "--",
+        "--test-threads=1"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 26
+        },
+        "kind": "summary"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_c3_t1",
+      "path": "final/f2_fin_suite_c3_t1.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "c3_",
+        "--",
+        "--test-threads=8"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 26
+        },
+        "kind": "summary"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_c3_t8",
+      "path": "final/f2_fin_suite_c3_t8.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "perf06_c2_physical",
+        "--",
+        "--test-threads=1"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 12
+        },
+        "kind": "summary"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_integration",
+      "path": "final/f2_fin_suite_integration.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "pr15h_a_candidate_materialization"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 6
+        },
+        "kind": "summary"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_pr15h_a",
+      "path": "final/f2_fin_suite_pr15h_a.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "pr15h_a2_dispatch"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 8
+        },
+        "kind": "summary"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_pr15h_a2",
+      "path": "final/f2_fin_suite_pr15h_a2.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "segment::reader::stored_blocks_reader_tests::",
+        "--",
+        "--test-threads=8"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 9
+        },
+        "kind": "summary"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_reader",
+      "path": "final/f2_fin_suite_reader.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::score::tests::",
+        "--",
+        "--test-threads=1"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 19
+        },
+        "kind": "summary"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_fin_suite_score",
+      "path": "final/f2_fin_suite_score.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "bench",
+        "--workspace",
+        "--no-run"
+      ],
+      "check": {
+        "kind": "plain"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_qa_bench_norun",
+      "path": "final/f2_qa_bench_norun.json"
+    },
+    {
+      "argv": [
+        "bash",
+        "benchmarks/scripts/test-scripts.sh"
+      ],
+      "check": {
+        "kind": "plain",
+        "required_text": [
+          "script tests: 108 passed, 0 failed"
+        ]
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_qa_bench_scripts",
+      "path": "final/f2_qa_bench_scripts.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.85.0",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "check": {
+        "kind": "plain"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_qa_clippy_185",
+      "path": "final/f2_qa_clippy_185.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.85.0",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "check": {
+        "kind": "plain"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_qa_clippy_185_af",
+      "path": "final/f2_qa_clippy_185_af.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "check": {
+        "kind": "plain"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_qa_clippy_198",
+      "path": "final/f2_qa_clippy_198.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "check": {
+        "kind": "plain"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_qa_clippy_198_af",
+      "path": "final/f2_qa_clippy_198_af.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "llvm-cov",
+        "--workspace",
+        "--all-targets",
+        "--fail-under-lines",
+        "85"
+      ],
+      "check": {
+        "kind": "coverage"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_qa_cov_198",
+      "path": "final/f2_qa_cov_198.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "llvm-cov",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--fail-under-lines",
+        "85"
+      ],
+      "check": {
+        "kind": "coverage"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_qa_cov_198_af",
+      "path": "final/f2_qa_cov_198_af.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "doc",
+        "--workspace",
+        "--no-deps"
+      ],
+      "check": {
+        "kind": "plain"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_qa_doc_198",
+      "path": "final/f2_qa_doc_198.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "doc",
+        "--workspace",
+        "--all-features",
+        "--no-deps"
+      ],
+      "check": {
+        "kind": "plain"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_qa_doc_198_af",
+      "path": "final/f2_qa_doc_198_af.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.85.0",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "check": {
+        "empty": true,
+        "kind": "plain"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_qa_fmt_185",
+      "path": "final/f2_qa_fmt_185.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "check": {
+        "empty": true,
+        "kind": "plain"
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_qa_fmt_198",
+      "path": "final/f2_qa_fmt_198.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.85.0",
+        "test",
+        "--workspace",
+        "--all-targets"
+      ],
+      "check": {
+        "bench_smoke": {
+          "benches/bm25.rs": 1,
+          "benches/dictionary.rs": 6,
+          "benches/geo.rs": 2,
+          "benches/merge.rs": 3,
+          "benches/phrase.rs": 6,
+          "benches/postings.rs": 3,
+          "benches/search.rs": 18,
+          "benches/typed_analytics.rs": 3,
+          "benches/unified_diagnostics.rs": 30,
+          "benches/writer_mutation.rs": 2
+        },
+        "expected": {
+          "failed": 0,
+          "ignored": 16,
+          "passed": 2749
+        },
+        "kind": "workspace",
+        "targets": 146
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_qa_test_185",
+      "path": "final/f2_qa_test_185.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.85.0",
+        "test",
+        "--workspace",
+        "--all-targets",
+        "--all-features"
+      ],
+      "check": {
+        "bench_smoke": {
+          "benches/bm25.rs": 1,
+          "benches/dictionary.rs": 6,
+          "benches/geo.rs": 2,
+          "benches/merge.rs": 3,
+          "benches/phrase.rs": 6,
+          "benches/postings.rs": 3,
+          "benches/search.rs": 18,
+          "benches/typed_analytics.rs": 3,
+          "benches/unified_diagnostics.rs": 30,
+          "benches/writer_mutation.rs": 2
+        },
+        "expected": {
+          "failed": 0,
+          "ignored": 100,
+          "passed": 2794
+        },
+        "kind": "workspace",
+        "targets": 146
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_qa_test_185_af",
+      "path": "final/f2_qa_test_185_af.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "--workspace",
+        "--all-targets"
+      ],
+      "check": {
+        "bench_smoke": {
+          "benches/bm25.rs": 1,
+          "benches/dictionary.rs": 6,
+          "benches/geo.rs": 2,
+          "benches/merge.rs": 3,
+          "benches/phrase.rs": 6,
+          "benches/postings.rs": 3,
+          "benches/search.rs": 18,
+          "benches/typed_analytics.rs": 3,
+          "benches/unified_diagnostics.rs": 30,
+          "benches/writer_mutation.rs": 2
+        },
+        "expected": {
+          "failed": 0,
+          "ignored": 16,
+          "passed": 2749
+        },
+        "kind": "workspace",
+        "targets": 146
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_qa_test_198",
+      "path": "final/f2_qa_test_198.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "--workspace",
+        "--all-targets",
+        "--all-features"
+      ],
+      "check": {
+        "bench_smoke": {
+          "benches/bm25.rs": 1,
+          "benches/dictionary.rs": 6,
+          "benches/geo.rs": 2,
+          "benches/merge.rs": 3,
+          "benches/phrase.rs": 6,
+          "benches/postings.rs": 3,
+          "benches/search.rs": 18,
+          "benches/typed_analytics.rs": 3,
+          "benches/unified_diagnostics.rs": 30,
+          "benches/writer_mutation.rs": 2
+        },
+        "expected": {
+          "failed": 0,
+          "ignored": 100,
+          "passed": 2794
+        },
+        "kind": "workspace",
+        "targets": 146
+      },
+      "classification": "PASS",
+      "commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+      "label": "f2_qa_test_198_af",
+      "path": "final/f2_qa_test_198_af.json"
+    }
+  ],
+  "schema": "quervant-perf06-c3-f1-receipt-contract-v1"
+}

@@ -1,0 +1,39 @@
+{
+  "after": {
+    "head": "8f82f8290f838547dfc7d490f44ba8c0c8798d24",
+    "index_tree": "d22e2da175cb627a5e81b88905290d2a13958c11",
+    "tracked_status_b64": "",
+    "tree": "d22e2da175cb627a5e81b88905290d2a13958c11"
+  },
+  "argv": [
+    "cargo",
+    "+1.98.1",
+    "clippy",
+    "--workspace",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "before": {
+    "head": "8f82f8290f838547dfc7d490f44ba8c0c8798d24",
+    "index_tree": "d22e2da175cb627a5e81b88905290d2a13958c11",
+    "tracked_status_b64": "",
+    "tree": "d22e2da175cb627a5e81b88905290d2a13958c11"
+  },
+  "combined_output_base64": "ICAgIEZpbmlzaGVkIGBkZXZgIHByb2ZpbGUgW3Vub3B0aW1pemVkICsgZGVidWdpbmZvXSB0YXJnZXQocykgaW4gMC4xMnMK",
+  "combined_output_sha256": "22e0df986057b9ba5be07526ac5fb348862a3dedef42108383cc3e088acbb889",
+  "combined_output_size": 72,
+  "command_exit_code": 0,
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "ended_utc": "2026-11-27T04:01:05.644351+00:00",
+  "expected_commit": "8f82f8290f838547dfc7d490f44ba8c0c8798d24",
+  "label": "f1_qa_clippy_198",
+  "removed_env_names": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE"
+  ],
+  "schema": "quervant-perf06-c3-receipt-v1",
+  "source_identity_valid": true,
+  "started_utc": "2026-11-27T04:01:05.467366+00:00"
+}

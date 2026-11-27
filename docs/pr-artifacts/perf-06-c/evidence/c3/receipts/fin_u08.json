@@ -1,0 +1,42 @@
+{
+  "after": {
+    "head": "6ea6b7ce049d613a29864f1eae53dea5fd61e75f",
+    "index_tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af",
+    "tracked_status_b64": "",
+    "tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af"
+  },
+  "argv": [
+    "cargo",
+    "+1.98.1",
+    "test",
+    "-p",
+    "quervant-core",
+    "--lib",
+    "search::unified::c2_tests::c3_u08_rank_ties_and_null_order",
+    "--",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "before": {
+    "head": "6ea6b7ce049d613a29864f1eae53dea5fd61e75f",
+    "index_tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af",
+    "tracked_status_b64": "",
+    "tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af"
+  },
+  "combined_output_base64": "ICAgIEZpbmlzaGVkIGB0ZXN0YCBwcm9maWxlIFt1bm9wdGltaXplZCArIGRlYnVnaW5mb10gdGFyZ2V0KHMpIGluIDAuMDdzCiAgICAgUnVubmluZyB1bml0dGVzdHMgc3JjL2xpYi5ycyAodGFyZ2V0L2RlYnVnL2RlcHMvcXVlcnZhbnRfY29yZS00YmNlMDVkZWU0ZTRmZWQ0KQoKcnVubmluZyAxIHRlc3QKdGVzdCBzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjM191MDhfcmFua190aWVzX2FuZF9udWxsX29yZGVyIC4uLiBDMyBVMDggQXNjL0ZpcnN0OiBpbmRpY2VzPVsxLCAzLCAyXSBibTI1PTMKQzMgVTA4IERlc2MvRmlyc3Q6IGluZGljZXM9WzEsIDMsIDVdIGJtMjU9MwpDMyBVMDggQXNjL0xhc3Q6IGluZGljZXM9WzIsIDYsIDBdIGJtMjU9MwpDMyBVMDggRGVzYy9MYXN0OiBpbmRpY2VzPVs1LCAwLCA0XSBibTI1PTMKQzMgVTA4IHJvd3M9NApvawoKdGVzdCByZXN1bHQ6IG9rLiAxIHBhc3NlZDsgMCBmYWlsZWQ7IDAgaWdub3JlZDsgMCBtZWFzdXJlZDsgMTIxOCBmaWx0ZXJlZCBvdXQ7IGZpbmlzaGVkIGluIDAuMDFzCgo=",
+  "combined_output_sha256": "99ea2f2725bee662af0eed7d3d83adaffab8977115f56f9380d7adc4a8ccb358",
+  "combined_output_size": 530,
+  "command_exit_code": 0,
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "ended_utc": "2026-11-27T00:59:53.757416+00:00",
+  "expected_commit": "6ea6b7ce049d613a29864f1eae53dea5fd61e75f",
+  "label": "fin_u08",
+  "removed_env_names": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE"
+  ],
+  "schema": "quervant-perf06-c3-receipt-v1",
+  "source_identity_valid": true,
+  "started_utc": "2026-11-27T00:59:53.656626+00:00"
+}

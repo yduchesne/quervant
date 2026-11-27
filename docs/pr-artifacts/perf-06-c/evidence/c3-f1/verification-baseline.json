@@ -1,0 +1,184 @@
+{
+  "contract_sha256": "f2da2e3bba4c188052fd48d42a46f0ce9392b58f9976189159baead2d664f05c",
+  "receipt_count": 6,
+  "receipts": [
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::score::tests::c3_s01_certificate_matrix",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "failed": 0,
+        "filtered": 1218,
+        "ignored": 0,
+        "passed": 1,
+        "status": "ok"
+      },
+      "classification": "BASELINE",
+      "commit": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+      "label": "base_s01",
+      "output_sha256": "138f5615972bdf843614a5fc36827707ccb8e2b63da58a932057dc18f9c6f04d",
+      "output_size": 358,
+      "path": "baseline/base_s01.json",
+      "receipt_sha256": "4871906074eaf74686f6eb71894fd680d496ca5651adb4ea13c8ed35564fb6d0"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c3_u02_dispatch_and_count_matrix",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "failed": 0,
+        "filtered": 1218,
+        "ignored": 0,
+        "passed": 1,
+        "status": "ok"
+      },
+      "classification": "BASELINE",
+      "commit": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+      "label": "base_u02",
+      "output_sha256": "f048dca40623750759240a1878d08d45f58a224ad76dbbd8ae6ae42c6e462f96",
+      "output_size": 459,
+      "path": "baseline/base_u02.json",
+      "receipt_sha256": "960416ea53a71e3b56bdb9e1caea7e9257c1e62a3e2f12832fc8185096d0c99b"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c3_u04_corruption_precedence",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "failed": 0,
+        "filtered": 1218,
+        "ignored": 0,
+        "passed": 1,
+        "status": "ok"
+      },
+      "classification": "BASELINE",
+      "commit": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+      "label": "base_u04",
+      "output_sha256": "c2aa043638080249428d562dc9e5cbe732e45027577cffe6bc0b648bc69ac1c8",
+      "output_size": 1289,
+      "path": "baseline/base_u04.json",
+      "receipt_sha256": "018075a2b1bd92094d433e1da2c7d43717e9c36465738096dd55dfd247acbe71"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c3_u05_native_later_segment_boundary",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "failed": 0,
+        "filtered": 1218,
+        "ignored": 0,
+        "passed": 1,
+        "status": "ok"
+      },
+      "classification": "BASELINE",
+      "commit": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+      "label": "base_u05",
+      "output_sha256": "5ffb17c998ec9d063f6cb25e662d94c8a7a3ab16ef2a2039c720eae699164558",
+      "output_size": 986,
+      "path": "baseline/base_u05.json",
+      "receipt_sha256": "ca124472a4d241e8c2eba38f775521ad6f5915ed7d0a469b9c2d13fe90c288a8"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c3_u09_logical_budget_edges",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "failed": 0,
+        "filtered": 1218,
+        "ignored": 0,
+        "passed": 1,
+        "status": "ok"
+      },
+      "classification": "BASELINE",
+      "commit": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+      "label": "base_u09",
+      "output_sha256": "81dafee07fbedf2cd2f854ee05ebbc8bcb2013fb3cda298075eb73ff17a36dd5",
+      "output_size": 1053,
+      "path": "baseline/base_u09.json",
+      "receipt_sha256": "96261aff22d96398aa1186e7dc8c290b63337a769ed00b0b342aae559aebc2f0"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "perf06_c2_physical",
+        "c3_i02_real_pit_update_merge_and_paging",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "failed": 0,
+        "filtered": 11,
+        "ignored": 0,
+        "passed": 1,
+        "status": "ok"
+      },
+      "classification": "BASELINE",
+      "commit": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+      "label": "base_i02",
+      "output_sha256": "e51ab225019ad8ed485886d323b85dc7b41cc4353bdd17d308691f2251e667b6",
+      "output_size": 417,
+      "path": "baseline/base_i02.json",
+      "receipt_sha256": "c9d036b266a61092f3a68284f606f2621c47c1c4de252493720999083a05ea04"
+    }
+  ],
+  "schema": "quervant-perf06-c3-f1-verification-v1",
+  "status": "PASS",
+  "verifier_sha256": "f83e1ecc8e6c38cb86498e81e524d9a2ca1aab3cfa63fe8a425b507ba816a8e7"
+}

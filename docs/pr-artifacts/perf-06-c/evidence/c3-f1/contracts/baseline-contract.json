@@ -1,0 +1,174 @@
+{
+  "receipts": [
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::score::tests::c3_s01_certificate_matrix",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        },
+        "kind": "exact",
+        "name": "search::score::tests::c3_s01_certificate_matrix"
+      },
+      "classification": "BASELINE",
+      "commit": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+      "label": "base_s01",
+      "path": "baseline/base_s01.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c3_u02_dispatch_and_count_matrix",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        },
+        "kind": "exact",
+        "name": "search::unified::c2_tests::c3_u02_dispatch_and_count_matrix"
+      },
+      "classification": "BASELINE",
+      "commit": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+      "label": "base_u02",
+      "path": "baseline/base_u02.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c3_u04_corruption_precedence",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        },
+        "kind": "exact",
+        "name": "search::unified::c2_tests::c3_u04_corruption_precedence"
+      },
+      "classification": "BASELINE",
+      "commit": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+      "label": "base_u04",
+      "path": "baseline/base_u04.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c3_u05_native_later_segment_boundary",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        },
+        "kind": "exact",
+        "name": "search::unified::c2_tests::c3_u05_native_later_segment_boundary"
+      },
+      "classification": "BASELINE",
+      "commit": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+      "label": "base_u05",
+      "path": "baseline/base_u05.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--lib",
+        "search::unified::c2_tests::c3_u09_logical_budget_edges",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        },
+        "kind": "exact",
+        "name": "search::unified::c2_tests::c3_u09_logical_budget_edges"
+      },
+      "classification": "BASELINE",
+      "commit": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+      "label": "base_u09",
+      "path": "baseline/base_u09.json"
+    },
+    {
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "test",
+        "-p",
+        "quervant-core",
+        "--test",
+        "perf06_c2_physical",
+        "c3_i02_real_pit_update_merge_and_paging",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "check": {
+        "expected": {
+          "failed": 0,
+          "ignored": 0,
+          "passed": 1
+        },
+        "kind": "exact",
+        "name": "c3_i02_real_pit_update_merge_and_paging"
+      },
+      "classification": "BASELINE",
+      "commit": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+      "label": "base_i02",
+      "path": "baseline/base_i02.json"
+    }
+  ],
+  "schema": "quervant-perf06-c3-f1-receipt-contract-v1"
+}

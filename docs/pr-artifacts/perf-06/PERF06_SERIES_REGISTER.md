@@ -311,3 +311,80 @@ the F1/A1 closeout. Results:
   reports and the PR body are corrected; PR #131 stays open and **unmerged** with its
   observed readiness preserved; G10 is open; C3/C4 are unstarted and no performance
   claim is made.
+
+## 2026-11-26 — C2 merged; C3 implemented (correctness-only)
+
+- **C2 done at `B`.** PR [#131](https://github.com/yduchesne/quervant/pull/131)
+  merged at `main@6bc977e6a26c183609b7ca53eca51d3ab09ce337`
+  (`mergedAt=2026-11-26T23:00:00Z`, reviewed head
+  `da033ff19b3facd4f0a5319506a64e658156e93f`). Earlier entries in this register
+  that record C2 as open/unmerged or G10/whitespace-blocked are preserved
+  verbatim as contemporaneous history.
+- **C3 implemented, draft, unmerged** on `dev/perf06-c3` from `B`. Plan:
+  [PERF06C3_DETAILED_IMPLEMENTATION_PLAN.md](../perf-06-c/PERF06C3_DETAILED_IMPLEMENTATION_PLAN.md);
+  report and evidence:
+  [PERF06C3_EXECUTION_REPORT.md](../perf-06-c/PERF06C3_EXECUTION_REPORT.md).
+- **Exact proof boundary:** certified deferred BM25 (`n>0`, `df>0`, `df<=n`,
+  finite `avgdl ∈ [2^-64, 2^64]`, finite prepared IDF `∈ [0, 64]`) scores only
+  the `K` returned hits with the unchanged prepared scorer and `+0.0`
+  accumulator. C2 selection and the `M > K+1` guard are byte-identical; unproven
+  statistics keep eager C2, ineligible shapes keep Legacy. Full posting
+  validation, exact counts, work charges, virtual admissions, B1/B2/B3
+  validation/duplicate policy, fallible candidate materialization, cursor and
+  projection are unchanged. Physical heap entry +1 `u64` word; logical charges
+  unchanged.
+- **Evidence:** red-first 40→3 scorer calls; 17 new unit tests + 3 real
+  `FsDirectory` integration tests; old C2 inventories 24/5/9 retained; broad
+  `--lib c2_` 52 and `perf06_c2_physical` 12; stable 1.98.1 and MSRV 1.85.0
+  format/clippy/tests both feature regimes; coverage 93.85 % / 93.54 % lines.
+- **No performance sample.** C4 not started; it owns the integrated incremental
+  warm qualification and the cumulative series report. G10 independent review
+  and maintainer acceptance remain open; C3 is not DONE and no baseline is
+  promoted.
+
+## 2026-11-26 — C3-F1 acceptance repair
+
+- PR [#132](https://github.com/yduchesne/quervant/pull/132) received an
+  acceptance-repair pass with **no production change**: every normal-build byte
+  is identical to the reviewed head
+  `ee77917d303b060b0d38ab88e5d9ae73625f6676`.
+- Plan/report:
+  [plan](../perf-06-c/PERF06C3F1_DETAILED_FIXUP_PLAN.md),
+  [report](../perf-06-c/PERF06C3F1_EXECUTION_REPORT.md); evidence under
+  `docs/pr-artifacts/perf-06-c/evidence/c3-f1/`.
+- Repaired: S01 df-guard isolation; U02 exact 25-tuple dispatch domain and the six
+  previously discarded ineligible-result responses; U04 nine literal fault
+  descriptors with isolated `C29` and same-snapshot unarmed C3; U05 literal
+  scanned-cap reference errors; U09 twelve literal resource outcomes with seven
+  recoveries and the documented projection-after-finalization refusal; I02
+  every-hit oracles across five view phases (198 checks).
+- Corrected by dated errata: region-vs-line coverage labels (historical line
+  figures `93.50 %` / `93.09 %`), the U02 split diagnostic, the C29 descriptor,
+  I02 later-page scope, S01 guard independence, the U09 expectation, U04 execution
+  classes, parent/child test-count scopes and the `c3_` 26-vs-17 inventory.
+- No new test names, API, storage, dependency or CI change. C4 remains unstarted;
+  G10 remains maintainer-owned and open; no performance claim.
+
+## 2026-11-27 — C3-F2 test-only conformance repair
+
+- PR [#132](https://github.com/yduchesne/quervant/pull/132), continuation of
+  C3/F1. **Test-only**: `F2_TESTED` `e4816c51f0063383596e8ee8a644b38d7a39a400`
+  is a direct child of `051104724125ba95d49a6d94b61500f974a3599f` and changes
+  only the bodies of `c3_u02_dispatch_and_count_matrix` and
+  `c3_u09_logical_budget_edges` in
+  `crates/quervant-core/src/search/unified.rs`.
+- Repaired: the F1-added `#[allow(clippy::too_many_arguments)]` and its nested
+  `recover_at` helper are gone (recovery logic inlined unchanged); the plain
+  batch row now asserts `aggregation.is_none()` on both the normal and
+  forced-Legacy responses; the `avgdl` comment is corrected (`n = df = 24`,
+  `avgdl = 1`).
+- Evidence: 45 fresh final receipts verified (`PASS`), the 51 historical F1
+  receipts re-verified read-only with tree linkage, exact source proof, Lines
+  coverage `93.53 %` / `93.13 %`, inventories unchanged at `24/5/52/26/12`.
+  Plan/report: [plan](../perf-06-c/PERF06C3F2_DETAILED_FIXUP_PLAN.md),
+  [report](../perf-06-c/PERF06C3F2_EXECUTION_REPORT.md).
+- The historical F1 terminal archive was recovered and fully validated and is
+  delivered unchanged; the F2 terminal package is produced for the F2 head.
+  Current final-head CI and closeout appear in the live PR body and the external
+  handoff. C3/F1 historical evidence is preserved; G10 remains open; C4 is
+  unstarted; no performance claim.

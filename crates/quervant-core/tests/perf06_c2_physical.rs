@@ -1191,3 +1191,790 @@ fn c2_i09_empty_and_sparse_physical_segments() {
     assert_eq!(rare.total_hits, 1);
     assert!(rare.next_cursor.is_none());
 }
+
+// ---------------------------------------------------------------------------
+// PERF-06-C3 — certified deferred BM25 on real persistent indexes
+// ---------------------------------------------------------------------------
+
+/// The input-derived `body` term frequency and field length of `scoring_document`.
+fn scoring_tf(index: usize) -> u64 {
+    (1 + index % 4) as u64
+}
+
+fn scoring_dl(index: usize) -> u64 {
+    (1 + index % 4 + index % 5) as u64
+}
+
+fn scoring_body(index: usize) -> String {
+    let mut words: Vec<&str> = vec!["alpha"; 1 + index % 4];
+    words.extend(std::iter::repeat_n("gamma", index % 5));
+    words.join(" ")
+}
+
+fn scoring_doc_key(index: usize) -> String {
+    format!("s{index:04}")
+}
+
+/// The frozen scalar BM25 oracle for the scoring corpus.
+fn scoring_oracle(tf: u64, dl: u64, df: u64, n: u64, total_length: u64) -> f64 {
+    let avgdl = total_length as f64 / n as f64;
+    let idf = (1.0_f64 + (n as f64 - df as f64 + 0.5) / (df as f64 + 0.5)).ln();
+    let tf = tf as f64;
+    let dl = dl as f64;
+    0.0_f64 + (idf * (tf * (1.2 + 1.0)) / (tf + 1.2 * (1.0 - 0.75 + 0.75 * dl / avgdl)))
+}
+
+/// Build two committed segments (slices `0..split` and `split..count`) with the
+/// scoring schema, close, and reopen from a real `FsDirectory`.
+fn reopen_scoring_corpus(tag: &str, count: usize, split: usize) -> (TempDir, Schema, Index) {
+    let temp = TempDir::new(tag);
+    let directory = temp.directory();
+    let schema = scoring_schema();
+    let registry = AnalyzerRegistry::builtin();
+    {
+        let index = Index::create_with_limits(
+            Arc::clone(&directory),
+            schema.clone(),
+            registry.clone(),
+            large_index_limits(),
+        )
+        .expect("create");
+        for slice in [0..split, split..count] {
+            let mut writer = index.writer().expect("writer");
+            for position in slice {
+                writer.insert(scoring_document(position)).expect("insert");
+            }
+            writer.commit().expect("commit");
+        }
+    }
+    let index = Index::open_with_limits(directory, schema.clone(), registry, large_index_limits())
+        .expect("reopen");
+    (temp, schema, index)
+}
+
+#[test]
+fn c3_i01_real_scores_and_explicit_cursor() {
+    let (_temp, schema, index) = reopen_scoring_corpus("c3-i01", 40, 6);
+    let snapshot = index.snapshot();
+    let registry = AnalyzerRegistry::builtin();
+    let searcher = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+    let total_length: u64 = (0..40).map(scoring_dl).sum();
+    assert_eq!(total_length, 180, "input-derived total field length");
+    let query = text_term("body", "alpha");
+
+    let mut combinations = 0usize;
+    for top_k in [1usize, 3, 10] {
+        for direction in [SortDirection::Asc, SortDirection::Desc] {
+            let page = request(
+                query.clone(),
+                top_k,
+                doc_id_sort(direction),
+                scoring_projection(),
+            );
+            let response = searcher
+                .search(&page, &Budgets::new(), &NeverCancel)
+                .expect("certified response");
+            assert_eq!(response.total_hits, 40, "{direction:?} k={top_k}");
+
+            let mut indices: Vec<usize> = (0..40).collect();
+            if direction == SortDirection::Desc {
+                indices.reverse();
+            }
+            indices.truncate(top_k);
+            let expected_keys: Vec<String> = indices.iter().map(|i| scoring_doc_key(*i)).collect();
+            assert_eq!(keys(&response), expected_keys, "{direction:?} k={top_k}");
+
+            for (rank, hit) in response.hits.iter().enumerate() {
+                let index = indices[rank];
+                assert_eq!(
+                    hit.fields,
+                    vec![
+                        (
+                            "doc_id".to_owned(),
+                            FieldValues::Single(FieldValue::Keyword(scoring_doc_key(index)))
+                        ),
+                        (
+                            "body".to_owned(),
+                            FieldValues::Single(FieldValue::Text(scoring_body(index)))
+                        ),
+                    ],
+                    "{direction:?} k={top_k} rank={rank}: full projection"
+                );
+                let score = hit.score.expect("lexical score");
+                assert!(score.is_finite() && score >= 0.0);
+                assert_eq!(
+                    score.to_bits(),
+                    scoring_oracle(scoring_tf(index), scoring_dl(index), 40, 40, total_length)
+                        .to_bits(),
+                    "{direction:?} k={top_k} rank={rank}: independent score bits"
+                );
+            }
+
+            // Independent wrapper query (a different AST, hence a different
+            // fingerprint) on the same snapshot.
+            let wrapper = request(
+                legacy_text_query("body", "alpha"),
+                top_k,
+                doc_id_sort(direction),
+                scoring_projection(),
+            );
+            let reference = searcher
+                .search(&wrapper, &Budgets::new(), &NeverCancel)
+                .expect("legacy wrapper");
+            assert_eq!(keys(&response), keys(&reference));
+            assert_eq!(scores(&response), scores(&reference));
+            assert_eq!(response.total_hits, reference.total_hits);
+            assert_eq!(response.generation, reference.generation);
+            assert_eq!(response.view_ordinal, reference.view_ordinal);
+            assert_eq!(response.aggregation, reference.aggregation);
+            for (left, right) in response.hits.iter().zip(reference.hits.iter()) {
+                assert_eq!(left.fields, right.fields);
+            }
+            // The wrapper differs only in the cursor fingerprint.
+            let actual_cursor = response.next_cursor.as_ref().expect("cursor");
+            let reference_cursor = reference.next_cursor.as_ref().expect("cursor");
+            assert_eq!(
+                actual_cursor.snapshot_binding(),
+                reference_cursor.snapshot_binding()
+            );
+            assert_eq!(actual_cursor.last_key(), reference_cursor.last_key());
+            assert_eq!(
+                actual_cursor.last_sort_values(),
+                reference_cursor.last_sort_values()
+            );
+            assert_eq!(actual_cursor.last_score(), None, "explicit sort");
+            assert_eq!(reference_cursor.last_score(), None, "explicit sort");
+
+            // The identical query re-run is a complete response equality.
+            let repeated = searcher
+                .search(&page, &Budgets::new(), &NeverCancel)
+                .expect("repeated response");
+            assert_eq!(response, repeated, "{direction:?} k={top_k}: repeat");
+            assert_eq!(
+                scores(&repeated),
+                scores(&response),
+                "{direction:?} k={top_k}: repeat score bits"
+            );
+
+            // Continue the original cursor: literal next page, no gaps/duplicates.
+            let mut continuation = request(
+                query.clone(),
+                top_k,
+                doc_id_sort(direction),
+                scoring_projection(),
+            );
+            continuation.after = Some(actual_cursor.clone());
+            let second = searcher
+                .search(&continuation, &Budgets::new(), &NeverCancel)
+                .expect("continuation");
+            let mut next_indices: Vec<usize> = (0..40).collect();
+            if direction == SortDirection::Desc {
+                next_indices.reverse();
+            }
+            next_indices.drain(..top_k);
+            next_indices.truncate(top_k);
+            let expected_next: Vec<String> =
+                next_indices.iter().map(|i| scoring_doc_key(*i)).collect();
+            assert_eq!(
+                keys(&second),
+                expected_next,
+                "{direction:?} k={top_k}: page 2"
+            );
+            for (rank, hit) in second.hits.iter().enumerate() {
+                let index = next_indices[rank];
+                assert_eq!(
+                    hit.score.expect("score").to_bits(),
+                    scoring_oracle(scoring_tf(index), scoring_dl(index), 40, 40, total_length)
+                        .to_bits(),
+                    "{direction:?} k={top_k} page2 rank={rank}: score bits"
+                );
+            }
+            let first_keys: std::collections::BTreeSet<String> =
+                keys(&response).into_iter().collect();
+            let second_keys: std::collections::BTreeSet<String> =
+                keys(&second).into_iter().collect();
+            assert!(
+                first_keys.is_disjoint(&second_keys),
+                "no duplicates across pages"
+            );
+            combinations += 1;
+            eprintln!(
+                "C3 I01 {direction:?} k={top_k}: total=40 page1={:?} page2={:?}",
+                keys(&response),
+                keys(&second)
+            );
+        }
+    }
+    assert_eq!(combinations, 6, "six score/cursor combinations");
+    eprintln!("C3 I01 combinations={combinations}");
+}
+
+/// Collect every page of one request, returning the concatenated keys.
+fn collect_pages(
+    searcher: &UnifiedSearcher<'_>,
+    base: &UnifiedRequest,
+    expected_indices: &[usize],
+    stats: (u64, u64, u64), // df, n, total field length
+    label: &str,
+) -> Vec<String> {
+    // Every returned hit is verified against the immutable input-derived identity,
+    // full projection and scalar score oracle for its own snapshot. The returned
+    // length equals the verified-hit count because each key is appended only after
+    // every per-hit assertion.
+    let (df, n, total_length) = stats;
+    assert_eq!(
+        expected_indices.len() as u64,
+        df,
+        "{label}: expected index count equals df"
+    );
+    let expected_keys: Vec<String> = expected_indices
+        .iter()
+        .copied()
+        .map(scoring_doc_key)
+        .collect();
+    let mut collected: Vec<String> = Vec::new();
+    let mut cursor = None;
+    let mut pages = 0usize;
+    let mut checked_hits = 0usize;
+    loop {
+        assert!(pages < 20, "{label}: at most twenty page queries");
+        let mut page = base.clone();
+        page.after = cursor;
+        let response = searcher
+            .search(&page, &Budgets::new(), &NeverCancel)
+            .unwrap_or_else(|error| panic!("{label}: page {} failed: {error:?}", pages + 1));
+        assert_eq!(
+            response.total_hits, df,
+            "{label}: every page keeps the exact total"
+        );
+        let offset = collected.len();
+        assert!(
+            offset <= expected_indices.len(),
+            "{label}: offset inside the expected sequence"
+        );
+        let remaining = expected_indices.len() - offset;
+        assert!(remaining > 0, "{label}: no query after the final page");
+        let expected_len = remaining.min(3);
+        assert_eq!(
+            response.hits.len(),
+            expected_len,
+            "{label}: page {} hit count",
+            pages + 1
+        );
+        for (rank, hit) in response.hits.iter().enumerate() {
+            let index = expected_indices[offset + rank];
+            assert_eq!(
+                hit.key.as_str(),
+                scoring_doc_key(index),
+                "{label}: page {} rank {rank} input identity",
+                pages + 1
+            );
+            assert_eq!(
+                hit.fields,
+                vec![
+                    (
+                        "doc_id".to_owned(),
+                        FieldValues::Single(FieldValue::Keyword(scoring_doc_key(index)))
+                    ),
+                    (
+                        "body".to_owned(),
+                        FieldValues::Single(FieldValue::Text(scoring_body(index)))
+                    ),
+                ],
+                "{label}: page {} rank {rank} complete projection",
+                pages + 1
+            );
+            let score = hit
+                .score
+                .unwrap_or_else(|| panic!("{label}: page {} rank {rank} unscored", pages + 1));
+            assert!(
+                score.is_finite() && score >= 0.0,
+                "{label}: page {} rank {rank} finite nonnegative score",
+                pages + 1
+            );
+            assert_eq!(
+                score.to_bits(),
+                scoring_oracle(scoring_tf(index), scoring_dl(index), df, n, total_length).to_bits(),
+                "{label}: page {} rank {rank} input-derived scalar bits",
+                pages + 1
+            );
+            checked_hits += 1;
+        }
+        collected.extend(response.hits.iter().map(|hit| hit.key.as_str().to_owned()));
+        pages += 1;
+        assert!(pages <= 20, "{label}: page bound");
+        let more = collected.len() < expected_indices.len();
+        match response.next_cursor {
+            Some(next) => {
+                assert!(more, "{label}: unexpected cursor after the last page");
+                cursor = Some(next);
+            }
+            None => {
+                assert!(!more, "{label}: missing cursor before the last page");
+                break;
+            }
+        }
+    }
+    assert_eq!(collected, expected_keys, "{label}: literal sequence");
+    assert_eq!(
+        collected.len(),
+        collected
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        "{label}: no duplicate keys"
+    );
+    assert_eq!(checked_hits as u64, df, "{label}: checked hits equals df");
+    let expected_pages = match df {
+        40 => 14usize,
+        39 => 13,
+        other => panic!("{label}: unexpected df {other}"),
+    };
+    assert_eq!(pages, expected_pages, "{label}: page count");
+    eprintln!(
+        "C3 I02 phase={label} df={df} n={n} total_length={total_length} pages={pages} checked_hits={checked_hits}"
+    );
+    collected
+}
+
+#[test]
+fn c3_i02_real_pit_update_merge_and_paging() {
+    use quervant_core::contract::document::MutationRequest;
+    use quervant_core::contract::error::{InvalidQueryReason, QueryError};
+
+    let (temp, schema, mut index) = reopen_scoring_corpus("c3-i02", 40, 6);
+    let registry = AnalyzerRegistry::builtin();
+    let old = index.snapshot();
+    let old_searcher = UnifiedSearcher::new(&old, &schema, &registry, SearchLimits::default());
+    let page = request(
+        text_term("body", "alpha"),
+        3,
+        doc_id_sort(SortDirection::Asc),
+        scoring_projection(),
+    );
+
+    // Immutable input-derived statistics for the pinned old view.
+    let old_total_length: u64 = (0..40).map(scoring_dl).sum();
+    assert_eq!(old_total_length, 180, "input-derived old total length");
+    let old_indices: Vec<usize> = (0..40).collect();
+    let old_stats = (40u64, 40u64, old_total_length);
+
+    let old_response = old_searcher
+        .search(&page, &Budgets::new(), &NeverCancel)
+        .expect("old view");
+    assert_eq!(old_response.total_hits, 40);
+    let old_cursor = old_response.next_cursor.clone().expect("old cursor");
+
+    // I02-OLD-BEFORE: every page of the pinned pre-mutation view.
+    let mut checked_hits = 0usize;
+    let old_sequence = collect_pages(
+        &old_searcher,
+        &page,
+        &old_indices,
+        old_stats,
+        "I02-OLD-BEFORE",
+    );
+    checked_hits += old_sequence.len();
+    // First-page direct scalar checks from the input sequence.
+    for (rank, hit) in old_response.hits.iter().enumerate() {
+        let expect = old_indices[rank];
+        assert_eq!(hit.key.as_str(), scoring_doc_key(expect));
+        assert_eq!(
+            hit.score.expect("score").to_bits(),
+            scoring_oracle(
+                scoring_tf(expect),
+                scoring_dl(expect),
+                old_stats.0,
+                old_stats.1,
+                old_stats.2
+            )
+            .to_bits(),
+            "old first page rank {rank} scalar bits"
+        );
+    }
+    // Old-view wrapper Legacy parity (different AST fingerprint, same snapshot).
+    let old_legacy = old_searcher
+        .search(
+            &request(
+                legacy_text_query("body", "alpha"),
+                3,
+                doc_id_sort(SortDirection::Asc),
+                scoring_projection(),
+            ),
+            &Budgets::new(),
+            &NeverCancel,
+        )
+        .expect("old legacy wrapper");
+    assert_response_except_cursor_fingerprint(&old_response, &old_legacy, "I02 old wrapper");
+
+    // Delete one match, remove alpha from another, add one new match.
+    let new_snapshot = {
+        let mut writer = index.writer().expect("writer");
+        writer
+            .apply(MutationRequest::delete(
+                DocumentKey::new("s0002").expect("key"),
+            ))
+            .expect("delete");
+        let mut updated = scoring_document(6);
+        updated
+            .insert(
+                "body",
+                FieldValues::Single(FieldValue::Text("gamma".to_owned())),
+            )
+            .expect("body");
+        writer
+            .apply(MutationRequest::upsert(updated))
+            .expect("upsert");
+        writer.insert(scoring_document(40)).expect("insert");
+        writer.commit().expect("commit");
+        writer.refresh().expect("refresh")
+    };
+    let new_searcher =
+        UnifiedSearcher::new(&new_snapshot, &schema, &registry, SearchLimits::default());
+    let new_response = new_searcher
+        .search(&page, &Budgets::new(), &NeverCancel)
+        .expect("new view");
+    assert_eq!(new_response.total_hits, 39, "39 live alpha matches");
+
+    // Input-derived new statistics: delete s0002 (dl 5), rewrite s0006 (dl 4 -> 1),
+    // insert s0040 (dl 1). The updated document is not an alpha match but still
+    // contributes one length unit.
+    let new_total_length: u64 =
+        old_total_length - scoring_dl(2) - scoring_dl(6) + 1 + scoring_dl(40);
+    assert_eq!(new_total_length, 173, "input-derived new total length");
+    assert_eq!(scoring_dl(2), 5);
+    assert_eq!(scoring_dl(6), 4);
+    assert_eq!(scoring_dl(40), 1);
+    let new_indices: Vec<usize> = (0..=40)
+        .filter(|index| *index != 2 && *index != 6)
+        .collect();
+    assert_eq!(new_indices.len(), 39);
+    let new_stats = (39u64, 40u64, new_total_length);
+
+    // I02-NEW: every page of the post-mutation view.
+    let new_sequence = collect_pages(&new_searcher, &page, &new_indices, new_stats, "I02-NEW");
+    checked_hits += new_sequence.len();
+    for (rank, hit) in new_response.hits.iter().enumerate() {
+        let expect = new_indices[rank];
+        assert_eq!(hit.key.as_str(), scoring_doc_key(expect));
+        assert_eq!(
+            hit.score.expect("score").to_bits(),
+            scoring_oracle(
+                scoring_tf(expect),
+                scoring_dl(expect),
+                new_stats.0,
+                new_stats.1,
+                new_stats.2
+            )
+            .to_bits(),
+            "new first page rank {rank} scalar bits"
+        );
+    }
+    let new_legacy = new_searcher
+        .search(
+            &request(
+                legacy_text_query("body", "alpha"),
+                3,
+                doc_id_sort(SortDirection::Asc),
+                scoring_projection(),
+            ),
+            &Budgets::new(),
+            &NeverCancel,
+        )
+        .expect("new legacy wrapper");
+    assert_response_except_cursor_fingerprint(&new_response, &new_legacy, "I02 new wrapper");
+
+    // The pinned old snapshot is unchanged by the newer publication, including
+    // every page of its full sequence.
+    let pinned = old_searcher
+        .search(&page, &Budgets::new(), &NeverCancel)
+        .expect("pinned old view");
+    assert_eq!(pinned, old_response, "pinned old response is unchanged");
+    // I02-OLD-AFTER-MUTATION: the pinned view is still complete after publication.
+    let old_after_mutation = collect_pages(
+        &old_searcher,
+        &page,
+        &old_indices,
+        old_stats,
+        "I02-OLD-AFTER-MUTATION",
+    );
+    checked_hits += old_after_mutation.len();
+    assert_eq!(
+        old_after_mutation, old_sequence,
+        "pinned sequence unchanged"
+    );
+
+    // An old cursor must never be accepted on the new snapshot.
+    let mut stale = page.clone();
+    stale.after = Some(old_cursor);
+    let error = new_searcher
+        .search(&stale, &Budgets::new(), &NeverCancel)
+        .expect_err("stale cursor");
+    assert!(
+        matches!(
+            error,
+            SearchError::Query(QueryError::InvalidQuery(
+                InvalidQueryReason::CursorPitMismatch
+            ))
+        ),
+        "{error:?}"
+    );
+
+    // Compact and reopen: the old pinned generation and the new logical results
+    // must both survive unchanged.
+    {
+        let mut writer = index.writer().expect("writer");
+        writer.compact().expect("compact");
+        writer.commit().expect("commit compact");
+    }
+    index = Index::open_with_limits(
+        Arc::new(FsDirectory::open(temp.path()).expect("fs")),
+        schema.clone(),
+        AnalyzerRegistry::builtin(),
+        large_index_limits(),
+    )
+    .expect("reopen after compaction");
+    let reopened = index.snapshot();
+    let reopened_registry = AnalyzerRegistry::builtin();
+    let reopened_searcher = UnifiedSearcher::new(
+        &reopened,
+        &schema,
+        &reopened_registry,
+        SearchLimits::default(),
+    );
+    let merged = reopened_searcher
+        .search(&page, &Budgets::new(), &NeverCancel)
+        .expect("merged view");
+    assert_eq!(merged.total_hits, 39);
+    assert_eq!(keys(&merged), keys(&new_response));
+    assert_eq!(
+        scores(&merged),
+        scores(&new_response),
+        "post-merge score bits"
+    );
+    // I02-COMPACTED: every page of the freshly reopened post-compaction view.
+    let compacted_sequence = collect_pages(
+        &reopened_searcher,
+        &page,
+        &new_indices,
+        new_stats,
+        "I02-COMPACTED",
+    );
+    checked_hits += compacted_sequence.len();
+    assert_eq!(
+        compacted_sequence, new_sequence,
+        "post-compaction logical sequence"
+    );
+
+    // The pinned old snapshot still sees its own generation exactly, across every
+    // page of the range.
+    let pinned_after = old_searcher
+        .search(&page, &Budgets::new(), &NeverCancel)
+        .expect("pinned after compaction");
+    assert_eq!(
+        pinned_after, old_response,
+        "pinned old response after compaction"
+    );
+    // I02-OLD-AFTER-COMPACTION.
+    let old_after_compaction = collect_pages(
+        &old_searcher,
+        &page,
+        &old_indices,
+        old_stats,
+        "I02-OLD-AFTER-COMPACTION",
+    );
+    checked_hits += old_after_compaction.len();
+    assert_eq!(old_after_compaction, old_sequence);
+
+    assert_eq!(checked_hits, 198, "five phases x per-hit oracles");
+    eprintln!(
+        "C3 I02 old=40 new=39 new-total-length=173 merged-keys={:?}",
+        keys(&merged)
+    );
+    eprintln!("C3 F1 I02 phases=5 checked-hits=198 old-pages=14 new-pages=13");
+}
+
+/// Assert two responses are equal except for the cursor query fingerprint.
+fn assert_response_except_cursor_fingerprint(
+    left: &UnifiedResponse,
+    right: &UnifiedResponse,
+    label: &str,
+) {
+    assert_eq!(left.hits.len(), right.hits.len(), "{label}: hit count");
+    assert_eq!(left.total_hits, right.total_hits, "{label}: total hits");
+    assert_eq!(left.generation, right.generation, "{label}: generation");
+    assert_eq!(
+        left.view_ordinal, right.view_ordinal,
+        "{label}: view ordinal"
+    );
+    assert_eq!(left.aggregation, right.aggregation, "{label}: aggregation");
+    assert_eq!(scores(left), scores(right), "{label}: score bits");
+    for (a, b) in left.hits.iter().zip(right.hits.iter()) {
+        assert_eq!(a.key, b.key, "{label}: key");
+        assert_eq!(a.fields, b.fields, "{label}: projected fields");
+    }
+    match (&left.next_cursor, &right.next_cursor) {
+        (Some(a), Some(b)) => {
+            assert_eq!(
+                a.snapshot_binding(),
+                b.snapshot_binding(),
+                "{label}: cursor binding"
+            );
+            assert_eq!(a.last_key(), b.last_key(), "{label}: cursor key");
+            assert_eq!(
+                a.last_sort_values(),
+                b.last_sort_values(),
+                "{label}: cursor sort values"
+            );
+            assert_eq!(a.last_score(), b.last_score(), "{label}: cursor score");
+        }
+        (None, None) => {}
+        (a, b) => panic!("{label}: cursor presence differs: {a:?} vs {b:?}"),
+    }
+}
+
+#[test]
+fn c3_i03_real_resource_and_cancellation_edges() {
+    let corpus = Corpus::single("c3-i03", 48);
+    let page = request(
+        term_query("key", "common"),
+        3,
+        doc_id_sort(SortDirection::Asc),
+        full_projection(),
+    );
+    let expected_keys = expected_lane_keys("common", 48, 3, true);
+    assert_eq!(
+        expected_keys,
+        vec![
+            "d00000002".to_owned(),
+            "d00000004".to_owned(),
+            "d00000006".to_owned()
+        ],
+        "literal ascending common lane"
+    );
+
+    let exact = SearchLimits::default()
+        .with_max_segment_candidate_entries(69)
+        .expect("entries")
+        .with_max_total_candidate_bytes(2944)
+        .expect("bytes");
+    let admitted = search_with(&corpus, &page, exact, &NeverCancel).expect("exact peak");
+    assert_eq!(admitted.total_hits, 23);
+    assert_eq!(keys(&admitted), expected_keys);
+    assert!(admitted.next_cursor.is_some());
+    // The same public failure-path response matches the default-limit Legacy route
+    // apart from the cursor query fingerprint.
+    let legacy = search(
+        &corpus,
+        &request(
+            legacy_query("key", "common"),
+            3,
+            doc_id_sort(SortDirection::Asc),
+            full_projection(),
+        ),
+    )
+    .expect("legacy default limits");
+    assert_eq!(legacy.total_hits, 23);
+    assert_response_except_cursor_fingerprint(&admitted, &legacy, "I03 admitted vs legacy");
+
+    // One-under entry budget, then an independent same-snapshot retry.
+    let under_entries = SearchLimits::default()
+        .with_max_segment_candidate_entries(68)
+        .expect("entries")
+        .with_max_total_candidate_bytes(2944)
+        .expect("bytes");
+    let rejected =
+        search_with(&corpus, &page, under_entries, &NeverCancel).expect_err("one-under entries");
+    assert!(
+        matches!(
+            rejected,
+            SearchError::ResourceLimit {
+                limit: 68,
+                requested: 69
+            }
+        ),
+        "{rejected:?}"
+    );
+    let recovered = search_with(&corpus, &page, exact, &NeverCancel).expect("retry after entries");
+    assert_eq!(
+        recovered, admitted,
+        "post-entries retry is the exact same-query response"
+    );
+
+    // One-under byte budget.
+    let under_bytes = SearchLimits::default()
+        .with_max_segment_candidate_entries(69)
+        .expect("entries")
+        .with_max_total_candidate_bytes(2943)
+        .expect("bytes");
+    let rejected =
+        search_with(&corpus, &page, under_bytes, &NeverCancel).expect_err("one-under bytes");
+    assert!(
+        matches!(
+            rejected,
+            SearchError::ResourceLimit {
+                limit: 2943,
+                requested: 2944
+            }
+        ),
+        "{rejected:?}"
+    );
+    let recovered = search_with(&corpus, &page, exact, &NeverCancel).expect("retry after bytes");
+    assert_eq!(recovered, admitted, "post-bytes retry");
+
+    // Scanned-occurrence boundary on the two-segment corpus.
+    let split = Corpus::build("c3-i03-split", &[(0..24).collect(), (24..48).collect()]);
+    let scanned_23 = SearchLimits::default()
+        .with_max_scanned_posting_occurrences(23)
+        .expect("scanned");
+    let split_admitted =
+        search_with(&split, &page, scanned_23, &NeverCancel).expect("exact scanned limit");
+    assert_eq!(split_admitted.total_hits, 23);
+    assert_eq!(keys(&split_admitted), expected_keys);
+    assert!(split_admitted.next_cursor.is_some());
+    let split_legacy = search(
+        &split,
+        &request(
+            legacy_query("key", "common"),
+            3,
+            doc_id_sort(SortDirection::Asc),
+            full_projection(),
+        ),
+    )
+    .expect("legacy on the split snapshot");
+    assert_response_except_cursor_fingerprint(
+        &split_admitted,
+        &split_legacy,
+        "I03 split vs legacy",
+    );
+    let scanned_22 = SearchLimits::default()
+        .with_max_scanned_posting_occurrences(22)
+        .expect("scanned");
+    let rejected =
+        search_with(&split, &page, scanned_22, &NeverCancel).expect_err("one-under scanned");
+    assert!(
+        matches!(
+            rejected,
+            SearchError::ResourceLimit {
+                limit: 22,
+                requested: 23
+            }
+        ),
+        "{rejected:?}"
+    );
+    let recovered =
+        search_with(&split, &page, scanned_23, &NeverCancel).expect("retry after scanned");
+    assert_eq!(recovered, split_admitted, "post-scanned retry");
+
+    // Cancellation returns the typed error and leaves the index usable.
+    let flag = CancellationFlag::new();
+    flag.cancel();
+    let cancelled =
+        search_with(&corpus, &page, SearchLimits::default(), &flag).expect_err("cancelled");
+    assert!(matches!(cancelled, SearchError::Cancelled), "{cancelled:?}");
+    let retried = search(&corpus, &page).expect("retry after cancellation");
+    assert_eq!(retried, admitted, "post-cancellation retry");
+    eprintln!(
+        "C3 I03 caps=69/2944 failure={{68,69}}/{{2943,2944}} scanned=23 failure={{22,23}} total=23"
+    );
+}

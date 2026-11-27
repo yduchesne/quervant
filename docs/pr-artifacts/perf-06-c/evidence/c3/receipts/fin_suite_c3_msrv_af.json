@@ -1,0 +1,41 @@
+{
+  "after": {
+    "head": "6ea6b7ce049d613a29864f1eae53dea5fd61e75f",
+    "index_tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af",
+    "tracked_status_b64": "",
+    "tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af"
+  },
+  "argv": [
+    "cargo",
+    "+1.85.0",
+    "test",
+    "-p",
+    "quervant-core",
+    "--lib",
+    "--all-features",
+    "c3_",
+    "--",
+    "--test-threads=8"
+  ],
+  "before": {
+    "head": "6ea6b7ce049d613a29864f1eae53dea5fd61e75f",
+    "index_tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af",
+    "tracked_status_b64": "",
+    "tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af"
+  },
+  "combined_output_base64": "ICAgQ29tcGlsaW5nIHF1ZXJ2YW50LWNvcmUgdjAuMS4wICgvaG9tZS95ZHVjaGVzbmUvRGV2L0dpdGh1Yi95ZHVjaGVzbmUvcXVlcnZhbnQvY3JhdGVzL3F1ZXJ2YW50LWNvcmUpCiAgICBGaW5pc2hlZCBgdGVzdGAgcHJvZmlsZSBbdW5vcHRpbWl6ZWQgKyBkZWJ1Z2luZm9dIHRhcmdldChzKSBpbiA3LjU2cwogICAgIFJ1bm5pbmcgdW5pdHRlc3RzIHNyYy9saWIucnMgKHRhcmdldC9kZWJ1Zy9kZXBzL3F1ZXJ2YW50X2NvcmUtMzRiYmY4MWY3NDk2ZGUxMCkKCnJ1bm5pbmcgMjYgdGVzdHMKdGVzdCBzZWFyY2g6OnNjb3JlOjp0ZXN0czo6YzNfczAxX2NlcnRpZmljYXRlX21hdHJpeCAuLi4gb2sKdGVzdCBzZWFyY2g6OnNjb3JlOjp0ZXN0czo6YzNfczAyX3VuaWZvcm1fYm91bmRfYW5kX2JpdHMgLi4uIG9rCnRlc3Qgc2VhcmNoOjp1bmlmaWVkOjpiM190ZXN0czo6YzNfdTEzX2NvbGxpc2lvbl93aXRoX2RlZmVycmVkX2ZyZXF1ZW5jeSAuLi4gb2sKdGVzdCBzZWFyY2g6OmV4ZWN1dGU6OmMyX3BoeXNpY2FsX3Rlc3RzOjpjM19wMDFfZGVmZXJyZWRfZGVjb2RlX2FuZF9sZWRnZXIgLi4uIG9rCnRlc3Qgc2VhcmNoOjp1bmlmaWVkOjpiM190ZXN0czo6YzNfdTE0X211bHRpb25lX2RlZmVycmVkX3Njb3JlcyAuLi4gb2sKdGVzdCBzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjM191MDFfd2lubmVyX3Njb3JlX2NvdW50IC4uLiBvawp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMzX3UwOF9yYW5rX3RpZXNfYW5kX251bGxfb3JkZXIgLi4uIG9rCnRlc3Qgc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzNfdTA1X25hdGl2ZV9sYXRlcl9zZWdtZW50X2JvdW5kYXJ5IC4uLiBvawp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMzX3UwN19yZXBsYWNlbWVudF9hbmRfZmluYWxfaWRlbnRpdHkgLi4uIG9rCnRlc3Qgc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzNfdTEyX3ByaXZhdGVfcmVwcmVzZW50YXRpb24gLi4uIG9rCnRlc3Qgc2VhcmNoOjp1bmlmaWVkOjp0ZXN0czo6YzNfaW5zZXJ0X2V4YWN0X29uZV9vdmVyX2F0b21pYyAuLi4gb2sKdGVzdCBzZWFyY2g6OnVuaWZpZWQ6OnRlc3RzOjpjM19wYXRoX2JhdGNoX3Bhcml0eV9hbmRfbWVtb3J5X3JlamVjdCAuLi4gb2sKdGVzdCBzZWFyY2g6OnVuaWZpZWQ6OnRlc3RzOjpjM19wYXRoX2ZhaWxlZF90aGVuX3N1Y2Nlc3MgLi4uIG9rCnRlc3Qgc2VhcmNoOjp1bmlmaWVkOjp0ZXN0czo6YzNfcGF0aF9oZWFwX2V4YWN0X29uZV9vdmVyIC4uLiBvawp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6dGVzdHM6OmMzX3BhdGhfbGFyZ2VyX3JlcGxhY2VtZW50IC4uLiBvawp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6dGVzdHM6OmMzX3BhdGhfbm9uY29tcGV0aXRpdmVfemVyb19jaGFyZ2UgLi4uIG9rCnRlc3Qgc2VhcmNoOjp1bmlmaWVkOjp0ZXN0czo6YzNfcGF0aF9zbWFsbGVyX3JlcGxhY2VtZW50IC4uLiBvawp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6dGVzdHM6OmMzX3JlcGxhY2VtZW50X292ZXJsYXBfcGVhayAuLi4gb2sKdGVzdCBzZWFyY2g6OnVuaWZpZWQ6OnRlc3RzOjpjM19yZXBsYWNlbWVudF9yZWplY3RfYXRvbWljIC4uLiBvawp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMzX3UwM191bmNlcnRpZmllZF9zdGF0c19lYWdlcl9wcmVjZWRlbmNlIC4uLiBvawp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMzX3UwOV9sb2dpY2FsX2J1ZGdldF9lZGdlcyAuLi4gb2sKdGVzdCBzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjM191MDZfYjNfcmVmdXNhbF9tYXRyaXggLi4uIG9rCnRlc3Qgc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzNfdTA0X2NvcnJ1cHRpb25fcHJlY2VkZW5jZSAuLi4gb2sKdGVzdCBzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjM191MTBfY2FuY2VsX3BvbGxfcGFyaXR5IC4uLiBvawp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMzX3UwMl9kaXNwYXRjaF9hbmRfY291bnRfbWF0cml4IC4uLiBvawp0ZXN0IHNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMzX3UxMV9zZWVkZWRfZmluYWxfc2NvcmVzIC4uLiBvawoKdGVzdCByZXN1bHQ6IG9rLiAyNiBwYXNzZWQ7IDAgZmFpbGVkOyAwIGlnbm9yZWQ7IDAgbWVhc3VyZWQ7IDEyMzUgZmlsdGVyZWQgb3V0OyBmaW5pc2hlZCBpbiAxLjM0cwoK",
+  "combined_output_sha256": "a2e75949dbe1f785da8bcf0cbe0d04db9f313c233ae91c103791c2393618e16d",
+  "combined_output_size": 2175,
+  "command_exit_code": 0,
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "ended_utc": "2026-11-27T01:00:11.663259+00:00",
+  "expected_commit": "6ea6b7ce049d613a29864f1eae53dea5fd61e75f",
+  "label": "fin_suite_c3_msrv_af",
+  "removed_env_names": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE"
+  ],
+  "schema": "quervant-perf06-c3-receipt-v1",
+  "source_identity_valid": true,
+  "started_utc": "2026-11-27T01:00:02.721733+00:00"
+}

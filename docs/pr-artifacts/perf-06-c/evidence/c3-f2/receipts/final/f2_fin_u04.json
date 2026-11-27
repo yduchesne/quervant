@@ -1,0 +1,42 @@
+{
+  "after": {
+    "head": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+    "index_tree": "eb0695985f36bcb954e1da36e9f856b786f6640d",
+    "tracked_status_b64": "",
+    "tree": "eb0695985f36bcb954e1da36e9f856b786f6640d"
+  },
+  "argv": [
+    "cargo",
+    "+1.98.1",
+    "test",
+    "-p",
+    "quervant-core",
+    "--lib",
+    "search::unified::c2_tests::c3_u04_corruption_precedence",
+    "--",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "before": {
+    "head": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+    "index_tree": "eb0695985f36bcb954e1da36e9f856b786f6640d",
+    "tracked_status_b64": "",
+    "tree": "eb0695985f36bcb954e1da36e9f856b786f6640d"
+  },
+  "combined_output_base64": "ICAgIEZpbmlzaGVkIGB0ZXN0YCBwcm9maWxlIFt1bm9wdGltaXplZCArIGRlYnVnaW5mb10gdGFyZ2V0KHMpIGluIDAuMDZzCiAgICAgUnVubmluZyB1bml0dGVzdHMgc3JjL2xpYi5ycyAodGFyZ2V0L2RlYnVnL2RlcHMvcXVlcnZhbnRfY29yZS00YmNlMDVkZWU0ZTRmZWQ0KQoKcnVubmluZyAxIHRlc3QKdGVzdCBzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjM191MDRfY29ycnVwdGlvbl9wcmVjZWRlbmNlIC4uLiBDMyBVMDQgRDAgZGVzY3JpcHRvcj0oZG9jX2tleT1Tb21lKDApLHBvc3Rpbmc9ZmFsc2Usc29ydF9jb2x1bW49Tm9uZSxpbmplY3RlZD1Ob25lKTogRG9jS2V5IHN0cmljdD0xIGRlZmVycmVkPTEgZWFnZXI9MCBtZW1iZXJzaGlwPTMwIG51bWVyaWM9MSBjYWxsYmFja3M9MCBibTI1PTAKQzMgVTA0IEQyOSBkZXNjcmlwdG9yPShkb2Nfa2V5PVNvbWUoMjkpLHBvc3Rpbmc9ZmFsc2Usc29ydF9jb2x1bW49Tm9uZSxpbmplY3RlZD1Ob25lKTogRG9jS2V5IHN0cmljdD0xIGRlZmVycmVkPTEgZWFnZXI9MCBtZW1iZXJzaGlwPTMwIG51bWVyaWM9MSBjYWxsYmFja3M9MCBibTI1PTAKQzMgVTA0IEQzMSBkZXNjcmlwdG9yPShkb2Nfa2V5PVNvbWUoMzEpLHBvc3Rpbmc9ZmFsc2Usc29ydF9jb2x1bW49Tm9uZSxpbmplY3RlZD1Ob25lKTogRG9jS2V5IHN0cmljdD0xIGRlZmVycmVkPTEgZWFnZXI9MCBtZW1iZXJzaGlwPTMwIG51bWVyaWM9MSBjYWxsYmFja3M9MCBibTI1PTAKQzMgVTA0IFAyOSBkZXNjcmlwdG9yPShkb2Nfa2V5PU5vbmUscG9zdGluZz10cnVlLHNvcnRfY29sdW1uPU5vbmUsaW5qZWN0ZWQ9Tm9uZSk6IFplcm9GcmVxdWVuY3kgc3RyaWN0PTEgZGVmZXJyZWQ9MSBlYWdlcj0wIG1lbWJlcnNoaXA9MCBudW1lcmljPTAgY2FsbGJhY2tzPTAgYm0yNT0wCkMzIFUwNCBQMjkrRDAgZGVzY3JpcHRvcj0oZG9jX2tleT1Tb21lKDApLHBvc3Rpbmc9dHJ1ZSxzb3J0X2NvbHVtbj1Ob25lLGluamVjdGVkPU5vbmUpOiBaZXJvRnJlcXVlbmN5IHN0cmljdD0xIGRlZmVycmVkPTEgZWFnZXI9MCBtZW1iZXJzaGlwPTAgbnVtZXJpYz0wIGNhbGxiYWNrcz0wIGJtMjU9MApDMyBVMDQgQzAgZGVzY3JpcHRvcj0oZG9jX2tleT1Ob25lLHBvc3Rpbmc9ZmFsc2Usc29ydF9jb2x1bW49U29tZSgwKSxpbmplY3RlZD1Ob25lKTogU29ydENvbHVtbiBzdHJpY3Q9MCBkZWZlcnJlZD0wIGVhZ2VyPTAgbWVtYmVyc2hpcD0wIG51bWVyaWM9MCBjYWxsYmFja3M9MCBibTI1PTAKQzMgVTA0IEMyOSBkZXNjcmlwdG9yPShkb2Nfa2V5PU5vbmUscG9zdGluZz1mYWxzZSxzb3J0X2NvbHVtbj1Tb21lKDI5KSxpbmplY3RlZD1Ob25lKTogU29ydENvbHVtbiBzdHJpY3Q9MCBkZWZlcnJlZD0wIGVhZ2VyPTAgbWVtYmVyc2hpcD0wIG51bWVyaWM9MCBjYWxsYmFja3M9MCBibTI1PTAKQzMgVTA0IEMyOStQMjkrRDAgZGVzY3JpcHRvcj0oZG9jX2tleT1Tb21lKDApLHBvc3Rpbmc9dHJ1ZSxzb3J0X2NvbHVtbj1Tb21lKDI5KSxpbmplY3RlZD1Ob25lKTogU29ydENvbHVtbiBzdHJpY3Q9MCBkZWZlcnJlZD0wIGVhZ2VyPTAgbWVtYmVyc2hpcD0wIG51bWVyaWM9MCBjYWxsYmFja3M9MCBibTI1PTAKQzMgVTA0IFMyOStEMCBkZXNjcmlwdG9yPShkb2Nfa2V5PVNvbWUoMCkscG9zdGluZz1mYWxzZSxzb3J0X2NvbHVtbj1Ob25lLGluamVjdGVkPVNvbWUoMjkpKTogSW5qZWN0ZWRTY29yZSBzdHJpY3Q9MSBkZWZlcnJlZD0wIGVhZ2VyPTEgbWVtYmVyc2hpcD0zMCBudW1lcmljPTAgY2FsbGJhY2tzPTAgYm0yNT0yOQpDMyBVMDQgUzI5K0QwIHVuYXJtZWQtc3ludGhldGljLXNuYXBzaG90PUMzIHJvdXRlPSgxLCAwLCAxLCAxLCAwKSBtZW1iZXJzaGlwPTMwIG51bWVyaWM9MSBibTI1PTAKQzMgVTA0IGNvbXBsZXRlZD05IGlkcz1bIkQwIiwgIkQyOSIsICJEMzEiLCAiUDI5IiwgIlAyOStEMCIsICJDMCIsICJDMjkiLCAiQzI5K1AyOStEMCIsICJTMjkrRDAiXQpDMyBGMSBVMDQgcm93cz05IGlzb2xhdGVkLUMyOT10cnVlIHVuYXJtZWQtc3ludGhldGljLXNuYXBzaG90PUMzCm9rCgp0ZXN0IHJlc3VsdDogb2suIDEgcGFzc2VkOyAwIGZhaWxlZDsgMCBpZ25vcmVkOyAwIG1lYXN1cmVkOyAxMjE4IGZpbHRlcmVkIG91dDsgZmluaXNoZWQgaW4gMC4xMHMKCg==",
+  "combined_output_sha256": "1db1671568f4ebdac16a41433d38cecdd41a1754a0cd40da3f0c7122d5c03683",
+  "combined_output_size": 2122,
+  "command_exit_code": 0,
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "ended_utc": "2026-11-27T19:43:40.303170+00:00",
+  "expected_commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+  "label": "f2_fin_u04",
+  "removed_env_names": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE"
+  ],
+  "schema": "quervant-perf06-c3-receipt-v1",
+  "source_identity_valid": true,
+  "started_utc": "2026-11-27T19:43:40.118276+00:00"
+}

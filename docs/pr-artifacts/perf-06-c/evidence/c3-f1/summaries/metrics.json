@@ -1,0 +1,193 @@
+{
+  "baseline_contract_sha256": "f2da2e3bba4c188052fd48d42a46f0ce9392b58f9976189159baead2d664f05c",
+  "baseline_verification_sha256": "3236369ab9c57847ae6d17715f54a98dfc3b06bb335105dca98cedaab785f5db",
+  "command_contract_sha256": "1107c78e330559d8631882fc815a2d78dd0cc901e8517fcb32487c4663e545c4",
+  "coverage_lines": {
+    "f1_qa_cov_198": {
+      "covered": 72663,
+      "missed": 5026,
+      "percent": "93.53%",
+      "total": 77689
+    },
+    "f1_qa_cov_198_af": {
+      "covered": 73757,
+      "missed": 5442,
+      "percent": "93.13%",
+      "total": 79199
+    }
+  },
+  "f1_tested": "8f82f8290f838547dfc7d490f44ba8c0c8798d24",
+  "f1_tested_tree": "d22e2da175cb627a5e81b88905290d2a13958c11",
+  "freeze": {
+    "changed_paths": [
+      "crates/quervant-core/src/search/score.rs",
+      "crates/quervant-core/src/search/unified.rs",
+      "crates/quervant-core/tests/perf06_c2_physical.rs"
+    ],
+    "checker_sha256": "85012631836e96d62181f5ade033f59e4eaff2a8bf8256634b41ab5f67ca225b",
+    "current": "8f82f8290f838547dfc7d490f44ba8c0c8798d24",
+    "normal_build_source_equal": true,
+    "post_test_paths": null,
+    "source_regions": [
+      {
+        "after_sha256": "9cdcd9046e796f23c2e640e77310365c1c99cee27b70fb7b7dc873436d370f80",
+        "authorized_functions": [
+          "c3_s01_certificate_matrix"
+        ],
+        "before_sha256": "967610e7108ccca9a2e09b42745f64c59cd7ab849db7830312cc00c36893b6f1",
+        "path": "crates/quervant-core/src/search/score.rs",
+        "protected_sha256": "0145dbbeeaab56d9fe423cf22d4575ddaf5dba9c5d8c32d679b24fcde5b606cc"
+      },
+      {
+        "after_sha256": "272eac941c7e28e6fb1cb70656de137731b1a00c347fbadd950d83541a5894bf",
+        "authorized_functions": [
+          "c3_u02_dispatch_and_count_matrix",
+          "c3_u04_corruption_precedence",
+          "c3_u05_native_later_segment_boundary",
+          "c3_u09_logical_budget_edges"
+        ],
+        "before_sha256": "05965ec05d8a2b40c65f4881d007f6ce32b67bce63bab2dcf3507019f93bb34a",
+        "path": "crates/quervant-core/src/search/unified.rs",
+        "protected_sha256": "7efcd06279205e6f47a46fe980e53e84df4760cba9eca8c2fc0f8ec55cafecf7"
+      },
+      {
+        "after_sha256": "6ee4d2438512b3b0048fe6498fb2d2be40268da4720a1ac0e00afb96b9397faa",
+        "authorized_functions": [
+          "collect_pages",
+          "c3_i02_real_pit_update_merge_and_paging"
+        ],
+        "before_sha256": "73a4added5e0e4eeda58ebaca21e6aec689d2133061e9c477b788c2790aee5d4",
+        "path": "crates/quervant-core/tests/perf06_c2_physical.rs",
+        "protected_sha256": "0e546087972d99dee5fde00ef242c0b275b2c962bcdb91d4fbe79a5ee2b621e2"
+      }
+    ],
+    "start": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+    "status": "PASS",
+    "tested": null,
+    "tested_to_final_docs_only": false,
+    "unapproved_test_bytes_equal": true
+  },
+  "inventory_counts": {
+    "f1_fin_list_c2_broad": 52,
+    "f1_fin_list_c2p": 5,
+    "f1_fin_list_c2u": 24,
+    "f1_fin_list_c3": 26,
+    "f1_fin_list_integration": 12
+  },
+  "original_plan_sha256": "69b1aeba951d13361936ef8ffed75f77ec88362d3c7a38727b4eedd684f9a755",
+  "original_source_audit": {
+    "fail": 0,
+    "info": 1,
+    "pass": 36
+  },
+  "plan_sha256": "78a67331a496791c223ceb642180f9b7dd30da21530e231bc03bb01eb5d9408f",
+  "receipt_count": 51,
+  "scripts": {
+    "build_f1_contract.py": "62af39cca1c0dba47ac0c58ab580cdfe8473cdeeaac05ca93b44abdf9922d2ad",
+    "freeze_f1.py": "85012631836e96d62181f5ade033f59e4eaff2a8bf8256634b41ab5f67ca225b",
+    "record.py": "5bbb38e1b4b7538c56e80eacf1f694de19ccbd49528333f95553fde4bf80418d",
+    "run_contract.py": "42ba6fa6a9eacc1f698dfe7c0076228071b41fccb720b0daeb5b372ff0583c07",
+    "verify_f1_receipts.py": "f83e1ecc8e6c38cb86498e81e524d9a2ca1aab3cfa63fe8a425b507ba816a8e7"
+  },
+  "start": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+  "start_tree": "38b892beffb81dccbc651b5923bf1fa311fdb454",
+  "verification_sha256": "8cdb7f8b6d18ed1f9c9ac39d6a22774a42cef7cf03edecc2a9ab0abc5bce93c2",
+  "workspace_test_scopes": {
+    "f1_qa_test_185": {
+      "bench_test_mode_targets": {
+        "benches/bm25.rs": 1,
+        "benches/dictionary.rs": 6,
+        "benches/geo.rs": 2,
+        "benches/merge.rs": 3,
+        "benches/phrase.rs": 6,
+        "benches/postings.rs": 3,
+        "benches/search.rs": 18,
+        "benches/typed_analytics.rs": 3,
+        "benches/unified_diagnostics.rs": 30,
+        "benches/writer_mutation.rs": 2
+      },
+      "cargo_target_launches": 146,
+      "child_output_ambiguous": false,
+      "child_summaries_observed_passed": 10,
+      "doctest_scope": "none",
+      "parent_libtest_targets": 136,
+      "parent_totals": {
+        "failed": 0,
+        "ignored": 16,
+        "passed": 2749
+      }
+    },
+    "f1_qa_test_185_af": {
+      "bench_test_mode_targets": {
+        "benches/bm25.rs": 1,
+        "benches/dictionary.rs": 6,
+        "benches/geo.rs": 2,
+        "benches/merge.rs": 3,
+        "benches/phrase.rs": 6,
+        "benches/postings.rs": 3,
+        "benches/search.rs": 18,
+        "benches/typed_analytics.rs": 3,
+        "benches/unified_diagnostics.rs": 30,
+        "benches/writer_mutation.rs": 2
+      },
+      "cargo_target_launches": 146,
+      "child_output_ambiguous": false,
+      "child_summaries_observed_passed": 10,
+      "doctest_scope": "none",
+      "parent_libtest_targets": 136,
+      "parent_totals": {
+        "failed": 0,
+        "ignored": 100,
+        "passed": 2794
+      }
+    },
+    "f1_qa_test_198": {
+      "bench_test_mode_targets": {
+        "benches/bm25.rs": 1,
+        "benches/dictionary.rs": 6,
+        "benches/geo.rs": 2,
+        "benches/merge.rs": 3,
+        "benches/phrase.rs": 6,
+        "benches/postings.rs": 3,
+        "benches/search.rs": 18,
+        "benches/typed_analytics.rs": 3,
+        "benches/unified_diagnostics.rs": 30,
+        "benches/writer_mutation.rs": 2
+      },
+      "cargo_target_launches": 146,
+      "child_output_ambiguous": false,
+      "child_summaries_observed_passed": 10,
+      "doctest_scope": "none",
+      "parent_libtest_targets": 136,
+      "parent_totals": {
+        "failed": 0,
+        "ignored": 16,
+        "passed": 2749
+      }
+    },
+    "f1_qa_test_198_af": {
+      "bench_test_mode_targets": {
+        "benches/bm25.rs": 1,
+        "benches/dictionary.rs": 6,
+        "benches/geo.rs": 2,
+        "benches/merge.rs": 3,
+        "benches/phrase.rs": 6,
+        "benches/postings.rs": 3,
+        "benches/search.rs": 18,
+        "benches/typed_analytics.rs": 3,
+        "benches/unified_diagnostics.rs": 30,
+        "benches/writer_mutation.rs": 2
+      },
+      "cargo_target_launches": 146,
+      "child_output_ambiguous": true,
+      "child_summaries_observed_passed": 9,
+      "doctest_scope": "none",
+      "parent_libtest_targets": 136,
+      "parent_totals": {
+        "failed": 0,
+        "ignored": 100,
+        "passed": 2794
+      }
+    }
+  }
+}
