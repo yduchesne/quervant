@@ -47,7 +47,7 @@ use super::plan::CompiledLeaf;
 use super::projection::{
     ProjectionLedger, ProjectionPlan, projected_field_bytes, projected_hit_bytes,
 };
-use super::score::{SnapshotStats, compute_stats};
+use super::score::{DeferredBm25, SnapshotStats, compute_stats};
 use super::typed::{self, ScanGuard, TypedPlan};
 use super::typed_compare::{
     ColumnAccess, OrdinalSortKey, SortValue, compare_borrowed_keyword_to_owned, compare_candidates,
@@ -709,6 +709,34 @@ impl<'a> UnifiedSearcher<'a> {
         document_frequency > request.top_k.limit.saturating_add(1) as u64
     }
 
+    /// PERF-06-C3: issue the request-wide deferred-score certificate for an
+    /// already strictly-eligible request.
+    ///
+    /// The caller has passed both the static C2 predicate and the dynamic
+    /// `M > K+1` count guard, so this performs no second compilation, count scan,
+    /// B1 map or posting decode: it only reads the exact prepared field statistics
+    /// for the single compiled term. `None` is a successful decision to keep the
+    /// accepted eager C2 route, never an error.
+    fn strict_score_certificate<'s, 'f>(
+        plan: &'s UnifiedPlan,
+        stats: &'s SnapshotStats<'f>,
+    ) -> Option<DeferredBm25<'s, 'f>> {
+        #[cfg(test)]
+        {
+            c3_observation::record_certificate_attempt();
+            if c3_observation::eager_forced() || execute::c2_observation::score_failure_armed() {
+                return None;
+            }
+        }
+        let [CompiledLeaf::Term { field_id, terms }] = plan.lexical_leaves.as_slice() else {
+            return None;
+        };
+        let [term] = terms.as_slice() else {
+            return None;
+        };
+        stats.field(*field_id)?.certify_deferred(term.as_str())
+    }
+
     #[allow(clippy::needless_option_as_deref)]
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn collect_mixed(
@@ -814,6 +842,27 @@ impl<'a> UnifiedSearcher<'a> {
                 cancel,
             )?
         };
+        // PERF-06-C3: test-only shared synthetic-statistic seam. Placed before B1
+        // preparation and the route decision so a forced-Legacy comparison receives
+        // exactly the same injected statistic. These `INJECTED_SHARED_STATS` states
+        // cannot arise from a valid persisted index.
+        #[cfg(test)]
+        let stats = {
+            let mut stats = stats;
+            // The nested `match` keeps this lint-clean on the pinned 1.85 MSRV
+            // without a let-chain.
+            let target = match plan.lexical_leaves.as_slice() {
+                [CompiledLeaf::Term { field_id, terms }] => match terms.as_slice() {
+                    [term] => Some((*field_id, term)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some((field_id, term)) = target {
+                super::score::c3_score_observation::apply_fault(&mut stats, field_id, term);
+            }
+            stats
+        };
         // PERF-06-B2: one request-wide optional preparation, decided before any
         // candidate is processed. `None` means the whole request uses the
         // existing string/typed path; a B1 error is never a fallback.
@@ -885,32 +934,69 @@ impl<'a> UnifiedSearcher<'a> {
                 _ => None,
             }
         };
+        // PERF-06-C3: at most one request-wide certificate attempt, taken in the
+        // strict arm below. `None` keeps the accepted eager C2 body.
+        let mut deferred_score: Option<DeferredBm25<'_, '_>> = None;
         match (physical_ordinal_field, ordinal_map.as_ref()) {
             (Some(field_id), Some(map)) => {
                 #[cfg(test)]
                 c2_observation::record_strict_route();
-                collect_strict_term_ordinal_body(
-                    plan,
-                    request,
-                    &readers,
-                    &guards,
-                    &live,
-                    &expansion,
-                    &stats,
-                    map,
-                    field_id,
-                    keyword_late,
-                    &self.limits,
-                    &mut meter,
-                    &mut budget,
-                    &mut scope,
-                    &mut heap,
-                    &mut ordinal_heap_audit,
-                    &mut compact_hash_audit,
-                    &mut experiment,
-                    &mut total_hits,
-                    cancel,
-                )?;
+                deferred_score = Self::strict_score_certificate(plan, &stats);
+                #[cfg(test)]
+                if deferred_score.is_some() {
+                    c3_observation::record_deferred_route();
+                } else {
+                    c3_observation::record_eager_strict_route();
+                }
+                if let Some(cert) = deferred_score.as_ref() {
+                    collect_strict_term_ordinal_body::<true>(
+                        plan,
+                        request,
+                        &readers,
+                        &guards,
+                        &live,
+                        &expansion,
+                        &stats,
+                        map,
+                        field_id,
+                        keyword_late,
+                        &self.limits,
+                        &mut meter,
+                        &mut budget,
+                        &mut scope,
+                        &mut heap,
+                        &mut ordinal_heap_audit,
+                        &mut compact_hash_audit,
+                        &mut experiment,
+                        &mut total_hits,
+                        Some(cert),
+                        cancel,
+                    )?;
+                } else {
+                    collect_strict_term_ordinal_body::<false>(
+                        plan,
+                        request,
+                        &readers,
+                        &guards,
+                        &live,
+                        &expansion,
+                        &stats,
+                        map,
+                        field_id,
+                        keyword_late,
+                        &self.limits,
+                        &mut meter,
+                        &mut budget,
+                        &mut scope,
+                        &mut heap,
+                        &mut ordinal_heap_audit,
+                        &mut compact_hash_audit,
+                        &mut experiment,
+                        &mut total_hits,
+                        None,
+                        cancel,
+                    )?;
+                }
             }
             _ => {
                 #[cfg(test)]
@@ -954,11 +1040,16 @@ impl<'a> UnifiedSearcher<'a> {
             }
             None => None,
         };
-        let mut selected: Vec<SelectedHit> = heap
-            .into_sorted_vec()
-            .into_iter()
-            .map(|entry| entry.hit)
-            .collect();
+        let mut selected: Vec<SelectedHit> = if let Some(cert) = deferred_score.as_ref() {
+            let mut entries = heap.into_sorted_vec();
+            finalize_deferred_entries(&mut entries, request.top_k.limit, cert)?;
+            entries.into_iter().map(|entry| entry.hit).collect()
+        } else {
+            heap.into_sorted_vec()
+                .into_iter()
+                .map(|entry| entry.hit)
+                .collect()
+        };
         let mut next_cursor = None;
         if selected.len() > request.top_k.limit {
             let last = &selected[request.top_k.limit - 1];
@@ -1189,6 +1280,7 @@ fn collect_mixed_legacy_body<'a>(
                         segment_index,
                         score,
                         scoring,
+                        None,
                         bound,
                         translation,
                         identity,
@@ -1216,6 +1308,7 @@ fn collect_mixed_legacy_body<'a>(
                     key,
                     score,
                     scoring,
+                    None,
                     bound,
                     translation,
                     audit,
@@ -1328,6 +1421,7 @@ fn collect_mixed_legacy_body<'a>(
                 relevance,
                 ordinal_sort: None,
                 key_hash: None,
+                deferred_tf: None,
             };
             // Effective-live keys are unique per snapshot; a duplicate among
             // retained candidates indicates corrupt committed state.
@@ -1364,7 +1458,7 @@ fn collect_mixed_legacy_body<'a>(
 /// candidate handlers.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::needless_option_as_deref)]
-fn collect_strict_term_ordinal_body<'a>(
+fn collect_strict_term_ordinal_body<'a, const DEFERRED: bool>(
     plan: &UnifiedPlan,
     request: &'a UnifiedRequest,
     readers: &[&SegmentReader],
@@ -1384,8 +1478,16 @@ fn collect_strict_term_ordinal_body<'a>(
     compact_hash_audit: &mut CompactHashAudit,
     experiment: &mut d3c::State,
     total_hits: &mut u64,
+    certificate: Option<&DeferredBm25<'_, '_>>,
     cancel: &dyn Cancellation,
 ) -> SearchResult<()> {
+    // The const mode and the optional certificate must agree. A disagreement is a
+    // private internal inconsistency (never a user-triggered fallback).
+    if DEFERRED != certificate.is_some() {
+        return Err(SearchError::CorruptIndex {
+            detail: "strict ordinal score certificate mismatch".to_owned(),
+        });
+    }
     let heap_limit = request.top_k.limit.saturating_add(1);
     for (segment_index, reader) in readers.iter().enumerate() {
         let columns = ColumnAccess::open(reader)?;
@@ -1461,94 +1563,131 @@ fn collect_strict_term_ordinal_body<'a>(
         // PERF-06-B3: at most one key-identity binding attempt per segment, made on
         // the first scored candidate exactly where the accepted loop resolves its
         // own key. A refusal downgrades only this segment to the owned B2 path.
+        // PERF-06-C3: the shared candidate body is exactly the accepted callback
+        // body. In the certified mode `score` is the placeholder `0.0` (an unused
+        // argument of the include-score branch) and `deferred_tf` carries the
+        // positive raw frequency of this retained physical hit.
         let mut key_binder = KeyBinder::Unattempted;
-        execute::visit_strict_term_scored_with(
-            reader,
-            &plan.lexical_leaves,
-            expansion,
-            stats,
-            &plan.positive_lexical,
-            segment_index,
-            &live[segment_index],
-            budget,
-            meter,
-            cancel,
-            |doc_id, score, matched_count, budget| {
-                *total_hits = total_hits
-                    .checked_add(1)
-                    .ok_or(SearchError::ResourceLimit {
-                        limit: u64::MAX,
-                        requested: u64::MAX,
-                    })?;
-                #[cfg(test)]
-                b2_observation::record_numeric_candidate();
-                if matches!(key_binder, KeyBinder::Unattempted) {
-                    key_binder = if experiment.supports_compact_key() {
-                        match reader.bind_key_identity(cancel)? {
-                            Some(identity) => KeyBinder::Ready(identity),
-                            None => KeyBinder::Fallback,
-                        }
-                    } else {
-                        KeyBinder::Fallback
-                    };
-                    #[cfg(test)]
-                    if matches!(key_binder, KeyBinder::Fallback) {
-                        c2_observation::record_owned_key_fallback_segment(segment_index);
+        let mut accept = |doc_id: u64,
+                          score: f64,
+                          include_score: bool,
+                          deferred_tf: Option<std::num::NonZeroU64>,
+                          matched_count: usize,
+                          budget: &mut CandidateBudget|
+         -> SearchResult<()> {
+            *total_hits = total_hits
+                .checked_add(1)
+                .ok_or(SearchError::ResourceLimit {
+                    limit: u64::MAX,
+                    requested: u64::MAX,
+                })?;
+            #[cfg(test)]
+            b2_observation::record_numeric_candidate();
+            if matches!(key_binder, KeyBinder::Unattempted) {
+                key_binder = if experiment.supports_compact_key() {
+                    match reader.bind_key_identity(cancel)? {
+                        Some(identity) => KeyBinder::Ready(identity),
+                        None => KeyBinder::Fallback,
                     }
-                }
-                let audit = ordinal_heap_audit
-                    .as_mut()
-                    .ok_or_else(mixed_ordinal_heap_error)?;
-                if let KeyBinder::Ready(identity) = &key_binder {
-                    consider_compact_ordinal_candidate(
-                        &columns,
-                        reader.schema(),
-                        request,
-                        doc_id,
-                        segment_index,
-                        score,
-                        true,
-                        &bound,
-                        &translation,
-                        identity,
-                        audit,
-                        &mut *compact_hash_audit,
-                        heap,
-                        heap_limit,
-                        budget,
-                        scope,
-                        &mut *experiment,
-                    )?;
-                    return Ok(());
-                }
-                // PR 15E Phase 5: a large segment projecting exactly one hit decodes
-                // only that one document key; every other shape keeps the full cache.
-                let single_hit_segment = matched_count == 1 && reader.doc_count() >= 1024;
-                let key = if single_hit_segment {
-                    reader.doc_key_selected(doc_id)?
                 } else {
-                    reader.doc_key(doc_id)?
+                    KeyBinder::Fallback
                 };
-                consider_ordinal_keyword_candidate(
+                #[cfg(test)]
+                if matches!(key_binder, KeyBinder::Fallback) {
+                    c2_observation::record_owned_key_fallback_segment(segment_index);
+                }
+            }
+            let audit = ordinal_heap_audit
+                .as_mut()
+                .ok_or_else(mixed_ordinal_heap_error)?;
+            if let KeyBinder::Ready(identity) = &key_binder {
+                consider_compact_ordinal_candidate(
                     &columns,
                     reader.schema(),
                     request,
                     doc_id,
                     segment_index,
-                    key,
                     score,
-                    true,
+                    include_score,
+                    deferred_tf,
                     &bound,
                     &translation,
+                    identity,
                     audit,
+                    &mut *compact_hash_audit,
                     heap,
                     heap_limit,
                     budget,
                     scope,
                     &mut *experiment,
-                )
-            },
-        )?;
+                )?;
+                return Ok(());
+            }
+            // PR 15E Phase 5: a large segment projecting exactly one hit decodes
+            // only that one document key; every other shape keeps the full cache.
+            let single_hit_segment = matched_count == 1 && reader.doc_count() >= 1024;
+            let key = if single_hit_segment {
+                reader.doc_key_selected(doc_id)?
+            } else {
+                reader.doc_key(doc_id)?
+            };
+            consider_ordinal_keyword_candidate(
+                &columns,
+                reader.schema(),
+                request,
+                doc_id,
+                segment_index,
+                key,
+                score,
+                include_score,
+                deferred_tf,
+                &bound,
+                &translation,
+                audit,
+                heap,
+                heap_limit,
+                budget,
+                scope,
+                &mut *experiment,
+            )
+        };
+        if DEFERRED {
+            let cert = certificate.ok_or_else(|| SearchError::CorruptIndex {
+                detail: "strict ordinal score certificate mismatch".to_owned(),
+            })?;
+            execute::visit_strict_term_deferred_with(
+                reader,
+                &plan.lexical_leaves,
+                expansion,
+                stats,
+                &plan.positive_lexical,
+                segment_index,
+                &live[segment_index],
+                budget,
+                meter,
+                cancel,
+                cert,
+                |doc_id, tf, matched_count, budget| {
+                    accept(doc_id, 0.0, false, Some(tf), matched_count, budget)
+                },
+            )?;
+        } else {
+            execute::visit_strict_term_scored_with(
+                reader,
+                &plan.lexical_leaves,
+                expansion,
+                stats,
+                &plan.positive_lexical,
+                segment_index,
+                &live[segment_index],
+                budget,
+                meter,
+                cancel,
+                |doc_id, score, matched_count, budget| {
+                    accept(doc_id, score, true, None, matched_count, budget)
+                },
+            )?;
+        }
         #[cfg(test)]
         c2_observation::record_collected_segment(segment_index, heap.len(), *total_hits);
         // Drop the geo allocations first; their batch reservations are released
@@ -2587,6 +2726,7 @@ fn materialize_keyword_entry<'a>(
         relevance: false,
         ordinal_sort: None,
         key_hash: None,
+        deferred_tf: None,
     })
 }
 
@@ -2625,6 +2765,7 @@ fn admit_legacy_keyword_candidate<'a>(
         relevance: false,
         ordinal_sort: None,
         key_hash: None,
+        deferred_tf: None,
     };
     experiment.check(heap, &entry.hit.key)?;
     experiment.admit(entry, heap, heap_limit, budget, scope)
@@ -2996,6 +3137,7 @@ fn consider_ordinal_keyword_candidate<'a>(
     key: DocumentKey,
     score: f64,
     include_score: bool,
+    deferred_tf: Option<std::num::NonZeroU64>,
     bound: &KeywordSortOrdinalColumn<'_>,
     translation: &SegmentOrdinalMap<'_>,
     audit: &mut OrdinalHeapAudit,
@@ -3087,6 +3229,7 @@ fn consider_ordinal_keyword_candidate<'a>(
         relevance: false,
         ordinal_sort: Some(prepared.numeric),
         key_hash: Some(key_hash),
+        deferred_tf,
     };
     experiment.admit(entry, heap, heap_limit, budget, scope)
 }
@@ -3162,6 +3305,7 @@ fn consider_compact_ordinal_candidate<'a>(
     segment_index: usize,
     score: f64,
     include_score: bool,
+    deferred_tf: Option<std::num::NonZeroU64>,
     bound: &KeywordSortOrdinalColumn<'_>,
     translation: &SegmentOrdinalMap<'_>,
     identity: &BoundKeyIdentity<'_>,
@@ -3273,8 +3417,50 @@ fn consider_compact_ordinal_candidate<'a>(
         relevance: false,
         ordinal_sort: Some(prepared.numeric),
         key_hash: Some(key_meta.hash),
+        deferred_tf,
     };
     experiment.admit(entry, heap, heap_limit, budget, scope)
+}
+
+/// PERF-06-C3: score only the returned hits of a certified deferred request.
+///
+/// All bounded retained entries — including the `K+1` cursor lookahead — are
+/// validated first, so a malformed private candidate can never be silently
+/// repaired or partially scored. Only the first `k` (best-first) entries receive
+/// a score; the lookahead keeps `score = None` and is truncated by the unchanged
+/// cursor handoff. There is no allocation, clone, new read, work charge or
+/// cancellation poll here: the retained entries already own their physical
+/// `(segment_index, doc_id)` and the certificate borrows the same immutable
+/// statistics and norm source used by the eager path.
+fn finalize_deferred_entries(
+    entries: &mut [MixedEntry<'_>],
+    k: usize,
+    certificate: &DeferredBm25<'_, '_>,
+) -> SearchResult<()> {
+    for entry in entries.iter() {
+        if entry.relevance
+            || entry.ordinal_sort.is_none()
+            || entry.deferred_tf.is_none()
+            || entry.hit.score.is_some()
+        {
+            return Err(SearchError::CorruptIndex {
+                detail: "invalid deferred ordinal candidate".to_owned(),
+            });
+        }
+    }
+    for entry in entries.iter_mut().take(k) {
+        let tf = entry
+            .deferred_tf
+            .take()
+            .ok_or_else(|| SearchError::CorruptIndex {
+                detail: "invalid deferred ordinal candidate".to_owned(),
+            })?;
+        let score = certificate.score(entry.hit.segment_index, entry.hit.doc_id, tf)?;
+        entry.hit.score = Some(score);
+        #[cfg(test)]
+        c3_observation::record_final_score(entry.hit.segment_index, entry.hit.doc_id, tf.get());
+    }
+    Ok(())
 }
 
 /// One bounded top-K entry. `Ord` delegates to the canonical comparator and
@@ -3292,6 +3478,15 @@ struct MixedEntry<'a> {
     /// numeric-mode retained entry. It is an inline duplicate-check *prefilter*
     /// only — never an identity — and is `None` on every other path.
     key_hash: Option<u64>,
+    /// PERF-06-C3 only: positive raw term frequency for this retained physical
+    /// hit.
+    ///
+    /// Present iff the hit has not yet been scored by the certified route.
+    /// Eager/Legacy entries always carry `None`. It is never consulted by `Ord`,
+    /// the duplicate policy or the cursor: it merely travels with the exact entry
+    /// across heap push/pop/sort/replacement so finalization can score only the
+    /// returned hits from their own stored physical identity.
+    deferred_tf: Option<std::num::NonZeroU64>,
 }
 
 impl PartialEq for MixedEntry<'_> {
@@ -3868,6 +4063,92 @@ pub(crate) mod c2_observation {
     impl Drop for ForceLegacy {
         fn drop(&mut self) {
             FORCE_LEGACY.with(|value| value.set(self.previous));
+        }
+    }
+}
+
+/// PERF-06-C3 test-only route/identity witnesses.
+///
+/// Every counter is thread-local and compiled out of non-test builds. Nothing
+/// here changes a decision except the explicit [`ForceEager`] RAII test arm.
+#[cfg(test)]
+pub(crate) mod c3_observation {
+    use std::cell::{Cell, RefCell};
+
+    thread_local! {
+        static CERTIFICATE_ATTEMPTS: Cell<usize> = const { Cell::new(0) };
+        static DEFERRED_ROUTES: Cell<usize> = const { Cell::new(0) };
+        static EAGER_STRICT_ROUTES: Cell<usize> = const { Cell::new(0) };
+        static FINAL_SCORES: RefCell<Vec<(usize, u64, u64)>> =
+            const { RefCell::new(Vec::new()) };
+        static FORCE_EAGER: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Reset the counters and recorded identities, but never the force arm.
+    pub(crate) fn reset() {
+        CERTIFICATE_ATTEMPTS.with(|value| value.set(0));
+        DEFERRED_ROUTES.with(|value| value.set(0));
+        EAGER_STRICT_ROUTES.with(|value| value.set(0));
+        FINAL_SCORES.with(|value| value.borrow_mut().clear());
+    }
+
+    pub(crate) fn certificate_attempts() -> usize {
+        CERTIFICATE_ATTEMPTS.with(Cell::get)
+    }
+
+    pub(crate) fn deferred_routes() -> usize {
+        DEFERRED_ROUTES.with(Cell::get)
+    }
+
+    pub(crate) fn eager_strict_routes() -> usize {
+        EAGER_STRICT_ROUTES.with(Cell::get)
+    }
+
+    pub(crate) fn final_scores() -> Vec<(usize, u64, u64)> {
+        FINAL_SCORES.with(|value| value.borrow().clone())
+    }
+
+    pub(crate) fn record_certificate_attempt() {
+        CERTIFICATE_ATTEMPTS.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn record_deferred_route() {
+        DEFERRED_ROUTES.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn record_eager_strict_route() {
+        EAGER_STRICT_ROUTES.with(|value| value.set(value.get() + 1));
+    }
+
+    pub(crate) fn record_final_score(segment_index: usize, doc_id: u64, tf: u64) {
+        FINAL_SCORES.with(|value| value.borrow_mut().push((segment_index, doc_id, tf)));
+    }
+
+    pub(crate) fn eager_forced() -> bool {
+        FORCE_EAGER.with(Cell::get)
+    }
+
+    /// Thread-local RAII override that keeps an eligible strict request on the
+    /// accepted eager C2 path. It restores the previous value on `Drop`,
+    /// including while unwinding, so nested use is safe.
+    pub(crate) struct ForceEager {
+        previous: bool,
+    }
+
+    impl ForceEager {
+        pub(crate) fn apply() -> Self {
+            let previous = FORCE_EAGER.with(|value| {
+                let previous = value.get();
+                value.set(true);
+                previous
+            });
+            Self { previous }
+        }
+    }
+
+    impl Drop for ForceEager {
+        fn drop(&mut self) {
+            FORCE_EAGER.with(|value| value.set(self.previous));
         }
     }
 }
@@ -7917,6 +8198,7 @@ mod b2_tests {
             DocumentKey::new("k000").expect("key"),
             1.0,
             true,
+            None,
             &bound,
             &translation,
             &mut audit,
@@ -7944,6 +8226,7 @@ mod b2_tests {
             DocumentKey::new("k001").expect("key"),
             1.0,
             true,
+            None,
             &bound,
             &translation,
             &mut audit,
@@ -8169,6 +8452,7 @@ mod b2_tests {
             relevance: false,
             ordinal_sort: ordinal,
             key_hash: None,
+            deferred_tf: None,
         };
         let one = entry("k1", Some(OrdinalSortKey::Value(2)));
         let two = entry("k2", Some(OrdinalSortKey::Value(1)));
@@ -8791,6 +9075,7 @@ mod b2_tests {
                 relevance: false,
                 ordinal_sort: ordinal,
                 key_hash: None,
+                deferred_tf: None,
             }
         };
         let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
@@ -8823,6 +9108,7 @@ mod b2_tests {
             DocumentKey::new("k2").expect("key"),
             1.0,
             true,
+            None,
             &bound,
             &translation,
             &mut audit,
@@ -8863,6 +9149,7 @@ mod b2_tests {
             DocumentKey::new("k2").expect("key"),
             1.0,
             true,
+            None,
             &bound,
             &translation,
             &mut clean_audit,
@@ -8911,6 +9198,7 @@ mod d3c_tests {
             relevance: true,
             ordinal_sort: None,
             key_hash: None,
+            deferred_tf: None,
         }
     }
 
@@ -10407,6 +10695,7 @@ mod b3_tests {
             relevance: false,
             ordinal_sort: ordinal,
             key_hash: hash,
+            deferred_tf: None,
         }
     }
 
@@ -11351,6 +11640,278 @@ mod b3_tests {
         );
         assert_eq!(b3_build_attempts(), 0);
     }
+
+    // -----------------------------------------------------------------------
+    // PERF-06-C3 — deferred frequency with compact keys and MultiOne
+    // -----------------------------------------------------------------------
+
+    /// A synthetic entry carrying an unscored deferred frequency, matching the
+    /// eager helper's key/hash/ordinal shape exactly.
+    fn deferred_entry(
+        key: &str,
+        hash: Option<u64>,
+        ordinal: Option<OrdinalSortKey>,
+    ) -> MixedEntry<'static> {
+        let mut entry = synthetic_entry(key, hash, ordinal);
+        entry.hit.score = None;
+        entry.deferred_tf = Some(std::num::NonZeroU64::new(7).expect("positive"));
+        entry
+    }
+
+    #[test]
+    fn c3_u13_collision_with_deferred_frequency() {
+        crate::search::score::c3_score_observation::reset();
+        c3_observation::reset();
+        let shared = 0xDEAD_BEEF_u64;
+        let state = d3c::State::for_test(d3c::Kind::Linear, d3c::Profile::P0, 8);
+
+        // The same structural checks with deferred entries.
+        let mut heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        heap.push(deferred_entry(
+            "retained-key",
+            Some(shared),
+            Some(OrdinalSortKey::Value(1)),
+        ));
+        state
+            .check_compact(&heap, shared, || Ok("other-key"))
+            .expect("collision is not identity");
+        let deferred_error = state
+            .check_compact(&heap, shared, || Ok("retained-key"))
+            .expect_err("exact duplicate");
+        let mut consulted = false;
+        state
+            .check_compact(&heap, shared ^ 1, || {
+                consulted = true;
+                Ok("never")
+            })
+            .expect("no collision");
+        assert!(!consulted, "no raw key borrow without a hash match");
+        for sentinel in [0u64, u64::MAX] {
+            let mut sentinel_heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+            sentinel_heap.push(deferred_entry(
+                "sentinel",
+                Some(sentinel),
+                Some(OrdinalSortKey::Value(1)),
+            ));
+            state
+                .check_compact(&sentinel_heap, sentinel, || Ok("different"))
+                .expect("sentinel collision, different bytes");
+            assert!(matches!(
+                state.check_compact(&sentinel_heap, sentinel, || Ok("sentinel")),
+                Err(SearchError::CorruptIndex { .. })
+            ));
+        }
+        let mut mixed: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        mixed.push(deferred_entry(
+            "hashed",
+            Some(shared),
+            Some(OrdinalSortKey::Value(1)),
+        ));
+        mixed.push(deferred_entry(
+            "unhashed",
+            None,
+            Some(OrdinalSortKey::Value(9)),
+        ));
+        let missing_hash_error = state
+            .check_compact(&mixed, shared, || Ok("x"))
+            .expect_err("missing fingerprint");
+        let mut audit = CompactHashAudit::new();
+        assert!(audit.verify_once(&mixed).is_err());
+        let mut clean = CompactHashAudit::new();
+        clean.verify_once(&heap).expect("all entries hashed");
+        clean.verify_once(&heap).expect("audited once");
+
+        // Exact same outcomes for the identical eager (scored) entries.
+        let mut eager_heap: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        eager_heap.push(synthetic_entry(
+            "retained-key",
+            Some(shared),
+            Some(OrdinalSortKey::Value(1)),
+        ));
+        let eager_error = state
+            .check_compact(&eager_heap, shared, || Ok("retained-key"))
+            .expect_err("exact duplicate");
+        assert_eq!(
+            format!("{deferred_error:?}"),
+            format!("{eager_error:?}"),
+            "duplicate error parity with the eager entry"
+        );
+        assert!(
+            matches!(
+                &deferred_error,
+                SearchError::CorruptIndex { detail }
+                    if detail == "duplicate live document key across segments"
+            ),
+            "{deferred_error:?}"
+        );
+        let mut eager_mixed: BinaryHeap<MixedEntry<'_>> = BinaryHeap::new();
+        eager_mixed.push(synthetic_entry(
+            "hashed",
+            Some(shared),
+            Some(OrdinalSortKey::Value(1)),
+        ));
+        eager_mixed.push(synthetic_entry(
+            "unhashed",
+            None,
+            Some(OrdinalSortKey::Value(9)),
+        ));
+        let eager_missing = state
+            .check_compact(&eager_mixed, shared, || Ok("x"))
+            .expect_err("missing fingerprint");
+        assert_eq!(
+            format!("{missing_hash_error:?}"),
+            format!("{eager_missing:?}"),
+            "missing-fingerprint error parity"
+        );
+
+        // Structural only: no scorer ran and no returned hit was materialized.
+        assert_eq!(
+            crate::search::score::c3_score_observation::calls(),
+            0,
+            "the duplicate policy never scores"
+        );
+        assert!(
+            c3_observation::final_scores().is_empty(),
+            "no returned hit was finalized"
+        );
+        eprintln!("C3 U13 collision rows=5 deferred/eager error parity=ok");
+    }
+
+    #[test]
+    fn c3_u14_multione_deferred_scores() {
+        use crate::segment::reader::reset_b3_counters;
+
+        let multi: Vec<(String, City)> = (0..64)
+            .map(|index| {
+                let value: &'static str = Box::leak(format!("m{index:08}").into_boxed_str());
+                (format!("m{index:05}"), City::Multi(value))
+            })
+            .collect();
+        let index = build_segments(&[multi]);
+        let snapshot = index.snapshot();
+
+        let page = request(
+            term(),
+            5,
+            sort_field(SortDirection::Asc, MissingValuePosition::Last),
+        );
+
+        let reset_all = || {
+            c2_observation::reset();
+            crate::search::execute::c2_observation::reset();
+            crate::search::score::c3_score_observation::reset();
+            c3_observation::reset();
+            b2_observation::reset();
+            b3_observation::reset();
+            reset_b3_counters();
+        };
+
+        // Actual physical order of the committed segment.
+        let physical: Vec<String> = {
+            let guard = snapshot.open_segment_reader(0).expect("guard");
+            guard
+                .reader()
+                .doc_keys()
+                .expect("keys")
+                .iter()
+                .map(|key| key.as_str().to_owned())
+                .collect()
+        };
+        assert_eq!(physical.len(), 64, "64 MultiOne rows");
+        assert_eq!(physical[0], "m00000", "literal first physical key");
+        assert_eq!(physical[63], "m00063", "literal last physical key");
+
+        reset_all();
+        let response = search(&snapshot, &page);
+        let strict = c2_observation::strict_routes();
+        let legacy = c2_observation::legacy_routes();
+        let attempts = c3_observation::certificate_attempts();
+        let deferred = c3_observation::deferred_routes();
+        let eager = c3_observation::eager_strict_routes();
+        let callbacks = crate::search::execute::c2_observation::callbacks();
+        let membership = crate::search::execute::c2_observation::strict_membership_observations();
+        let numeric = b2_observation::numeric_candidates();
+        let multi_one = b2_observation::multi_one_legacy_decodes();
+        let owned_single = b2_observation::owned_single_strings();
+        let compact_keys = b3_observation::owned_key_materializations();
+        let calls = crate::search::score::c3_score_observation::calls();
+        let identities = c3_observation::final_scores();
+
+        assert_eq!((strict, legacy), (1, 0), "certified strict family");
+        assert_eq!((attempts, deferred, eager), (1, 1, 0), "certified route");
+        assert_eq!(response.total_hits, 64, "exact count");
+        assert_eq!(membership, 64, "every posting examined");
+        assert_eq!(callbacks, 64, "every match admitted");
+        assert_eq!(numeric, 64, "every match entered numeric collection");
+        assert_eq!(multi_one, 64, "every MultiOne candidate decodes its tuple");
+        assert_eq!(owned_single, 0, "no owned Single sort string");
+        assert_eq!(compact_keys, 6, "K+1 compact key materializations");
+        assert_eq!(calls, 5, "only returned hits are scored");
+        assert_eq!(identities.len(), 5, "five final identities");
+        assert_eq!(
+            keys(&response),
+            vec!["m00000", "m00001", "m00002", "m00003", "m00004"],
+            "literal ascending winners"
+        );
+        assert_eq!(
+            identities,
+            (0..5u64)
+                .map(|doc_id| (0usize, doc_id, 1u64))
+                .collect::<Vec<_>>(),
+            "physical identity in returned order"
+        );
+
+        // Same-query eager and Legacy parity, reset before each reference.
+        reset_all();
+        let reference_eager = {
+            let _guard = c3_observation::ForceEager::apply();
+            search(&snapshot, &page)
+        };
+        assert_eq!(c3_observation::eager_strict_routes(), 1, "eager route");
+        assert_eq!(
+            crate::search::score::c3_score_observation::calls(),
+            64,
+            "eager scores every MultiOne match"
+        );
+        assert_eq!(keys(&response), keys(&reference_eager));
+        assert_eq!(bits(&response), bits(&reference_eager));
+        assert_eq!(response.next_cursor, reference_eager.next_cursor);
+        assert_eq!(response.total_hits, reference_eager.total_hits);
+        assert_eq!(response.generation, reference_eager.generation);
+        assert_eq!(response.view_ordinal, reference_eager.view_ordinal);
+        assert_eq!(response.aggregation, reference_eager.aggregation);
+
+        reset_all();
+        let reference_legacy = {
+            let _guard = c2_observation::ForceLegacy::apply();
+            search(&snapshot, &page)
+        };
+        assert_eq!(c2_observation::legacy_routes(), 1, "legacy route");
+        assert_eq!(keys(&response), keys(&reference_legacy));
+        assert_eq!(bits(&response), bits(&reference_legacy));
+        assert_eq!(response.next_cursor, reference_legacy.next_cursor);
+        assert_eq!(response.total_hits, reference_legacy.total_hits);
+        assert_eq!(response.generation, reference_legacy.generation);
+        assert_eq!(response.view_ordinal, reference_legacy.view_ordinal);
+        // Stored/rank MultiOne semantics are unchanged: every returned hit keeps
+        // its single decoded keyword value.
+        for hit in &response.hits {
+            let projected = hit
+                .fields
+                .iter()
+                .find(|(name, _)| name == "doc_id")
+                .expect("doc_id projected");
+            assert_eq!(
+                projected.1,
+                FieldValues::Multi(vec![FieldValue::Keyword(format!(
+                    "m{:08}",
+                    hit.key.as_str()[1..].parse::<usize>().expect("index")
+                ))]),
+                "MultiOne projected value"
+            );
+        }
+        eprintln!("C3 U14 rows=64 multione=64 compact-keys={compact_keys} bm25=5");
+    }
 }
 
 /// PERF-06-C2 unit and adversarial acceptance.
@@ -12040,6 +12601,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u01_static_dispatch_matrix() {
+        let _force_eager = c3_observation::ForceEager::apply();
         let fixture = Fixture::new(&[documents(24)]);
         // Control: the exact eligible shape must take the physical route.
         let eligible = request_asc(term_common(), 5);
@@ -12221,6 +12783,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u02_cardinality_boundary() {
+        let _force_eager = c3_observation::ForceEager::apply();
         for top_k in [1usize, 10, 31, 32, 100] {
             for delta in [-2i64, -1, 0, 1, 2] {
                 let matches = (top_k as i64 + 1 + delta).max(0) as usize;
@@ -12282,6 +12845,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u03_validation_precedence() {
+        let _force_eager = c3_observation::ForceEager::apply();
         let fixture = Fixture::new(&[documents(16)]);
         // Query/sort/projection/TopK validation all precede any segment work.
         let bad_query = request_asc(
@@ -12329,6 +12893,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u04_runtime_shape_and_decoder() {
+        let _force_eager = c3_observation::ForceEager::apply();
         let fixture = Fixture::new(&[documents(40)]);
         let request = request_asc(term_common(), 3);
         reset_witnesses();
@@ -12390,6 +12955,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u05_n_work_and_scanned_freq() {
+        let _force_eager = c3_observation::ForceEager::apply();
         // Every document contains `alpha` with a distinct term frequency, so the
         // scanned-occurrence charge is `freq`-based rather than candidate-based.
         let fixture = Fixture::new(&[body_documents(60)]);
@@ -12496,6 +13062,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u06_exact_total_hits() {
+        let _force_eager = c3_observation::ForceEager::apply();
         let fixture = Fixture::new(&[documents(100)]);
         // K=10 and K=90 both leave M=100 > K+1, so both take the physical route.
         for top_k in [10usize, 90] {
@@ -12535,6 +13102,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u07_late_score_error_beats_key_error() {
+        let _force_eager = c3_observation::ForceEager::apply();
         let fixture = Fixture::new(&[documents(30)]);
         let request = request_asc(term_common(), 3);
         reset_witnesses();
@@ -12607,6 +13175,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u08_score_bit_parity() {
+        let _force_eager = c3_observation::ForceEager::apply();
         let mut rng = Rng(0x00C2_0208_1125_0001);
         let mut compared = 0usize;
         for case in 0..64usize {
@@ -12667,6 +13236,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u09_inplace_allocation_identity() {
+        let _force_eager = c3_observation::ForceEager::apply();
         let fixture = Fixture::new(&[body_documents(50)]);
         let request = request_asc(term_body(), 4);
         reset_witnesses();
@@ -12694,6 +13264,7 @@ mod c2_tests {
     /// `3*m = 9` entries and `P + S + T = 16m + 48m + 64m = 384` bytes.
     #[test]
     fn c2_u10_virtual_ledger_exact_boundaries() {
+        let _force_eager = c3_observation::ForceEager::apply();
         // Three worksheet shapes: (documents = m, top_k, expected peak entries, bytes)
         // where `bytes = 128m` and `entries = 3m` because P=16m, S=48m, T=64m.
         for (m, top_k) in [(3usize, 1usize), (12, 10), (102, 100)] {
@@ -12772,6 +13343,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u11_preflight_atomic_and_raii() {
+        let _force_eager = c3_observation::ForceEager::apply();
         let fixture = Fixture::new(&[body_documents(6)]);
         let request = request_asc(term_body(), 2);
         // A late score fault must surface as the score error, never as a corrupted
@@ -12848,6 +13420,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u13_cancellation_progress() {
+        let _force_eager = c3_observation::ForceEager::apply();
         let fixture = Fixture::new(&[body_documents(40)]);
         let request = request_asc(term_body(), 3);
 
@@ -12937,6 +13510,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u14_numeric_rank_null_missing_multione() {
+        let _force_eager = c3_observation::ForceEager::apply();
         let ranks = [
             Rank::Value("b"),
             Rank::Missing,
@@ -12984,6 +13558,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u15_duplicate_collision_and_loser() {
+        let _force_eager = c3_observation::ForceEager::apply();
         // Upserts of one logical key across segments stay one live document: the
         // exact-key identity, never a fingerprint, decides identity.
         let fixture = Fixture::new(&[documents(5)]);
@@ -13031,6 +13606,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u16_cursor_sentinel_and_legacy_continuation() {
+        let _force_eager = c3_observation::ForceEager::apply();
         for top_k in [1usize, 10] {
             let fixture = Fixture::new(&[documents(30)]);
             let mut collected: Vec<String> = Vec::new();
@@ -13084,6 +13660,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u17_ordinal_unavailable_and_b3_refusal() {
+        let _force_eager = c3_observation::ForceEager::apply();
         use crate::index::KeywordOrdinalUnavailable;
         use crate::segment::reader::{
             B3Probe, B3ProbeOutcome, b3_build_attempts, b3_directory_builds,
@@ -13649,6 +14226,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u12_corrupt_selected_unselected_and_multi_fault() {
+        let _force_eager = c3_observation::ForceEager::apply();
         // --- pristine 32-row corpus: 30 matching rows, K = 3, K+1 = 4 --------
         let mut rows = documents(30);
         rows.extend(other_documents(2, 30));
@@ -13977,6 +14555,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u18_pit_mutation_and_mixed_segments() {
+        let _force_eager = c3_observation::ForceEager::apply();
         let fixture = Fixture::new(&[documents(6), documents(12).into_iter().skip(6).collect()]);
         let request = request_asc(term_common(), 3);
         let old = fixture.snapshot.clone();
@@ -14034,6 +14613,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u19_sibling_paths_untouched() {
+        let _force_eager = c3_observation::ForceEager::apply();
         let fixture = Fixture::new(&[documents(20)]);
         let searcher = fixture.searcher(SearchLimits::default(), TopKDuplicateConfig::default());
         // Complete-membership mutation seam.
@@ -14086,6 +14666,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u20_generic_hot_loop_isolation() {
+        let _force_eager = c3_observation::ForceEager::apply();
         let fixture = Fixture::new(&[documents(24)]);
         let request = request_asc(term_common(), 5);
         // Forced Legacy executes the accepted generic body only, with no physical
@@ -14122,6 +14703,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u21_work_budget_exhaustion_after_prior_segment() {
+        let _force_eager = c3_observation::ForceEager::apply();
         let fixture = Fixture::new(&[
             body_documents(6),
             body_documents(40).into_iter().skip(6).collect(),
@@ -14379,6 +14961,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u22_seeded_differential_matrix() {
+        let _force_eager = c3_observation::ForceEager::apply();
         let mut rng = Rng(0x00C2_2026_1125_0001);
         let mut fixtures = Vec::new();
         for distribution in 0..8usize {
@@ -14440,6 +15023,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u23_b1_b2_b3_reuse_witness() {
+        let _force_eager = c3_observation::ForceEager::apply();
         let fixture = Fixture::new(&[documents(40)]);
         let request = request_asc(term_common(), 3);
         reset_witnesses();
@@ -14469,6 +15053,7 @@ mod c2_tests {
 
     #[test]
     fn c2_u24_zero_effect_and_error_repetition() {
+        let _force_eager = c3_observation::ForceEager::apply();
         let fixture = Fixture::new(&[documents(30)]);
         let request = request_asc(term_common(), 3);
         let first = strict(&fixture, &request);
@@ -14528,6 +15113,2647 @@ mod c2_tests {
         let calls = crate::search::score::c3_score_observation::calls();
         eprintln!("C3 U01 BM25 calls={calls} expected=3");
         assert_eq!(calls, 3, "only returned hits are scored");
+    }
+
+    // -----------------------------------------------------------------------
+    // PERF-06-C3 helpers
+    // -----------------------------------------------------------------------
+
+    /// Reset every witness a C3 case touches. `c3_observation::reset` deliberately
+    /// leaves the `ForceEager` arm untouched.
+    fn c3_reset_all() {
+        reset_witnesses();
+        crate::search::score::c3_score_observation::reset();
+        c3_observation::reset();
+        b2_observation::reset();
+    }
+
+    /// The same request/snapshot/limits/config forced onto the accepted eager C2
+    /// score phase. Route assertions belong to the caller.
+    fn c3_run_eager(
+        fixture: &Fixture,
+        request: &UnifiedRequest,
+        limits: SearchLimits,
+        config: TopKDuplicateConfig,
+    ) -> SearchResult<UnifiedResponse> {
+        c3_reset_all();
+        let _guard = c3_observation::ForceEager::apply();
+        run_with(fixture, request, limits, config)
+    }
+
+    /// The same request/snapshot/limits/config forced onto the accepted Legacy body.
+    fn c3_run_legacy(
+        fixture: &Fixture,
+        request: &UnifiedRequest,
+        limits: SearchLimits,
+        config: TopKDuplicateConfig,
+    ) -> SearchResult<UnifiedResponse> {
+        c3_reset_all();
+        let _guard = c2_observation::ForceLegacy::apply();
+        run_with(fixture, request, limits, config)
+    }
+
+    /// Assert the complete C3 witness set for one certified request.
+    ///
+    /// Called *before* any reference or reset call: every counter is read from the
+    /// single execution under test.
+    #[track_caller]
+    fn c3_assert_certified(m: usize, k: usize, segments: usize) {
+        assert_eq!(c2_observation::strict_routes(), 1, "strict route");
+        assert_eq!(c2_observation::legacy_routes(), 0, "legacy body unused");
+        assert_eq!(
+            c3_observation::certificate_attempts(),
+            1,
+            "one certificate attempt"
+        );
+        assert_eq!(c3_observation::deferred_routes(), 1, "deferred route");
+        assert_eq!(
+            c3_observation::eager_strict_routes(),
+            0,
+            "no eager strict route"
+        );
+        assert_eq!(
+            physical::strict_evaluator_calls(),
+            segments,
+            "one evaluator call per segment"
+        );
+        assert_eq!(
+            physical::strict_membership_observations(),
+            m,
+            "every decoded match is examined"
+        );
+        assert_eq!(physical::callbacks(), m, "every match is admitted");
+        assert_eq!(physical::converted_rows(), 0, "no eager rewrite happened");
+        assert_eq!(
+            b2_observation::numeric_candidates(),
+            m,
+            "every match entered numeric collection"
+        );
+        let calls = crate::search::score::c3_score_observation::calls();
+        assert_eq!(calls, m.min(k), "only returned hits are scored");
+        let identities = c3_observation::final_scores();
+        assert_eq!(
+            identities.len(),
+            m.min(k),
+            "one recorded final identity per returned hit"
+        );
+    }
+
+    /// Full-response equality including the optional score bits, every projected
+    /// field, the total, generation, view ordinal, the complete cursor and any
+    /// aggregation payload.
+    #[track_caller]
+    fn c3_assert_full_response(actual: &UnifiedResponse, expected: &UnifiedResponse, label: &str) {
+        assert_eq!(
+            projected(actual),
+            projected(expected),
+            "{label}: projected rows"
+        );
+        assert_eq!(
+            actual.total_hits, expected.total_hits,
+            "{label}: total hits"
+        );
+        assert_eq!(
+            actual.generation, expected.generation,
+            "{label}: generation"
+        );
+        assert_eq!(
+            actual.view_ordinal, expected.view_ordinal,
+            "{label}: view ordinal"
+        );
+        assert_eq!(
+            actual.next_cursor, expected.next_cursor,
+            "{label}: complete cursor"
+        );
+        assert_eq!(
+            actual.aggregation, expected.aggregation,
+            "{label}: aggregation"
+        );
+    }
+
+    /// Both results must be the same `Err`, with the complete nested error equal.
+    #[track_caller]
+    fn c3_assert_error_parity(
+        actual: SearchResult<UnifiedResponse>,
+        reference: SearchResult<UnifiedResponse>,
+        label: &str,
+    ) -> SearchError {
+        let actual = match actual {
+            Ok(_) => panic!("{label}: the case under test must fail"),
+            Err(error) => error,
+        };
+        let reference = match reference {
+            Ok(_) => panic!("{label}: the reference must fail identically"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            format!("{actual:?}"),
+            format!("{reference:?}"),
+            "{label}: complete error parity"
+        );
+        actual
+    }
+
+    // -----------------------------------------------------------------------
+    // C3-U02 — dispatch, count boundaries and ineligible routes
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c3_u02_dispatch_and_count_matrix() {
+        let mut rows = 0usize;
+        for top_k in [1usize, 10, 31, 32, 100] {
+            for delta in [-2i64, -1, 0, 1, 2] {
+                let matches = (top_k as i64 + 1 + delta).max(0) as usize;
+                let fixture = if matches == 0 {
+                    Fixture::new(&[documents(8)])
+                } else {
+                    Fixture::new(&[documents(matches)])
+                };
+                let query = if matches == 0 {
+                    term_absent()
+                } else {
+                    term_common()
+                };
+                let request = request_asc(query, top_k);
+                let eligible = matches > top_k + 1;
+                c3_reset_all();
+                let response =
+                    run_with(&fixture, &request, SearchLimits::default(), linear_config())
+                        .expect("matrix row search");
+                if eligible {
+                    c3_assert_certified(matches, top_k, 1);
+                } else {
+                    assert_eq!(c2_observation::strict_routes(), 0, "legacy route");
+                    assert_eq!(c2_observation::legacy_routes(), 1, "legacy body");
+                    assert_eq!(
+                        c3_observation::certificate_attempts(),
+                        0,
+                        "no certificate attempt off the strict route"
+                    );
+                    assert_eq!(c3_observation::deferred_routes(), 0);
+                    assert_eq!(c3_observation::eager_strict_routes(), 0);
+                    assert!(c3_observation::final_scores().is_empty());
+                }
+                assert_eq!(
+                    response.total_hits as usize, matches,
+                    "exact count k={top_k} m={matches}"
+                );
+                assert_eq!(
+                    keys(&response),
+                    expected_ascending_keys(matches, top_k),
+                    "literal first keys k={top_k} m={matches}"
+                );
+                assert_eq!(
+                    response.next_cursor.is_some(),
+                    matches > top_k,
+                    "cursor presence k={top_k} m={matches}"
+                );
+                let eager =
+                    c3_run_eager(&fixture, &request, SearchLimits::default(), linear_config())
+                        .expect("eager reference");
+                assert_eq!(
+                    c3_observation::eager_strict_routes(),
+                    usize::from(eligible),
+                    "forced eager keeps the strict family"
+                );
+                if eligible {
+                    assert_eq!(
+                        crate::search::score::c3_score_observation::calls(),
+                        matches,
+                        "eager C2 scores every match"
+                    );
+                }
+                c3_assert_full_response(&response, &eager, "eager parity");
+                let legacy =
+                    c3_run_legacy(&fixture, &request, SearchLimits::default(), linear_config())
+                        .expect("legacy reference");
+                assert_eq!(c2_observation::legacy_routes(), 1, "legacy reference route");
+                c3_assert_full_response(&response, &legacy, "legacy parity");
+                rows += 1;
+            }
+        }
+        assert_eq!(rows, 25, "exactly 25 dispatch/count rows");
+        eprintln!("C3 U02 dispatch-rows={rows}");
+
+        // Multi-segment request-wide certificate with one zero-match segment.
+        let split = Fixture::new(&[
+            other_documents(3, 100),
+            documents(1),
+            documents(12).into_iter().skip(1).collect(),
+        ]);
+        let split_request = request_asc(term_common(), 10);
+        c3_reset_all();
+        let response = run_with(
+            &split,
+            &split_request,
+            SearchLimits::default(),
+            linear_config(),
+        )
+        .expect("split search");
+        c3_assert_certified(12, 10, 3);
+        assert_eq!(response.total_hits, 12);
+        assert_eq!(
+            keys(&response),
+            expected_ascending_keys(12, 10),
+            "exact first ten keys"
+        );
+        assert!(response.next_cursor.is_some());
+        let eager = c3_run_eager(
+            &split,
+            &split_request,
+            SearchLimits::default(),
+            linear_config(),
+        )
+        .expect("split eager");
+        c3_assert_full_response(&response, &eager, "split eager parity");
+        let legacy = c3_run_legacy(
+            &split,
+            &split_request,
+            SearchLimits::default(),
+            linear_config(),
+        )
+        .expect("split legacy");
+        c3_assert_full_response(&response, &legacy, "split legacy parity");
+        eprintln!(
+            "C3 U02 split segments=3 membership=12 final-calls={}",
+            crate::search::score::c3_score_observation::calls()
+        );
+
+        // Ineligible shapes: identical to `c2_u01_static_dispatch_matrix`, without
+        // any forced-eager guard.
+        let fixture = Fixture::new(&[documents(24)]);
+        let ineligible_queries: Vec<(&str, Query)> = vec![
+            ("and", Query::And(vec![term_common()])),
+            ("or", Query::Or(vec![term_common()])),
+            (
+                "not_not",
+                Query::Not(Box::new(Query::Not(Box::new(term_common())))),
+            ),
+            ("match_all", Query::MatchAll),
+            (
+                "phrase",
+                Query::Phrase {
+                    field: "body".to_owned(),
+                    terms: vec!["alpha beta".to_owned()],
+                },
+            ),
+            (
+                "prefix",
+                Query::Prefix {
+                    field: "grp".to_owned(),
+                    prefix: "comm".to_owned(),
+                },
+            ),
+            (
+                "glob",
+                Query::Glob {
+                    field: "grp".to_owned(),
+                    pattern: "comm*".to_owned(),
+                },
+            ),
+            (
+                "regex",
+                Query::Regex {
+                    field: "grp".to_owned(),
+                    pattern: "comm.*".to_owned(),
+                },
+            ),
+            (
+                "fuzzy",
+                Query::Fuzzy {
+                    field: "grp".to_owned(),
+                    value: "commom".to_owned(),
+                    max_edits: 1,
+                    transpositions: true,
+                },
+            ),
+            (
+                "typed_range",
+                Query::Range {
+                    field: "n".to_owned(),
+                    lower: Bound::Included(FieldValue::I64(0)),
+                    upper: Bound::Included(FieldValue::I64(3)),
+                },
+            ),
+            (
+                "typed_exists",
+                Query::Exists {
+                    field: "n".to_owned(),
+                },
+            ),
+            (
+                "geo",
+                Query::GeoBoundingBox {
+                    field: "loc".to_owned(),
+                    bbox: GeoBoundingBox::new(-1.0, -1.0, 90.0, 90.0).expect("bbox"),
+                },
+            ),
+        ];
+        for (label, query) in ineligible_queries {
+            let request = request_asc(query, 5);
+            c3_reset_all();
+            let response = run_ineligible(&fixture, &request);
+            assert!(response.is_ok(), "{label} must not error");
+            assert_eq!(c2_observation::strict_routes(), 0, "{label} stays legacy");
+            assert_eq!(c2_observation::legacy_routes(), 1, "{label} legacy body");
+            assert_eq!(c3_observation::certificate_attempts(), 0, "{label}");
+            assert_eq!(c3_observation::deferred_routes(), 0, "{label}");
+            assert_eq!(c3_observation::eager_strict_routes(), 0, "{label}");
+            assert!(c3_observation::final_scores().is_empty(), "{label}");
+            let reference =
+                c3_run_legacy(&fixture, &request, SearchLimits::default(), linear_config())
+                    .expect("legacy reference");
+            c3_assert_full_response(&response.expect("ok"), &reference, label);
+        }
+
+        // Sanity: a matched term under `And` still returns every hit through Legacy.
+        let wrapped = request_asc(Query::And(vec![term_common()]), 5);
+        c3_reset_all();
+        let response = run_ineligible(&fixture, &wrapped).expect("wrapped");
+        assert_eq!(response.total_hits, 24);
+        assert_eq!(keys(&response), expected_ascending_keys(24, 5));
+        assert_eq!(c2_observation::legacy_routes(), 1);
+        assert_eq!(c3_observation::certificate_attempts(), 0);
+
+        // Sort-shape ineligibility on the same strict term.
+        let relevance = request(term_common(), 5, Sort::default());
+        c3_reset_all();
+        run_ineligible(&fixture, &relevance).expect("relevance");
+        assert_eq!(c2_observation::legacy_routes(), 1);
+        assert_eq!(c3_observation::certificate_attempts(), 0);
+
+        let mut two_fields = UnifiedRequest::new(term_common(), TopK::new(5).expect("k"));
+        two_fields.sort = Sort::new(vec![
+            SortField::new("doc_id", SortDirection::Asc),
+            SortField::new("n", SortDirection::Asc),
+        ]);
+        c3_reset_all();
+        run_ineligible(&fixture, &two_fields).expect("two fields");
+        assert_eq!(c2_observation::legacy_routes(), 1);
+        assert_eq!(c3_observation::certificate_attempts(), 0);
+
+        let mut multivalue = UnifiedRequest::new(term_common(), TopK::new(5).expect("k"));
+        multivalue.sort = Sort::new(vec![
+            SortField::new("doc_id", SortDirection::Asc).with_multi(MultiValueSelector::Min),
+        ]);
+        c3_reset_all();
+        run_ineligible(&fixture, &multivalue).expect("multivalue");
+        assert_eq!(c2_observation::legacy_routes(), 1);
+        assert_eq!(c3_observation::certificate_attempts(), 0);
+
+        let mut multi_cardinality = UnifiedRequest::new(term_common(), TopK::new(5).expect("k"));
+        multi_cardinality.sort = Sort::new(vec![
+            SortField::new("tag", SortDirection::Asc).with_multi(MultiValueSelector::Min),
+        ]);
+        c3_reset_all();
+        run_ineligible(&fixture, &multi_cardinality).expect("multi cardinality");
+        assert_eq!(c2_observation::legacy_routes(), 1);
+        assert_eq!(c3_observation::certificate_attempts(), 0);
+
+        // Established pre-route typed errors: malformed and non-columnar sorts.
+        let mut invalid = request_asc(term_common(), 5);
+        invalid.sort.fields[0].field = "no_such_field".to_owned();
+        c3_reset_all();
+        let actual = run_ineligible(&fixture, &invalid);
+        let routes = (
+            c2_observation::strict_routes(),
+            c2_observation::legacy_routes(),
+            c3_observation::certificate_attempts(),
+        );
+        let reference = c3_run_legacy(&fixture, &invalid, SearchLimits::default(), linear_config());
+        assert!(actual.is_err(), "malformed sort must fail");
+        assert_eq!(routes, (0, 0, 0), "pre-route error records no route");
+        let error = c3_assert_error_parity(actual, reference, "malformed sort");
+        assert!(
+            matches!(error, SearchError::Query(QueryError::InvalidQuery(_))),
+            "{error:?}"
+        );
+
+        let mut non_columnar = UnifiedRequest::new(term_common(), TopK::new(5).expect("k"));
+        non_columnar.sort = Sort::new(vec![SortField::new("grp", SortDirection::Asc)]);
+        c3_reset_all();
+        let actual = run_ineligible(&fixture, &non_columnar);
+        let routes = (
+            c2_observation::strict_routes(),
+            c2_observation::legacy_routes(),
+            c3_observation::certificate_attempts(),
+        );
+        let reference = c3_run_legacy(
+            &fixture,
+            &non_columnar,
+            SearchLimits::default(),
+            linear_config(),
+        );
+        assert!(actual.is_err(), "non-columnar sort must fail");
+        assert_eq!(routes, (0, 0, 0), "pre-route error records no route");
+        c3_assert_error_parity(actual, reference, "non-columnar sort");
+
+        // Batch requests never select the physical route.
+        let eligible = request_asc(term_common(), 5);
+        c3_reset_all();
+        let mut meter = BatchExecutionMeter::new(1_000_000, 1_000_000, 1_000_000);
+        fixture
+            .searcher(SearchLimits::default(), TopKDuplicateConfig::default())
+            .search_with_batch(&eligible, &Budgets::new(), &NeverCancel, &mut meter)
+            .expect("batch search");
+        assert_eq!(c2_observation::strict_routes(), 0, "batch stays legacy");
+        assert_eq!(c2_observation::legacy_routes(), 1);
+        assert_eq!(c3_observation::certificate_attempts(), 0);
+
+        // Aggregation is reachable only through the batch entry point.
+        c3_reset_all();
+        let aggregation = Aggregation::new();
+        let mut meter = BatchExecutionMeter::new(1_000_000_000, 1_000_000_000, 1_000_000_000);
+        fixture
+            .searcher(SearchLimits::default(), TopKDuplicateConfig::default())
+            .search_with_batch_aggregation_retained(
+                &eligible,
+                Some(&aggregation),
+                &Budgets::new(),
+                &NeverCancel,
+                &mut meter,
+            )
+            .expect("aggregation search");
+        assert_eq!(
+            c2_observation::strict_routes(),
+            0,
+            "aggregation stays legacy"
+        );
+        assert_eq!(c3_observation::certificate_attempts(), 0);
+
+        // A real C3 first page and an `after` cursor on the second page.
+        c3_reset_all();
+        let first = run_with(
+            &fixture,
+            &eligible,
+            SearchLimits::default(),
+            linear_config(),
+        )
+        .expect("first page");
+        c3_assert_certified(24, 5, 1);
+        let cursor = first.next_cursor.clone().expect("cursor");
+        let mut second = request_asc(term_common(), 5);
+        second.after = Some(cursor);
+        c3_reset_all();
+        let page_two = run_with(&fixture, &second, SearchLimits::default(), linear_config())
+            .expect("second page");
+        assert_eq!(c2_observation::strict_routes(), 0, "after cursor is Legacy");
+        assert_eq!(c2_observation::legacy_routes(), 1);
+        assert_eq!(c3_observation::certificate_attempts(), 0);
+        assert_eq!(
+            keys(&page_two),
+            (5..10).map(bounded_key).collect::<Vec<String>>(),
+            "literal second page"
+        );
+        let page_two_legacy =
+            c3_run_legacy(&fixture, &second, SearchLimits::default(), linear_config())
+                .expect("second page legacy");
+        c3_assert_full_response(&page_two, &page_two_legacy, "second page legacy parity");
+        eprintln!("C3 U02 ineligible-and-cursor-rows=ok");
+    }
+
+    // -----------------------------------------------------------------------
+    // C3-U03 — actual shared-statistic fallback and competing errors
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c3_u03_uncertified_stats_eager_precedence() {
+        use crate::search::score::c3_score_observation::{StatFault, StatFaultArm};
+
+        let fixture = Fixture::new(&[body_documents(30)]);
+        let request = request_asc(term_body(), 3);
+        let config = linear_config();
+
+        // Pristine control: M = 30, every document matches `alpha`.
+        c3_reset_all();
+        let pristine = run_with(&fixture, &request, SearchLimits::default(), config)
+            .expect("pristine certified request");
+        c3_assert_certified(30, 3, 1);
+        assert_eq!(pristine.total_hits, 30);
+        assert_eq!(
+            keys(&pristine),
+            vec![bounded_key(0), bounded_key(1), bounded_key(2)]
+        );
+        assert!(pristine.next_cursor.is_some());
+        eprintln!("C3 U03 base total=30 certified=ok");
+
+        #[derive(Clone, Copy)]
+        enum Outcome {
+            EagerDfError,
+            EagerMissingIdf,
+            EagerScoreError,
+            EagerZero,
+            EagerSuccessParity,
+            LegacyParity,
+        }
+
+        let rows: [(&str, StatFault, Outcome); 17] = [
+            ("U03-01", StatFault::DfAboveN, Outcome::EagerDfError),
+            ("U03-02", StatFault::MissingIdf, Outcome::EagerMissingIdf),
+            ("U03-03", StatFault::Idf(f64::NAN), Outcome::EagerScoreError),
+            (
+                "U03-04",
+                StatFault::Idf(f64::INFINITY),
+                Outcome::EagerScoreError,
+            ),
+            ("U03-05", StatFault::Idf(-1.0), Outcome::EagerScoreError),
+            (
+                "U03-06",
+                StatFault::Avgdl(f64::NAN),
+                Outcome::EagerScoreError,
+            ),
+            ("U03-07", StatFault::NZero, Outcome::EagerZero),
+            ("U03-08", StatFault::Avgdl(0.0), Outcome::EagerZero),
+            ("U03-09", StatFault::Avgdl(-1.0), Outcome::EagerZero),
+            (
+                "U03-10",
+                StatFault::ZeroAvgdlWithDfAboveN,
+                Outcome::EagerZero,
+            ),
+            (
+                "U03-11",
+                StatFault::Avgdl(f64::INFINITY),
+                Outcome::EagerSuccessParity,
+            ),
+            (
+                "U03-12",
+                StatFault::Avgdl(0.5 / 18_446_744_073_709_551_616.0),
+                Outcome::EagerSuccessParity,
+            ),
+            (
+                "U03-13",
+                StatFault::Avgdl(36_893_488_147_419_103_232.0),
+                Outcome::EagerSuccessParity,
+            ),
+            ("U03-14", StatFault::Idf(65.0), Outcome::EagerSuccessParity),
+            ("U03-15", StatFault::ZeroDf, Outcome::LegacyParity),
+            ("U03-16", StatFault::MissingTerm, Outcome::LegacyParity),
+            ("U03-17", StatFault::MissingField, Outcome::LegacyParity),
+        ];
+
+        let mut completed: Vec<&'static str> = Vec::new();
+        for (id, fault, outcome) in rows {
+            // Reset counters first, then arm: `reset` must never clear a fault arm.
+            c3_reset_all();
+            let actual = {
+                let _arm = StatFaultArm::arm(fault);
+                run_with(&fixture, &request, SearchLimits::default(), config)
+            };
+            let routes = (
+                c2_observation::strict_routes(),
+                c2_observation::legacy_routes(),
+                c3_observation::certificate_attempts(),
+                c3_observation::deferred_routes(),
+                c3_observation::eager_strict_routes(),
+            );
+            let callbacks = physical::callbacks();
+            let converted = physical::converted_rows();
+            let numeric = b2_observation::numeric_candidates();
+            let calls = crate::search::score::c3_score_observation::calls();
+            let identities = c3_observation::final_scores();
+
+            match outcome {
+                Outcome::LegacyParity => {
+                    assert_eq!(routes, (0, 1, 0, 0, 0), "{id}: unchanged count guard");
+                    assert!(identities.is_empty(), "{id}: no deferred final scores");
+                }
+                Outcome::EagerDfError | Outcome::EagerMissingIdf | Outcome::EagerScoreError => {
+                    assert_eq!(routes, (1, 0, 1, 0, 1), "{id}: eager strict fallback");
+                    assert_eq!(callbacks, 0, "{id}: no candidate is admitted");
+                    assert_eq!(converted, 0, "{id}: no whole-segment rewrite");
+                    assert_eq!(numeric, 0, "{id}: no numeric candidate");
+                    assert_eq!(calls, 1, "{id}: the first bad score wins");
+                    assert!(identities.is_empty(), "{id}: no final identity");
+                }
+                Outcome::EagerZero | Outcome::EagerSuccessParity => {
+                    assert_eq!(routes, (1, 0, 1, 0, 1), "{id}: eager strict fallback");
+                    assert_eq!(callbacks, 30, "{id}: every match admitted");
+                    assert_eq!(converted, 30, "{id}: eager in-place rewrite");
+                    assert_eq!(calls, 30, "{id}: eager C2 scores every match");
+                    assert!(identities.is_empty(), "{id}: no deferred final scores");
+                }
+            }
+
+            // Same synthetic fault through the accepted Legacy body.
+            c3_reset_all();
+            let reference = {
+                let _arm = StatFaultArm::arm(fault);
+                c3_run_legacy(&fixture, &request, SearchLimits::default(), config)
+            };
+            assert_eq!(
+                c2_observation::legacy_routes(),
+                1,
+                "{id}: legacy reference route"
+            );
+
+            match outcome {
+                Outcome::EagerDfError => {
+                    let error = c3_assert_error_parity(actual, reference, id);
+                    match error {
+                        SearchError::InvalidScore { detail } => {
+                            assert_eq!(detail, "document frequency exceeds the live-document count")
+                        }
+                        other => panic!("{id}: unexpected {other:?}"),
+                    }
+                }
+                Outcome::EagerMissingIdf => {
+                    let error = c3_assert_error_parity(actual, reference, id);
+                    match error {
+                        SearchError::CorruptIndex { detail } => {
+                            assert_eq!(detail, "prepared BM25 IDF missing for valid term")
+                        }
+                        other => panic!("{id}: unexpected {other:?}"),
+                    }
+                }
+                Outcome::EagerScoreError => {
+                    let error = c3_assert_error_parity(actual, reference, id);
+                    match error {
+                        SearchError::InvalidScore { detail } => {
+                            assert_eq!(detail, "BM25 produced a non-finite or negative score")
+                        }
+                        other => panic!("{id}: unexpected {other:?}"),
+                    }
+                }
+                Outcome::EagerZero => {
+                    let actual = actual.expect("early-zero eager success");
+                    let reference = reference.expect("early-zero legacy success");
+                    for hit in &actual.hits {
+                        assert_eq!(
+                            hit.score.expect("lexical hit is scored").to_bits(),
+                            0.0f64.to_bits(),
+                            "{id}: every returned score is +0.0"
+                        );
+                    }
+                    c3_assert_full_response(&actual, &reference, id);
+                }
+                Outcome::EagerSuccessParity => {
+                    let actual = actual.expect("eager success");
+                    let reference = reference.expect("legacy success");
+                    for hit in &actual.hits {
+                        let score = hit.score.expect("lexical hit is scored");
+                        assert!(score.is_finite() && score >= 0.0, "{id}: finite score");
+                    }
+                    if id == "U03-14" {
+                        assert!(
+                            actual
+                                .hits
+                                .iter()
+                                .all(|hit| hit.score.is_some_and(|s| s > 0.0)),
+                            "{id}: finite positive scores"
+                        );
+                    }
+                    c3_assert_full_response(&actual, &reference, id);
+                }
+                Outcome::LegacyParity => {
+                    let actual = actual.expect("legacy success");
+                    let reference = reference.expect("legacy reference");
+                    c3_assert_full_response(&actual, &reference, id);
+                }
+            }
+            eprintln!(
+                "C3 {id} INJECTED_SHARED_STATS routes={routes:?} callbacks={callbacks} converted={converted} numeric={numeric} bm25={calls}"
+            );
+            completed.push(id);
+        }
+        assert_eq!(completed.len(), 17, "all 17 shared-stat rows executed");
+        assert_eq!(
+            completed,
+            vec![
+                "U03-01", "U03-02", "U03-03", "U03-04", "U03-05", "U03-06", "U03-07", "U03-08",
+                "U03-09", "U03-10", "U03-11", "U03-12", "U03-13", "U03-14", "U03-15", "U03-16",
+                "U03-17"
+            ]
+        );
+
+        // Unarmed recovery on the same snapshot must certify again and match the
+        // pristine response exactly.
+        c3_reset_all();
+        let recovered = run_with(&fixture, &request, SearchLimits::default(), config)
+            .expect("unarmed recovery");
+        c3_assert_certified(30, 3, 1);
+        c3_assert_full_response(&recovered, &pristine, "unarmed recovery");
+        eprintln!("C3 U03 recovery certified=ok calls=3");
+
+        // -------------------------------------------------------------------
+        // Competing faults on real corrupt committed bytes: an invalid synthetic
+        // statistic must win at its accepted score checkpoint before any key
+        // resolution, and the underlying corruption must reappear once unarmed.
+        // -------------------------------------------------------------------
+        use crate::segment::reader::{b3_build_attempts, reset_b3_counters};
+
+        let mut corpus = documents(30);
+        corpus.extend(other_documents(2, 30));
+        let corrupted_fixture = Fixture::new(&[corpus]);
+        let corrupted_request = request_asc(term_common(), 3);
+        let pristine_bytes = {
+            let guard = corrupted_fixture
+                .snapshot
+                .open_segment_reader(0)
+                .expect("guard");
+            guard.reader().bytes().to_vec()
+        };
+
+        let corrupt_key_snapshot = |case_id: &str| {
+            let mut copied = CopiedSegment::parse(&pristine_bytes);
+            u12_corrupt_doc_key(&mut copied, 0);
+            let rebuilt = copied.rebuild();
+            assert_ne!(rebuilt, pristine_bytes, "{case_id}: bytes changed");
+            c2_f1_snapshot(case_id, &copied, rebuilt)
+        };
+
+        for (id, fault, expect_detail) in [
+            (
+                "U03-C1",
+                StatFault::DfAboveN,
+                "document frequency exceeds the live-document count",
+            ),
+            (
+                "U03-C2",
+                StatFault::MissingIdf,
+                "prepared BM25 IDF missing for valid term",
+            ),
+        ] {
+            let snapshot = corrupt_key_snapshot(id);
+            c3_reset_all();
+            b3_observation::reset();
+            reset_b3_counters();
+            let actual = {
+                let _arm = StatFaultArm::arm(fault);
+                c2_f1_run_snapshot(&corrupted_fixture, &snapshot, &corrupted_request)
+            };
+            assert_eq!(c2_observation::strict_routes(), 1, "{id}: strict route");
+            assert_eq!(
+                c3_observation::certificate_attempts(),
+                1,
+                "{id}: certificate attempted once"
+            );
+            assert_eq!(c3_observation::deferred_routes(), 0, "{id}: eager fallback");
+            assert_eq!(c3_observation::eager_strict_routes(), 1, "{id}");
+            assert_eq!(physical::callbacks(), 0, "{id}: no callback");
+            assert_eq!(
+                b2_observation::numeric_candidates(),
+                0,
+                "{id}: no numeric candidate"
+            );
+            assert_eq!(
+                crate::search::score::c3_score_observation::calls(),
+                1,
+                "{id}: one real scorer call"
+            );
+            assert_eq!(b3_build_attempts(), 0, "{id}: no B3 build attempt");
+            let error = actual.expect_err("the score fault must win");
+            match &error {
+                SearchError::InvalidScore { detail } => {
+                    assert_eq!(*detail, expect_detail, "{id}")
+                }
+                SearchError::CorruptIndex { detail } => {
+                    assert_eq!(detail.as_str(), expect_detail, "{id}")
+                }
+                other => panic!("{id}: unexpected {other:?}"),
+            }
+
+            c3_reset_all();
+            b3_observation::reset();
+            let reference = {
+                let _arm = StatFaultArm::arm(fault);
+                c2_f1_forced_legacy_on_snapshot(
+                    &corrupted_fixture,
+                    &snapshot,
+                    &corrupted_request,
+                    true,
+                )
+            };
+            let legacy_error = reference.expect_err("forced Legacy must fail identically");
+            assert_eq!(format!("{error:?}"), format!("{legacy_error:?}"), "{id}");
+            eprintln!(
+                "C3 {id} INJECTED_SHARED_STATS beats corrupt key: routes=1/0/1 callbacks=0 bm25=1 b3=0"
+            );
+
+            // Unarmed: the real corruption surfaces through the certified route.
+            c3_reset_all();
+            b3_observation::reset();
+            reset_b3_counters();
+            let unarmed = c2_f1_run_snapshot(&corrupted_fixture, &snapshot, &corrupted_request);
+            assert_eq!(c2_observation::strict_routes(), 1, "{id}: strict route");
+            assert_eq!(
+                c3_observation::deferred_routes(),
+                1,
+                "{id}: certified route"
+            );
+            let unarmed = unarmed.expect_err("the corrupt doc key must surface");
+            assert!(
+                matches!(
+                    unarmed,
+                    SearchError::Segment(crate::segment::SegmentError::InvalidUtf8 {
+                        context: "doc key"
+                    })
+                ),
+                "{id}: {unarmed:?}"
+            );
+            assert_eq!(physical::callbacks(), 0, "{id}: no completed callback");
+        }
+
+        // Pristine snapshot still answers exactly as before.
+        c3_reset_all();
+        let after =
+            run_ineligible(&corrupted_fixture, &corrupted_request).expect("pristine recovery");
+        assert_eq!(after.total_hits, 30);
+        assert_eq!(
+            keys(&after),
+            vec![bounded_key(0), bounded_key(1), bounded_key(2)]
+        );
+        eprintln!("C3 U03 competing-fault rows=2 pristine-recovery=ok");
+    }
+
+    // -----------------------------------------------------------------------
+    // C3-U04 — full real corrupt-byte precedence matrix
+    // -----------------------------------------------------------------------
+
+    /// Run a rebuilt snapshot through the real searcher, forced onto eager C2.
+    fn c3_f1_run_snapshot_eager(
+        fixture: &Fixture,
+        snapshot: &ReaderSnapshot,
+        request: &UnifiedRequest,
+    ) -> SearchResult<UnifiedResponse> {
+        c3_reset_all();
+        let _guard = c3_observation::ForceEager::apply();
+        c2_f1_run_snapshot(fixture, snapshot, request)
+    }
+
+    /// Run a rebuilt snapshot through the real searcher, forced onto Legacy.
+    fn c3_f1_run_snapshot_legacy(
+        fixture: &Fixture,
+        snapshot: &ReaderSnapshot,
+        request: &UnifiedRequest,
+    ) -> SearchResult<UnifiedResponse> {
+        c3_reset_all();
+        let _guard = c2_observation::ForceLegacy::apply();
+        c2_f1_run_snapshot(fixture, snapshot, request)
+    }
+
+    #[test]
+    fn c3_u04_corruption_precedence() {
+        // Pristine 32-row corpus: 30 matching rows, K = 3, K+1 = 4.
+        let mut rows = documents(30);
+        rows.extend(other_documents(2, 30));
+        let fixture = Fixture::new(&[rows]);
+        let request = request_asc(term_common(), 3);
+
+        let (pristine, postings_offset, postings_length) = {
+            let guard = fixture.snapshot.open_segment_reader(0).expect("guard");
+            let reader = guard.reader();
+            assert_eq!(reader.doc_count(), 32, "pristine physical document count");
+            let physical: Vec<String> = reader
+                .doc_keys()
+                .expect("keys")
+                .iter()
+                .map(|key| key.as_str().to_owned())
+                .collect();
+            assert_eq!(
+                physical,
+                (0..32).map(bounded_key).collect::<Vec<String>>(),
+                "pristine physical DOC_KEYS order"
+            );
+            let grp_field = reader.schema().field_id("grp").expect("grp field id");
+            assert!(
+                reader
+                    .field_norms()
+                    .and_then(|norms| norms.field(grp_field))
+                    .is_some(),
+                "grp field norms are persisted"
+            );
+            let entry = reader
+                .dictionary()
+                .expect("dictionary")
+                .lookup(grp_field, "common")
+                .expect("grp/common entry");
+            assert_eq!(entry.doc_freq, 30, "grp/common document frequency");
+            (
+                reader.bytes().to_vec(),
+                entry.postings_offset,
+                entry.postings_length,
+            )
+        };
+
+        // Healthy certified control on the untouched snapshot.
+        c3_reset_all();
+        let healthy = run_ineligible(&fixture, &request).expect("pristine matched query");
+        c3_assert_certified(30, 3, 1);
+        assert_eq!(healthy.total_hits, 30);
+        assert_eq!(
+            keys(&healthy),
+            vec![bounded_key(0), bounded_key(1), bounded_key(2)]
+        );
+        assert!(healthy.next_cursor.is_some());
+
+        let zero_request = request_asc(
+            Query::Term {
+                field: "grp".to_owned(),
+                value: FieldValue::Keyword("no-such-group".to_owned()),
+            },
+            3,
+        );
+
+        struct U04Row {
+            id: &'static str,
+            doc_key_record: Option<usize>,
+            final_posting: bool,
+            sort_column_record: Option<usize>,
+            injected_score: Option<u64>,
+            strict: usize,
+            deferred: usize,
+            eager: usize,
+            membership: usize,
+            numeric: usize,
+            callbacks: usize,
+            bm25: usize,
+        }
+
+        let run_row = |row: U04Row| {
+            let mut copied = CopiedSegment::parse(&pristine);
+            if let Some(record) = row.doc_key_record {
+                u12_corrupt_doc_key(&mut copied, record);
+            }
+            if row.final_posting {
+                u12_corrupt_final_posting(&mut copied, postings_offset, postings_length);
+            }
+            if let Some(record) = row.sort_column_record {
+                u12_corrupt_sort_column(&mut copied, record);
+            }
+            let rebuilt = copied.rebuild();
+            assert_ne!(rebuilt, pristine, "{}: rebuilt bytes differ", row.id);
+            let snapshot = c2_f1_snapshot(row.id, &copied, rebuilt.clone());
+
+            // Direct decoder probes in accepted precedence order.
+            if row.sort_column_record.is_some() {
+                u12_probe_sort_column(&rebuilt);
+            } else {
+                if row.final_posting {
+                    u12_probe_final_posting(&rebuilt);
+                }
+                if row.doc_key_record.is_some() {
+                    u12_probe_doc_keys(&rebuilt);
+                }
+            }
+
+            // Zero-match control: no key or posting resolution is performed.
+            if row.sort_column_record.is_none() {
+                c3_reset_all();
+                let zero = c2_f1_run_snapshot(&fixture, &snapshot, &zero_request)
+                    .expect("zero-match query must succeed");
+                assert_eq!(zero.total_hits, 0, "{}: zero-match count", row.id);
+                assert!(zero.hits.is_empty(), "{}: zero-match hits", row.id);
+                assert!(zero.next_cursor.is_none(), "{}: zero-match cursor", row.id);
+            }
+
+            c3_reset_all();
+            b3_observation::reset();
+            let result = {
+                let _arm = row.injected_score.map(physical::ScoreFailureArm::arm);
+                c2_f1_run_snapshot(&fixture, &snapshot, &request)
+            };
+            let expected = match row.id {
+                "D0" | "D29" | "D31" => U12Expected::DocKey,
+                "P29" | "P29+D0" => U12Expected::ZeroFrequency,
+                "C0" | "C29" | "C29+P29+D0" => U12Expected::SortColumn,
+                "S29+D0" => U12Expected::InjectedScore,
+                other => panic!("unknown U04 row {other}"),
+            };
+            assert_u12_error(result.expect_err("row must fail"), expected, row.id);
+            assert_eq!(
+                c2_observation::strict_routes(),
+                row.strict,
+                "{}: strict route",
+                row.id
+            );
+            assert_eq!(
+                c3_observation::deferred_routes(),
+                row.deferred,
+                "{}: deferred route",
+                row.id
+            );
+            assert_eq!(
+                c3_observation::eager_strict_routes(),
+                row.eager,
+                "{}: eager strict route",
+                row.id
+            );
+            assert_eq!(
+                c2_observation::legacy_routes(),
+                0,
+                "{}: no legacy route",
+                row.id
+            );
+            assert_eq!(
+                c3_observation::certificate_attempts(),
+                row.strict,
+                "{}: certificate attempts",
+                row.id
+            );
+            assert_eq!(
+                physical::strict_membership_observations(),
+                row.membership,
+                "{}: membership observations",
+                row.id
+            );
+            assert_eq!(
+                b2_observation::numeric_candidates(),
+                row.numeric,
+                "{}: entered numeric candidates",
+                row.id
+            );
+            assert_eq!(
+                physical::callbacks(),
+                row.callbacks,
+                "{}: completed callbacks",
+                row.id
+            );
+            assert_eq!(
+                crate::search::score::c3_score_observation::calls(),
+                row.bm25,
+                "{}: actual BM25 calls",
+                row.id
+            );
+            assert_eq!(physical::converted_rows(), 0, "{}: no rewrite", row.id);
+            assert!(
+                c3_observation::final_scores().is_empty(),
+                "{}: no final identity on failure",
+                row.id
+            );
+            eprintln!(
+                "C3 U04 {}: {expected:?} strict={} deferred={} eager={} membership={} numeric={} callbacks={} bm25={}",
+                row.id,
+                row.strict,
+                row.deferred,
+                row.eager,
+                row.membership,
+                row.numeric,
+                row.callbacks,
+                row.bm25
+            );
+
+            // Repeat each real byte fault on the same immutable corrupted bytes.
+            if row.injected_score.is_none() {
+                c3_reset_all();
+                b3_observation::reset();
+                let repeat = c2_f1_run_snapshot(&fixture, &snapshot, &request);
+                assert_u12_error(repeat.expect_err("repeat must fail"), expected, row.id);
+            }
+
+            // Same-query forced eager and forced Legacy on the same bytes.
+            if row.injected_score.is_some() {
+                // The C2-only synthetic fault is not shared with Legacy: only the
+                // unarmed underlying byte fault is compared there.
+                let unarmed = c3_f1_run_snapshot_legacy(&fixture, &snapshot, &request);
+                assert_u12_error(
+                    unarmed.expect_err("unarmed legacy"),
+                    U12Expected::DocKey,
+                    row.id,
+                );
+                let unarmed_c2 = c3_f1_run_snapshot_eager(&fixture, &snapshot, &request);
+                assert_u12_error(
+                    unarmed_c2.expect_err("unarmed eager C2"),
+                    U12Expected::DocKey,
+                    row.id,
+                );
+            } else {
+                let eager = c3_f1_run_snapshot_eager(&fixture, &snapshot, &request);
+                assert_u12_error(eager.expect_err("forced eager"), expected, row.id);
+                let legacy = c3_f1_run_snapshot_legacy(&fixture, &snapshot, &request);
+                assert_u12_error(legacy.expect_err("forced legacy"), expected, row.id);
+            }
+
+            // The committed bytes were never mutated.
+            assert_eq!(
+                pristine.as_slice(),
+                fixture.snapshot.segments()[0].bytes(),
+                "{}: original immutable bytes unchanged",
+                row.id
+            );
+            // Pristine request still certifies and answers exactly as before.
+            c3_reset_all();
+            let after = run_ineligible(&fixture, &request).expect("pristine recovery");
+            assert_eq!(c3_observation::deferred_routes(), 1, "{}", row.id);
+            assert_eq!(
+                crate::search::score::c3_score_observation::calls(),
+                3,
+                "{}: pristine recovery scores 3",
+                row.id
+            );
+            c3_assert_full_response(&after, &healthy, row.id);
+            row.id
+        };
+
+        let key_row = |id: &'static str, record: usize| U04Row {
+            id,
+            doc_key_record: Some(record),
+            final_posting: false,
+            sort_column_record: None,
+            injected_score: None,
+            strict: 1,
+            deferred: 1,
+            eager: 0,
+            membership: 30,
+            numeric: 1,
+            callbacks: 0,
+            bm25: 0,
+        };
+        let posting_row = |id: &'static str, record: Option<usize>| U04Row {
+            id,
+            doc_key_record: record,
+            final_posting: true,
+            sort_column_record: None,
+            injected_score: None,
+            strict: 1,
+            deferred: 1,
+            eager: 0,
+            membership: 0,
+            numeric: 0,
+            callbacks: 0,
+            bm25: 0,
+        };
+        let column_row = |id: &'static str, record: usize| U04Row {
+            id,
+            doc_key_record: None,
+            final_posting: record == 29,
+            sort_column_record: Some(record),
+            injected_score: None,
+            strict: 0,
+            deferred: 0,
+            eager: 0,
+            membership: 0,
+            numeric: 0,
+            callbacks: 0,
+            bm25: 0,
+        };
+
+        let completed_rows: [&'static str; 9] = [
+            run_row(key_row("D0", 0)),
+            run_row(key_row("D29", 29)),
+            run_row(key_row("D31", 31)),
+            run_row(posting_row("P29", None)),
+            run_row(posting_row("P29+D0", Some(0))),
+            run_row(column_row("C0", 0)),
+            run_row(column_row("C29", 29)),
+            run_row(U04Row {
+                id: "C29+P29+D0",
+                doc_key_record: Some(0),
+                final_posting: true,
+                sort_column_record: Some(29),
+                injected_score: None,
+                strict: 0,
+                deferred: 0,
+                eager: 0,
+                membership: 0,
+                numeric: 0,
+                callbacks: 0,
+                bm25: 0,
+            }),
+            run_row(U04Row {
+                id: "S29+D0",
+                doc_key_record: Some(0),
+                final_posting: false,
+                sort_column_record: None,
+                injected_score: Some(29),
+                strict: 1,
+                deferred: 0,
+                eager: 1,
+                membership: 30,
+                numeric: 0,
+                callbacks: 0,
+                bm25: 29,
+            }),
+        ];
+        assert_eq!(
+            completed_rows,
+            [
+                "D0",
+                "D29",
+                "D31",
+                "P29",
+                "P29+D0",
+                "C0",
+                "C29",
+                "C29+P29+D0",
+                "S29+D0"
+            ]
+        );
+        eprintln!("C3 U04 completed=9 ids={completed_rows:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // C3-U05 — later-segment failure after an earlier segment was collected
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c3_u05_native_later_segment_boundary() {
+        let fixture = Fixture::new(&[
+            body_documents(6),
+            body_documents(40).into_iter().skip(6).collect(),
+        ]);
+        let request = request_asc(term_body(), 2);
+        let config = linear_config();
+        assert_native_boundary_fixture(&fixture);
+
+        let expected_keys = vec![bounded_key(0), bounded_key(1)];
+        let success_limits = SearchLimits::default()
+            .with_max_scanned_posting_occurrences(100)
+            .expect("scanned");
+
+        struct Row {
+            id: &'static str,
+            cap: u64,
+            failure: Option<(u64, u64)>,
+            evaluators: usize,
+            bound_columns: usize,
+            membership: usize,
+            numeric: usize,
+            callbacks: usize,
+            collected: Vec<(usize, usize, u64)>,
+            bm25: usize,
+        }
+        let rows = [
+            Row {
+                id: "U05-86",
+                cap: 86,
+                failure: Some((86, 87)),
+                evaluators: 1,
+                bound_columns: 1,
+                membership: 0,
+                numeric: 0,
+                callbacks: 0,
+                collected: Vec::new(),
+                bm25: 0,
+            },
+            Row {
+                id: "U05-87",
+                cap: 87,
+                failure: Some((87, 88)),
+                evaluators: 2,
+                bound_columns: 2,
+                membership: 34,
+                numeric: 34,
+                callbacks: 34,
+                collected: vec![(0, 3, 34)],
+                bm25: 0,
+            },
+            Row {
+                id: "U05-99",
+                cap: 99,
+                failure: Some((99, 100)),
+                evaluators: 2,
+                bound_columns: 2,
+                membership: 34,
+                numeric: 34,
+                callbacks: 34,
+                collected: vec![(0, 3, 34)],
+                bm25: 0,
+            },
+            Row {
+                id: "U05-100",
+                cap: 100,
+                failure: None,
+                evaluators: 2,
+                bound_columns: 2,
+                membership: 40,
+                numeric: 40,
+                callbacks: 40,
+                collected: vec![(0, 3, 34), (1, 3, 40)],
+                bm25: 2,
+            },
+        ];
+
+        // Control response at the exact admitted cap.
+        c3_reset_all();
+        let control =
+            run_with(&fixture, &request, success_limits, config).expect("cap-100 control");
+        c3_assert_certified(40, 2, 2);
+        assert_eq!(control.total_hits, 40);
+        assert_eq!(keys(&control), expected_keys);
+        assert!(control.next_cursor.is_some());
+
+        let mut recovery_lines = 0usize;
+        for row in rows {
+            let limits = SearchLimits::default()
+                .with_max_scanned_posting_occurrences(row.cap)
+                .expect("scanned");
+            c3_reset_all();
+            let result = run_with(&fixture, &request, limits, config);
+            let strict = c2_observation::strict_routes();
+            let legacy = c2_observation::legacy_routes();
+            let attempts = c3_observation::certificate_attempts();
+            let deferred = c3_observation::deferred_routes();
+            let eager = c3_observation::eager_strict_routes();
+            let evaluators = physical::strict_evaluator_calls();
+            let membership = physical::strict_membership_observations();
+            let numeric = b2_observation::numeric_candidates();
+            let callbacks = physical::callbacks();
+            let bound_columns = b2_observation::bound_columns();
+            let collected = c2_observation::collected_segments();
+            let bm25 = crate::search::score::c3_score_observation::calls();
+            let identities = c3_observation::final_scores();
+
+            assert_eq!((strict, legacy), (1, 0), "{}: strict family", row.id);
+            assert_eq!(
+                (attempts, deferred, eager),
+                (1, 1, 0),
+                "{}: certified",
+                row.id
+            );
+            assert_eq!(evaluators, row.evaluators, "{}: evaluators", row.id);
+            assert_eq!(
+                bound_columns, row.bound_columns,
+                "{}: bound columns",
+                row.id
+            );
+            assert_eq!(membership, row.membership, "{}: membership", row.id);
+            assert_eq!(numeric, row.numeric, "{}: numeric", row.id);
+            assert_eq!(callbacks, row.callbacks, "{}: callbacks", row.id);
+            assert_eq!(collected, row.collected, "{}: collected", row.id);
+            assert_eq!(physical::converted_rows(), 0, "{}: no rewrite", row.id);
+            assert_eq!(bm25, row.bm25, "{}: final BM25 calls", row.id);
+            assert_eq!(identities.len(), row.bm25, "{}: identities", row.id);
+
+            match row.failure {
+                Some((limit, requested)) => {
+                    assert!(
+                        identities.is_empty(),
+                        "{}: no final identity after a failure",
+                        row.id
+                    );
+                    let error = match result {
+                        Ok(_) => panic!("{}: must be rejected", row.id),
+                        Err(error) => error,
+                    };
+                    match error {
+                        SearchError::ResourceLimit {
+                            limit: got_limit,
+                            requested: got_requested,
+                        } => assert_eq!(
+                            (got_limit, got_requested),
+                            (limit, requested),
+                            "{}: exact payload",
+                            row.id
+                        ),
+                        other => panic!(
+                            "{}: expected ResourceLimit {{{limit}, {requested}}}, got {other:?}",
+                            row.id
+                        ),
+                    }
+                    let eager_result = c3_run_eager(&fixture, &request, limits, config);
+                    assert_eq!(
+                        c3_observation::eager_strict_routes(),
+                        1,
+                        "{}: eager reference route",
+                        row.id
+                    );
+                    let legacy_result = c3_run_legacy(&fixture, &request, limits, config);
+                    c3_assert_error_parity(
+                        eager_result,
+                        legacy_result,
+                        "U05 eager/legacy resource parity",
+                    );
+                    eprintln!(
+                        "C3 {}: ResourceLimit{{{limit},{requested}}} evaluators={evaluators} membership={membership} numeric={numeric} callbacks={callbacks} collected={collected:?} bm25=0",
+                        row.id
+                    );
+                }
+                None => {
+                    let response = result.expect("this row must succeed");
+                    assert_eq!(response.total_hits, 40, "{}: total", row.id);
+                    assert_eq!(keys(&response), expected_keys, "{}: keys", row.id);
+                    assert!(response.next_cursor.is_some(), "{}: cursor", row.id);
+                    c3_assert_full_response(&response, &control, row.id);
+                    let eager = c3_run_eager(&fixture, &request, limits, config)
+                        .expect("eager success reference");
+                    c3_assert_full_response(&response, &eager, "U05 eager parity");
+                    let legacy = c3_run_legacy(&fixture, &request, limits, config)
+                        .expect("legacy success reference");
+                    c3_assert_full_response(&response, &legacy, "U05 legacy parity");
+                    eprintln!(
+                        "C3 {}: success total=40 evaluators={evaluators} membership={membership} numeric={numeric} callbacks={callbacks} collected={collected:?} bm25={bm25}",
+                        row.id
+                    );
+                }
+            }
+
+            // Independent same-snapshot recovery at the exact admitted cap.
+            c3_reset_all();
+            let recovered = run_with(&fixture, &request, success_limits, config)
+                .expect("same-snapshot recovery at the exact cap");
+            c3_assert_certified(40, 2, 2);
+            assert_eq!(recovered.total_hits, 40);
+            assert_eq!(keys(&recovered), expected_keys);
+            assert!(recovered.next_cursor.is_some());
+            c3_assert_full_response(&recovered, &control, "U05 recovery");
+            recovery_lines += 1;
+            eprintln!("C3 {}: recovery-ok total=40 bm25=2", row.id);
+        }
+        assert_eq!(recovery_lines, 4, "four recovery/repeat lines");
+        eprintln!("C3 U05 rows=4 recovery-lines={recovery_lines}");
+    }
+
+    // -----------------------------------------------------------------------
+    // C3-U06 — actual B3 optional refusal under the certified route
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c3_u06_b3_refusal_matrix() {
+        use crate::segment::reader::{
+            B3Probe, B3ProbeOutcome, b3_build_attempts, b3_directory_builds,
+            b3_preflight_fallbacks, reset_b3_counters, set_b3_probe,
+        };
+
+        #[allow(clippy::too_many_arguments)]
+        fn assert_refusal_response(
+            fixture: &Fixture,
+            request: &UnifiedRequest,
+            config: TopKDuplicateConfig,
+            segments: usize,
+            builds: u64,
+            directories: u64,
+            refusals: u64,
+            fallbacks: Vec<usize>,
+            collected: Vec<(usize, usize, u64)>,
+            response: &UnifiedResponse,
+        ) {
+            // Capture the complete C3 witness set before any reference run.
+            c3_assert_certified(40, 3, segments);
+            assert_eq!(b2_observation::bound_columns(), segments);
+            assert_eq!(physical::converted_rows(), 0, "no eager rewrite");
+            assert_eq!(b3_build_attempts(), builds, "directory build attempts");
+            assert_eq!(b3_directory_builds(), directories, "published directories");
+            assert_eq!(b3_preflight_fallbacks(), refusals, "optional refusals");
+            assert_eq!(
+                c2_observation::owned_key_fallback_segments(),
+                fallbacks,
+                "recorded owned-key fallback segments"
+            );
+            assert_eq!(c2_observation::collected_segments(), collected);
+            assert_eq!(response.total_hits, 40);
+            assert_eq!(
+                keys(response),
+                vec![bounded_key(0), bounded_key(1), bounded_key(2)]
+            );
+            assert!(response.next_cursor.is_some());
+            eprintln!(
+                "C3 U06 refusal: segments={segments} attempts={builds} directories={directories} refusals={refusals} fallbacks={fallbacks:?} collected={collected:?} bm25=3"
+            );
+            let eager = c3_run_eager(fixture, request, SearchLimits::default(), config)
+                .expect("eager reference");
+            c3_assert_full_response(response, &eager, "U06 eager parity");
+            let legacy = c3_run_legacy(fixture, request, SearchLimits::default(), config)
+                .expect("legacy reference");
+            c3_assert_full_response(response, &legacy, "U06 legacy parity");
+        }
+
+        let two_segments =
+            || Fixture::new(&[documents(20), documents(40).into_iter().skip(20).collect()]);
+
+        let mut rows = 0usize;
+
+        // Case 1: a single fresh segment refuses the compact key directory.
+        {
+            let fixture = Fixture::new(&[documents(40)]);
+            let request = request_asc(term_common(), 3);
+            let config = linear_config();
+            c3_reset_all();
+            b3_observation::reset();
+            reset_b3_counters();
+            let _probe = B3ProbeReset::new();
+            let fired = std::rc::Rc::new(std::cell::Cell::new(0usize));
+            let counter = std::rc::Rc::clone(&fired);
+            set_b3_probe(B3Probe::BeforeHashAllocation, move || {
+                counter.set(counter.get() + 1);
+                Ok(B3ProbeOutcome::RefuseAllocation)
+            });
+            let response = run_with(&fixture, &request, SearchLimits::default(), config)
+                .expect("a refused segment keeps the certified route");
+            assert_eq!(fired.get(), 1, "the refusal callback fired exactly once");
+            assert_refusal_response(
+                &fixture,
+                &request,
+                config,
+                1,
+                1,
+                0,
+                1,
+                vec![0],
+                vec![(0, 4, 40)],
+                &response,
+            );
+            rows += 1;
+        }
+
+        // Case 2: the first of two segments refuses; the second still publishes.
+        {
+            let fixture = two_segments();
+            let request = request_asc(term_common(), 3);
+            let config = linear_config();
+            c3_reset_all();
+            b3_observation::reset();
+            reset_b3_counters();
+            let _probe = B3ProbeReset::new();
+            let fired = std::rc::Rc::new(std::cell::Cell::new(0usize));
+            let counter = std::rc::Rc::clone(&fired);
+            set_b3_probe(B3Probe::BeforeHashAllocation, move || {
+                counter.set(counter.get() + 1);
+                Ok(B3ProbeOutcome::RefuseAllocation)
+            });
+            let response = run_with(&fixture, &request, SearchLimits::default(), config)
+                .expect("the second segment stays certified");
+            assert_eq!(fired.get(), 1);
+            assert_refusal_response(
+                &fixture,
+                &request,
+                config,
+                2,
+                2,
+                1,
+                1,
+                vec![0],
+                vec![(0, 4, 20), (1, 4, 40)],
+                &response,
+            );
+            rows += 1;
+        }
+
+        // Case 3: the first segment publishes, the second refuses.
+        {
+            let fixture = two_segments();
+            let request = request_asc(term_common(), 3);
+            let config = linear_config();
+            c3_reset_all();
+            b3_observation::reset();
+            reset_b3_counters();
+            let _probe = B3ProbeReset::new();
+            let fired = std::rc::Rc::new(std::cell::Cell::new(0usize));
+            let counter = std::rc::Rc::clone(&fired);
+            let rearm = std::rc::Rc::clone(&fired);
+            set_b3_probe(B3Probe::BeforeHashAllocation, move || {
+                counter.set(counter.get() + 1);
+                let inner = std::rc::Rc::clone(&rearm);
+                set_b3_probe(B3Probe::BeforeHashAllocation, move || {
+                    inner.set(inner.get() + 1);
+                    Ok(B3ProbeOutcome::RefuseAllocation)
+                });
+                Ok(B3ProbeOutcome::Continue)
+            });
+            let response = run_with(&fixture, &request, SearchLimits::default(), config)
+                .expect("only the second segment falls back");
+            assert_eq!(fired.get(), 2, "both probes fired");
+            assert_refusal_response(
+                &fixture,
+                &request,
+                config,
+                2,
+                2,
+                1,
+                1,
+                vec![1],
+                vec![(0, 4, 20), (1, 4, 40)],
+                &response,
+            );
+            rows += 1;
+        }
+
+        // Case 4: no refusal at all — both segments publish a directory.
+        {
+            let fixture = two_segments();
+            let request = request_asc(term_common(), 3);
+            let config = linear_config();
+            c3_reset_all();
+            b3_observation::reset();
+            reset_b3_counters();
+            let _probe = B3ProbeReset::new();
+            let response = run_with(&fixture, &request, SearchLimits::default(), config)
+                .expect("ready segments stay certified");
+            assert_refusal_response(
+                &fixture,
+                &request,
+                config,
+                2,
+                2,
+                2,
+                0,
+                Vec::new(),
+                vec![(0, 4, 20), (1, 4, 40)],
+                &response,
+            );
+            rows += 1;
+        }
+
+        // Case 5: the ExactSet control never attempts the directory.
+        {
+            let fixture = two_segments();
+            let request = request_asc(term_common(), 3);
+            let config = exact_set_config_threshold_one();
+            c3_reset_all();
+            b3_observation::reset();
+            reset_b3_counters();
+            let _probe = B3ProbeReset::new();
+            let response = run_with(&fixture, &request, SearchLimits::default(), config)
+                .expect("ExactSet stays certified");
+            assert_refusal_response(
+                &fixture,
+                &request,
+                config,
+                2,
+                0,
+                0,
+                0,
+                vec![0, 1],
+                vec![(0, 4, 20), (1, 4, 40)],
+                &response,
+            );
+            rows += 1;
+        }
+
+        assert_eq!(rows, 5, "exactly five B3 refusal rows");
+        eprintln!("C3 U06 rows=5");
+    }
+
+    // -----------------------------------------------------------------------
+    // C3-U07 — provisional ownership versus final scoring
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c3_u07_replacement_and_final_identity() {
+        use crate::segment::reader::{b3_meta_reads, reset_b3_counters};
+
+        // Input-derived oracle: alpha frequency and body length of `body_documents`.
+        struct Expected {
+            tf: u64,
+            dl: u64,
+        }
+        let expected: Vec<Expected> = (0..40usize)
+            .map(|index| Expected {
+                tf: 1 + (index % 4) as u64,
+                dl: (1 + index % 4 + index % 5) as u64,
+            })
+            .collect();
+        let total_length: u64 = expected.iter().map(|row| row.dl).sum();
+        assert_eq!(total_length, 180, "input-derived total field length");
+        let avgdl = total_length as f64 / 40.0;
+        assert!(
+            (avgdl - 4.5).abs() < f64::EPSILON,
+            "input-derived avgdl is 4.5"
+        );
+        let idf = (1.0_f64 + (40.0_f64 - 40.0 + 0.5) / (40.0 + 0.5)).ln();
+        let oracle_score = |tf: u64, dl: u64| {
+            let tf = tf as f64;
+            let dl = dl as f64;
+            0.0_f64 + (idf * (tf * (1.2 + 1.0)) / (tf + 1.2 * (1.0 - 0.75 + 0.75 * dl / avgdl)))
+        };
+
+        for (direction, winners, identities, compact_keys, rejections) in [
+            (
+                SortDirection::Asc,
+                vec![0usize, 1, 2],
+                vec![(0usize, 0u64, 1u64), (0, 1, 2), (0, 2, 3)],
+                4usize,
+                36usize,
+            ),
+            (
+                SortDirection::Desc,
+                vec![39usize, 38, 37],
+                vec![(0usize, 39u64, 4u64), (0, 38, 3), (0, 37, 2)],
+                40usize,
+                0usize,
+            ),
+        ] {
+            let fixture = Fixture::new(&[body_documents(40)]);
+            let base = request_asc(term_body(), 3);
+            let request = request(
+                base.query.clone(),
+                3,
+                doc_id_sort(direction, MissingValuePosition::Last),
+            );
+            {
+                let guard = fixture.snapshot.open_segment_reader(0).expect("guard");
+                let reader = guard.reader();
+                let physical: Vec<String> = reader
+                    .doc_keys()
+                    .expect("keys")
+                    .iter()
+                    .map(|key| key.as_str().to_owned())
+                    .collect();
+                assert_eq!(
+                    physical,
+                    (0..40).map(bounded_key).collect::<Vec<String>>(),
+                    "{direction:?}: actual physical DOC_KEYS order"
+                );
+            }
+
+            c3_reset_all();
+            b3_observation::reset();
+            reset_b3_counters();
+            let response = run_with(&fixture, &request, SearchLimits::default(), linear_config())
+                .expect("certified search");
+            c3_assert_certified(40, 3, 1);
+            assert_eq!(b2_observation::bound_columns(), 1);
+            assert_eq!(physical::converted_rows(), 0);
+            assert_eq!(b3_meta_reads(), 40, "one metadata read per match");
+            assert_eq!(
+                c2_observation::owned_key_fallback_segments(),
+                Vec::<usize>::new(),
+                "no owned-key fallback"
+            );
+            assert_eq!(
+                b3_observation::one_time_heap_hash_audits(),
+                1,
+                "one-time compact hash audit"
+            );
+            assert_eq!(
+                c3_observation::final_scores(),
+                identities,
+                "{direction:?}: final identity in response order"
+            );
+
+            assert_eq!(response.total_hits, 40, "{direction:?}: total");
+            let expected_keys: Vec<String> = winners.iter().copied().map(bounded_key).collect();
+            assert_eq!(
+                keys(&response),
+                expected_keys,
+                "{direction:?}: literal winners"
+            );
+            for hit in &response.hits {
+                let projected = hit
+                    .fields
+                    .iter()
+                    .find(|(name, _)| name == "doc_id")
+                    .expect("doc_id projected");
+                assert_eq!(
+                    projected.1,
+                    FieldValues::Single(FieldValue::Keyword(hit.key.as_str().to_owned())),
+                    "{direction:?}: literal projected doc_id"
+                );
+            }
+            let cursor = response.next_cursor.as_ref().expect("cursor");
+            assert_eq!(
+                cursor.last_key().as_str(),
+                expected_keys.last().expect("winner").as_str(),
+                "{direction:?}: cursor key is the last returned hit"
+            );
+            assert_eq!(
+                cursor.last_score(),
+                None,
+                "{direction:?}: explicit sort carries no last score"
+            );
+
+            // Independently computed score bits per returned hit.
+            for hit in &response.hits {
+                let index: usize = hit
+                    .key
+                    .as_str()
+                    .trim_start_matches("doc")
+                    .parse()
+                    .expect("index");
+                let row = &expected[index];
+                assert_eq!(
+                    hit.score.expect("lexical score").to_bits(),
+                    oracle_score(row.tf, row.dl).to_bits(),
+                    "{direction:?}: independent score bits for {index}"
+                );
+            }
+
+            // Provisional ownership: the reverse-competitive case materializes
+            // every candidate key/tuple but still scores only three.
+            assert_eq!(
+                b2_observation::owned_single_strings(),
+                compact_keys,
+                "{direction:?}: owned sort strings"
+            );
+            assert_eq!(
+                b3_observation::owned_key_materializations(),
+                compact_keys,
+                "{direction:?}: owned compact keys"
+            );
+            assert_eq!(
+                b2_observation::single_rejected_without_copy(),
+                rejections,
+                "{direction:?}: losing Single candidates own nothing"
+            );
+
+            let eager = c3_run_eager(&fixture, &request, SearchLimits::default(), linear_config())
+                .expect("eager reference");
+            assert_eq!(
+                crate::search::score::c3_score_observation::calls(),
+                40,
+                "{direction:?}: eager scores every match"
+            );
+            c3_assert_full_response(&response, &eager, "U07 eager parity");
+            let legacy =
+                c3_run_legacy(&fixture, &request, SearchLimits::default(), linear_config())
+                    .expect("legacy reference");
+            c3_assert_full_response(&response, &legacy, "U07 legacy parity");
+            eprintln!(
+                "C3 U07 {direction:?}: winners={expected_keys:?} scores=3 compact-keys={compact_keys} rejections={rejections} b3-meta=40"
+            );
+        }
+        eprintln!("C3 U07 asc+desc=2 complete");
+    }
+
+    // -----------------------------------------------------------------------
+    // C3-U08 — null/missing placement and equal-rank ties
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c3_u08_rank_ties_and_null_order() {
+        let ranks = [
+            Rank::Value("b"),
+            Rank::Missing,
+            Rank::Value("a"),
+            Rank::Null,
+            Rank::Value("b"),
+            Rank::Value("c"),
+            Rank::Value("a"),
+            Rank::Value("b"),
+        ];
+        let fixture = Fixture::new(&[ranks
+            .iter()
+            .enumerate()
+            .map(|(index, rank)| ranked_document(index, *rank))
+            .collect()]);
+
+        let mut rows = 0usize;
+        for (direction, missing, expected_indices) in [
+            (
+                SortDirection::Asc,
+                MissingValuePosition::First,
+                vec![1usize, 3, 2],
+            ),
+            (
+                SortDirection::Desc,
+                MissingValuePosition::First,
+                vec![1usize, 3, 5],
+            ),
+            (
+                SortDirection::Asc,
+                MissingValuePosition::Last,
+                vec![2usize, 6, 0],
+            ),
+            (
+                SortDirection::Desc,
+                MissingValuePosition::Last,
+                vec![5usize, 0, 4],
+            ),
+        ] {
+            let request = request(term_common(), 3, rank_sort(direction, missing));
+            c3_reset_all();
+            let response = run_with(&fixture, &request, SearchLimits::default(), linear_config())
+                .expect("certified rank search");
+            c3_assert_certified(8, 3, 1);
+            assert_eq!(response.total_hits, 8, "{direction:?}/{missing:?}");
+            let expected_keys: Vec<String> =
+                expected_indices.iter().copied().map(bounded_key).collect();
+            assert_eq!(
+                keys(&response),
+                expected_keys,
+                "{direction:?}/{missing:?}: literal order"
+            );
+            for hit in &response.hits {
+                let projected = hit
+                    .fields
+                    .iter()
+                    .find(|(name, _)| name == "doc_id")
+                    .expect("doc_id projected");
+                assert_eq!(
+                    projected.1,
+                    FieldValues::Single(FieldValue::Keyword(hit.key.as_str().to_owned())),
+                    "{direction:?}/{missing:?}: literal field"
+                );
+            }
+            assert!(response.next_cursor.is_some());
+            let eager = c3_run_eager(&fixture, &request, SearchLimits::default(), linear_config())
+                .expect("eager reference");
+            assert_eq!(
+                crate::search::score::c3_score_observation::calls(),
+                8,
+                "{direction:?}/{missing:?}: eager scores all 8"
+            );
+            c3_assert_full_response(&response, &eager, "U08 eager parity");
+            let legacy =
+                c3_run_legacy(&fixture, &request, SearchLimits::default(), linear_config())
+                    .expect("legacy reference");
+            c3_assert_full_response(&response, &legacy, "U08 legacy parity");
+            eprintln!("C3 U08 {direction:?}/{missing:?}: indices={expected_indices:?} bm25=3");
+            rows += 1;
+        }
+        assert_eq!(rows, 4, "four rank/placement rows");
+        eprintln!("C3 U08 rows=4");
+    }
+
+    // -----------------------------------------------------------------------
+    // C3-U09 — exact virtual ledger boundaries
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c3_u09_logical_budget_edges() {
+        let mut rows = 0usize;
+        for (m, top_k) in [(3usize, 1usize), (12, 10), (102, 100)] {
+            assert_eq!(m, top_k + 2, "K+2 boundary shape");
+            let peak_entries = 3 * m as u64;
+            let peak_bytes = 128 * m as u64;
+            // m = K+2 only certifies when the live df exceeds K+1.
+            let fixture = Fixture::new(&[body_documents(m)]);
+            let request = request_asc(term_body(), top_k);
+
+            // One-under entry and one-under byte rows.
+            for (entries, bytes, expect) in [
+                (
+                    peak_entries - 1,
+                    peak_bytes,
+                    (peak_entries - 1, peak_entries),
+                ),
+                (peak_entries, peak_bytes - 1, (peak_bytes - 1, peak_bytes)),
+            ] {
+                let limits = SearchLimits::default()
+                    .with_max_segment_candidate_entries(entries)
+                    .expect("entries")
+                    .with_max_total_candidate_bytes(bytes)
+                    .expect("bytes");
+                c3_reset_all();
+                let actual = run_with(&fixture, &request, limits, TopKDuplicateConfig::default());
+                assert_eq!(c2_observation::strict_routes(), 1, "m={m}: strict");
+                assert_eq!(c2_observation::legacy_routes(), 0, "m={m}");
+                assert_eq!(c3_observation::certificate_attempts(), 1, "m={m}");
+                assert_eq!(c3_observation::deferred_routes(), 1, "m={m}");
+                assert_eq!(c3_observation::eager_strict_routes(), 0, "m={m}");
+                assert_eq!(physical::callbacks(), 0, "m={m}: no callback");
+                assert_eq!(
+                    crate::search::score::c3_score_observation::calls(),
+                    0,
+                    "m={m}: no deferred score"
+                );
+                assert!(c3_observation::final_scores().is_empty(), "m={m}");
+                match actual {
+                    Err(SearchError::ResourceLimit { limit, requested }) => {
+                        assert_eq!((limit, requested), expect, "m={m}");
+                    }
+                    other => panic!("m={m} {entries}/{bytes} must reject: {other:?}"),
+                }
+                // Same payload through forced eager and forced Legacy.
+                let eager =
+                    c3_run_eager(&fixture, &request, limits, TopKDuplicateConfig::default());
+                assert_eq!(c3_observation::eager_strict_routes(), 1, "m={m}: eager");
+                let legacy =
+                    c3_run_legacy(&fixture, &request, limits, TopKDuplicateConfig::default());
+                c3_assert_error_parity(eager, legacy, "U09 eager/legacy resource parity");
+                // Independent same-snapshot retry with an admitted budget.
+                let retry = SearchLimits::default()
+                    .with_max_segment_candidate_entries(peak_entries)
+                    .expect("entries")
+                    .with_max_total_candidate_bytes(peak_bytes * 4)
+                    .expect("bytes");
+                c3_reset_all();
+                let retried = run_with(&fixture, &request, retry, TopKDuplicateConfig::default())
+                    .expect("the retry budget is admitted");
+                assert_eq!(c2_observation::strict_routes(), 1, "m={m}: retry strict");
+                assert_eq!(
+                    c3_observation::deferred_routes(),
+                    1,
+                    "m={m}: retry deferred"
+                );
+                assert_eq!(retried.total_hits, m as u64, "m={m}: retry total");
+                eprintln!(
+                    "C3 U09 m={m} {entries}/{bytes}: ResourceLimit{{{},{}}} retry-ok",
+                    expect.0, expect.1
+                );
+                rows += 1;
+            }
+
+            // Exact virtual peak: the segment phase is admitted; any later
+            // rejection must equal the accepted eager/Legacy verdict exactly.
+            let exact = SearchLimits::default()
+                .with_max_segment_candidate_entries(peak_entries)
+                .expect("entries")
+                .with_max_total_candidate_bytes(peak_bytes)
+                .expect("bytes");
+            c3_reset_all();
+            let actual = run_with(&fixture, &request, exact, TopKDuplicateConfig::default());
+            assert_eq!(c2_observation::strict_routes(), 1, "m={m}: exact strict");
+            assert_eq!(
+                c3_observation::deferred_routes(),
+                1,
+                "m={m}: exact deferred"
+            );
+            assert_eq!(
+                physical::strict_membership_observations(),
+                m,
+                "m={m}: all m membership events observed"
+            );
+            let actual_verdict = verdict(&actual);
+            let actual_scores = crate::search::score::c3_score_observation::calls();
+            let actual_identities = c3_observation::final_scores();
+            let eager = c3_run_eager(&fixture, &request, exact, TopKDuplicateConfig::default());
+            assert_eq!(
+                crate::search::score::c3_score_observation::calls(),
+                m,
+                "m={m}: eager scores every match"
+            );
+            let legacy = c3_run_legacy(&fixture, &request, exact, TopKDuplicateConfig::default());
+            assert_eq!(
+                verdict(&eager),
+                verdict(&legacy),
+                "m={m}: accepted exact-peak verdict"
+            );
+            assert_eq!(
+                actual_verdict,
+                verdict(&eager),
+                "m={m}: C3 exact-peak verdict matches eager"
+            );
+            // The accepted exact-peak rejection checkpoint depends on which
+            // existing ledger rejects: a collection-time refusal scores nothing,
+            // while a post-finalization projection/handoff refusal (the same
+            // checkpoint the eager and Legacy routes hit) has already scored the K
+            // returned hits. Both return `Err` with no partial page.
+            let checkpoint = if actual.is_ok() {
+                assert_eq!(actual_scores, top_k, "m={m}: exact success scores K");
+                assert_eq!(actual_identities.len(), top_k, "m={m}");
+                "admitted"
+            } else {
+                assert_eq!(
+                    actual_identities.len(),
+                    actual_scores,
+                    "m={m}: recorded identities track actual scores"
+                );
+                assert!(
+                    actual_scores == 0 || actual_scores == top_k,
+                    "m={m}: a rejection is either pre-score or post-finalization, got {actual_scores}"
+                );
+                if actual_scores == 0 {
+                    "pre-score-refusal"
+                } else {
+                    "post-finalization-refusal"
+                }
+            };
+            eprintln!(
+                "C3 U09 m={m} exact-peak verdict={actual_verdict:?} checkpoint={checkpoint} scores={actual_scores}"
+            );
+            rows += 1;
+
+            // Generous budget: literal keys, K scores, exact total and cursor.
+            let generous = SearchLimits::default()
+                .with_max_segment_candidate_entries(peak_entries)
+                .expect("entries")
+                .with_max_total_candidate_bytes(peak_bytes * 4)
+                .expect("bytes");
+            c3_reset_all();
+            let admitted = run_with(&fixture, &request, generous, TopKDuplicateConfig::default())
+                .expect("generous budget");
+            c3_assert_certified(m, top_k, 1);
+            assert_eq!(admitted.total_hits, m as u64, "m={m}: total");
+            assert_eq!(
+                keys(&admitted),
+                expected_ascending_keys(m, top_k),
+                "m={m}: literal keys"
+            );
+            assert!(admitted.next_cursor.is_some(), "m={m}: cursor");
+            let eager = c3_run_eager(&fixture, &request, generous, TopKDuplicateConfig::default())
+                .expect("eager generous");
+            c3_assert_full_response(&admitted, &eager, "U09 generous eager parity");
+            let legacy =
+                c3_run_legacy(&fixture, &request, generous, TopKDuplicateConfig::default())
+                    .expect("legacy generous");
+            c3_assert_full_response(&admitted, &legacy, "U09 generous legacy parity");
+            eprintln!("C3 U09 m={m} generous: total={m} k={top_k} bm25={top_k}");
+            rows += 1;
+        }
+        assert_eq!(rows, 12, "twelve logical-budget rows");
+        eprintln!("C3 U09 rows=12");
+    }
+
+    // -----------------------------------------------------------------------
+    // C3-U10 — deterministic cancellation poll parity
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c3_u10_cancel_poll_parity() {
+        let fixture = Fixture::new(&[body_documents(40)]);
+        let request = request_asc(term_body(), 3);
+        let config = exact_set_config_threshold_one();
+
+        let run_c3 = |cancel: &dyn Cancellation| {
+            c3_reset_all();
+            let result = fixture.searcher(SearchLimits::default(), config).search(
+                &request,
+                &Budgets::new(),
+                cancel,
+            );
+            (
+                result,
+                crate::search::score::c3_score_observation::calls(),
+                c3_observation::final_scores(),
+            )
+        };
+        let run_eager = |cancel: &dyn Cancellation| {
+            c3_reset_all();
+            let _guard = c3_observation::ForceEager::apply();
+            let result = fixture.searcher(SearchLimits::default(), config).search(
+                &request,
+                &Budgets::new(),
+                cancel,
+            );
+            (result, crate::search::score::c3_score_observation::calls())
+        };
+
+        // Warm the same immutable snapshot through both routes.
+        let (healthy_c3, healthy_c3_scores, _) = run_c3(&NeverCancel);
+        let healthy_c3 = healthy_c3.expect("certified healthy response");
+        assert_eq!(healthy_c3_scores, 3, "C3 scores exactly K");
+        assert_eq!(c3_observation::deferred_routes(), 1);
+        let (healthy_eager, healthy_eager_scores) = run_eager(&NeverCancel);
+        let healthy_eager = healthy_eager.expect("eager healthy response");
+        assert_eq!(healthy_eager_scores, 40, "eager scores every match");
+        c3_assert_full_response(&healthy_c3, &healthy_eager, "U10 healthy parity");
+
+        // Probe the deterministic poll count with cancellation disabled.
+        let probe = CancelAfter {
+            polls: AtomicU64::new(0),
+            cancel_at: 0,
+        };
+        let (probe_c3, probe_c3_scores, _) = run_c3(&probe);
+        let c3_polls = probe.polls.load(Ordering::Relaxed);
+        let probe_c3 = probe_c3.expect("probe C3 response");
+        assert_eq!(probe_c3_scores, 3);
+        c3_assert_full_response(&probe_c3, &healthy_c3, "U10 probe C3");
+        let probe_eager_cancel = CancelAfter {
+            polls: AtomicU64::new(0),
+            cancel_at: 0,
+        };
+        let (probe_eager, probe_eager_scores) = run_eager(&probe_eager_cancel);
+        let eager_polls = probe_eager_cancel.polls.load(Ordering::Relaxed);
+        let probe_eager = probe_eager.expect("probe eager response");
+        assert_eq!(probe_eager_scores, 40);
+        assert_eq!(c3_polls, eager_polls, "identical poll count");
+        let p = c3_polls;
+        assert!(p > 0 && p <= 4096, "bounded deterministic poll count: {p}");
+        c3_assert_full_response(&probe_eager, &healthy_eager, "U10 probe eager");
+        eprintln!("C3 U10 deterministic polls P={p}");
+
+        // Sweep every cancellation point, then the first uncancelled point.
+        let mut cancellations = 0usize;
+        let mut successes = 0usize;
+        for cancel_at in 1..=p + 1 {
+            let c3_cancel = CancelAfter {
+                polls: AtomicU64::new(0),
+                cancel_at,
+            };
+            let (c3_result, c3_scores, c3_ids) = run_c3(&c3_cancel);
+            let c3_actual_polls = c3_cancel.polls.load(Ordering::Relaxed);
+            let eager_cancel = CancelAfter {
+                polls: AtomicU64::new(0),
+                cancel_at,
+            };
+            let (eager_result, eager_scores) = run_eager(&eager_cancel);
+            let eager_actual_polls = eager_cancel.polls.load(Ordering::Relaxed);
+            assert_eq!(
+                c3_actual_polls, eager_actual_polls,
+                "cancel_at={cancel_at}: identical poll count"
+            );
+            if cancel_at <= p {
+                assert!(
+                    matches!(c3_result, Err(SearchError::Cancelled)),
+                    "cancel_at={cancel_at}: C3 must cancel, got {c3_result:?}"
+                );
+                assert!(
+                    matches!(eager_result, Err(SearchError::Cancelled)),
+                    "cancel_at={cancel_at}: eager must cancel, got {eager_result:?}"
+                );
+                // No partial finalization: an identity is recorded iff a score was
+                // computed, and the only permitted counts are 0 (cancelled before
+                // finalization) or K (cancelled in a later post-score checkpoint).
+                assert_eq!(
+                    c3_ids.len(),
+                    c3_scores,
+                    "cancel_at={cancel_at}: identities track scores"
+                );
+                assert!(
+                    c3_scores == 0 || c3_scores == 3,
+                    "cancel_at={cancel_at}: C3 scores {c3_scores}"
+                );
+                assert!(
+                    eager_scores == 0 || eager_scores == 40,
+                    "cancel_at={cancel_at}: eager scores {eager_scores}"
+                );
+                cancellations += 1;
+            } else {
+                let c3_response = c3_result.expect("P+1 must succeed");
+                let eager_response = eager_result.expect("P+1 eager must succeed");
+                assert_eq!(c3_scores, 3, "P+1: C3 scores exactly K");
+                assert_eq!(eager_scores, 40, "P+1: eager scores every match");
+                c3_assert_full_response(&c3_response, &healthy_c3, "U10 P+1 C3");
+                c3_assert_full_response(&eager_response, &healthy_eager, "U10 P+1 eager");
+                c3_assert_full_response(&c3_response, &eager_response, "U10 P+1 parity");
+                successes += 1;
+            }
+        }
+        assert_eq!(cancellations as u64, p, "one cancellation per poll point");
+        assert_eq!(successes, 1, "exactly one uncancelled point");
+        assert_eq!(cancellations + successes, (p + 1) as usize, "P+1 rows");
+
+        // Pre-cancelled flag: typed Cancelled on both routes.
+        let flag = CancellationFlag::new();
+        flag.cancel();
+        let (c3_result, _, _) = run_c3(&flag);
+        assert!(
+            matches!(c3_result, Err(SearchError::Cancelled)),
+            "{c3_result:?}"
+        );
+        let (eager_result, _) = run_eager(&flag);
+        assert!(
+            matches!(eager_result, Err(SearchError::Cancelled)),
+            "{eager_result:?}"
+        );
+
+        // Pristine re-run after the sweep: same snapshot, exact response.
+        let (after, after_scores, _) = run_c3(&NeverCancel);
+        let after = after.expect("post-sweep response");
+        assert_eq!(after_scores, 3);
+        c3_assert_certified(40, 3, 1);
+        c3_assert_full_response(&after, &healthy_c3, "U10 post-sweep");
+        eprintln!(
+            "C3 U10 rows={} cancellations={cancellations} successes={successes}",
+            cancellations + successes
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // C3-U11 — seeded differential matrix
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn c3_u11_seeded_final_scores() {
+        const SEED: u64 = 0xC306_2026_0000_0001;
+        let mut rng = Rng(SEED);
+        let mut rows = 0usize;
+
+        for distribution in 0..8usize {
+            let count = 120 + 3 * distribution;
+            let segments = 1 + distribution % 4;
+            let mut buckets: Vec<Vec<Document>> = vec![Vec::new(); segments];
+            // Literal input table: global index -> (term frequency, body length).
+            let mut table: Vec<(u64, u64)> = Vec::with_capacity(count);
+            for index in 0..count {
+                let repeats = 1 + rng.below(4);
+                let padding = rng.below(6);
+                table.push(((repeats) as u64, (repeats + padding) as u64));
+                buckets[index % segments].push(document_with_body(index, repeats, padding));
+            }
+            let total_length: u64 = table.iter().map(|(_, dl)| dl).sum();
+            let n = count as u64;
+            let avgdl = total_length as f64 / n as f64;
+            let idf = {
+                let nf = n as f64;
+                (1.0_f64 + (nf - nf + 0.5) / (nf + 0.5)).ln()
+            };
+            let oracle_score = |tf: u64, dl: u64| {
+                let tf = tf as f64;
+                let dl = dl as f64;
+                0.0_f64 + (idf * (tf * (1.2 + 1.0)) / (tf + 1.2 * (1.0 - 0.75 + 0.75 * dl / avgdl)))
+            };
+
+            let fixture = Fixture::new(&buckets);
+            assert_eq!(
+                fixture.snapshot.segment_count(),
+                segments,
+                "d={distribution}"
+            );
+            // Test-only key -> physical identity map from the real readers.
+            let mut identities: std::collections::BTreeMap<String, (usize, u64)> =
+                std::collections::BTreeMap::new();
+            for segment_index in 0..segments {
+                let guard = fixture
+                    .snapshot
+                    .open_segment_reader(segment_index)
+                    .expect("guard");
+                let reader = guard.reader();
+                for (doc_id, key) in reader.doc_keys().expect("keys").iter().enumerate() {
+                    let previous =
+                        identities.insert(key.as_str().to_owned(), (segment_index, doc_id as u64));
+                    assert!(previous.is_none(), "duplicate key {}", key.as_str());
+                }
+            }
+            assert_eq!(
+                identities.len(),
+                count,
+                "d={distribution}: global key count"
+            );
+
+            for top_k in [1usize, 10, 31, 32, 100] {
+                for direction in [SortDirection::Asc, SortDirection::Desc] {
+                    for missing in [MissingValuePosition::First, MissingValuePosition::Last] {
+                        let request = request(term_body(), top_k, doc_id_sort(direction, missing));
+                        c3_reset_all();
+                        let response = run_with(
+                            &fixture,
+                            &request,
+                            SearchLimits::default(),
+                            linear_config(),
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!(
+                                "d={distribution} k={top_k} {direction:?}/{missing:?}: {error:?}"
+                            )
+                        });
+                        c3_assert_certified(count, top_k, segments);
+                        assert_eq!(response.total_hits, n, "d={distribution}: total");
+
+                        let mut expected_indices: Vec<usize> = (0..count).collect();
+                        if direction == SortDirection::Desc {
+                            expected_indices.reverse();
+                        }
+                        expected_indices.truncate(top_k);
+                        let expected_keys: Vec<String> =
+                            expected_indices.iter().copied().map(bounded_key).collect();
+                        assert_eq!(
+                            keys(&response),
+                            expected_keys,
+                            "d={distribution} k={top_k} {direction:?}/{missing:?}: literal order"
+                        );
+
+                        let recorded = c3_observation::final_scores();
+                        assert_eq!(recorded.len(), top_k, "d={distribution}");
+                        for (rank, hit) in response.hits.iter().enumerate() {
+                            let index = expected_indices[rank];
+                            let (tf, dl) = table[index];
+                            let (segment_index, doc_id) = identities
+                                .get(hit.key.as_str())
+                                .copied()
+                                .expect("returned key has a physical identity");
+                            assert_eq!(
+                                recorded[rank],
+                                (segment_index, doc_id, tf),
+                                "d={distribution} rank={rank}: recorded physical identity"
+                            );
+                            assert_eq!(
+                                hit.score.expect("lexical score").to_bits(),
+                                oracle_score(tf, dl).to_bits(),
+                                "d={distribution} rank={rank}: independent score bits"
+                            );
+                            let projected = hit
+                                .fields
+                                .iter()
+                                .find(|(name, _)| name == "doc_id")
+                                .expect("doc_id projected");
+                            assert_eq!(
+                                projected.1,
+                                FieldValues::Single(FieldValue::Keyword(
+                                    hit.key.as_str().to_owned()
+                                )),
+                                "d={distribution} rank={rank}: projected doc_id"
+                            );
+                        }
+
+                        let eager = c3_run_eager(
+                            &fixture,
+                            &request,
+                            SearchLimits::default(),
+                            linear_config(),
+                        )
+                        .expect("eager reference");
+                        assert_eq!(
+                            crate::search::score::c3_score_observation::calls(),
+                            count,
+                            "d={distribution}: eager scores every match"
+                        );
+                        c3_assert_full_response(&response, &eager, "U11 eager parity");
+                        let legacy = c3_run_legacy(
+                            &fixture,
+                            &request,
+                            SearchLimits::default(),
+                            linear_config(),
+                        )
+                        .expect("legacy reference");
+                        c3_assert_full_response(&response, &legacy, "U11 legacy parity");
+                        rows += 1;
+                    }
+                }
+            }
+            eprintln!(
+                "C3 U11 d={distribution} seed={SEED:#x} count={count} segments={segments} rows-done={rows}"
+            );
+        }
+        assert_eq!(rows, 160, "exactly 160 seeded differential rows");
+        eprintln!("C3 U11 rows={rows} seed={SEED:#x}");
+    }
+
+    // -----------------------------------------------------------------------
+    // C3-U12 — private representation and finalization guard
+    // -----------------------------------------------------------------------
+
+    /// The pre-C3 `MixedEntry` field order, used only to bound the physical
+    /// layout change. It is never constructed.
+    #[allow(dead_code)]
+    struct OldMixedEntry<'a> {
+        hit: SelectedHit,
+        charge: u64,
+        sort: &'a Sort,
+        relevance: bool,
+        ordinal_sort: Option<OrdinalSortKey>,
+        key_hash: Option<u64>,
+    }
+
+    #[test]
+    fn c3_u12_private_representation() {
+        use std::num::NonZeroU64;
+
+        let old_size = std::mem::size_of::<OldMixedEntry<'_>>();
+        let new_size = std::mem::size_of::<MixedEntry<'_>>();
+        let old_align = std::mem::align_of::<OldMixedEntry<'_>>();
+        let new_align = std::mem::align_of::<MixedEntry<'_>>();
+        assert_eq!(new_align, old_align, "entry alignment is unchanged");
+        assert!(
+            new_size >= old_size,
+            "the deferral field cannot shrink the entry"
+        );
+        assert!(
+            new_size <= old_size + 8,
+            "the deferral field costs at most one u64 word"
+        );
+        assert_eq!(
+            std::mem::size_of::<Option<NonZeroU64>>(),
+            std::mem::size_of::<u64>(),
+            "the NonZeroU64 niche is one word"
+        );
+        eprintln!(
+            "C3 U12 layout old={old_size}/{old_align} new={new_size}/{new_align} delta={}",
+            new_size - old_size
+        );
+
+        // Real prepared statistics from a real in-memory segment.
+        let fixture = Fixture::new(&[documents(8)]);
+        let guard = fixture.snapshot.open_segment_reader(0).expect("guard");
+        let reader = guard.reader();
+        let grp_field_id = reader.schema().field_id("grp").expect("grp field id");
+        let live = Rc::new(vec![true; reader.doc_count() as usize]);
+        let readers = [reader];
+        let live_rows = vec![Rc::clone(&live)];
+        let fields = [grp_field_id];
+        let query_terms = BTreeMap::from([(grp_field_id, BTreeSet::from(["common".to_owned()]))]);
+        let limits = SearchLimits::default();
+        let mut meter = MixedWorkMeter::new(
+            limits.max_total_work_units(),
+            limits.max_typed_work_units(),
+            limits.max_scanned_posting_occurrences(),
+            &NeverCancel,
+        );
+        let mut work = SearchWork::shared(&mut meter);
+        let stats_owner = compute_stats(
+            &readers,
+            &live_rows,
+            &fields,
+            &query_terms,
+            &limits,
+            &mut work,
+            &NeverCancel,
+        )
+        .expect("real snapshot statistics");
+        let field = stats_owner.field(grp_field_id).expect("grp stats");
+        assert_eq!(field.n, 8, "all eight documents are live");
+        assert_eq!(field.doc_freq("common"), 8, "every document matches");
+        let cert = field
+            .certify_deferred("common")
+            .expect("the 8-live-document fixture certifies");
+
+        let sort = doc_id_sort(SortDirection::Asc, MissingValuePosition::Last);
+        let make = |doc_id: u64| {
+            let key = DocumentKey::new(bounded_key(doc_id as usize)).expect("key");
+            let hit = SelectedHit {
+                segment_index: 0,
+                doc_id,
+                sort_tuple: vec![SortValue::Value(FieldValue::Keyword(
+                    key.as_str().to_owned(),
+                ))],
+                score: None,
+                key: key.clone(),
+            };
+            let charge = candidate_charge(&hit).expect("charge");
+            MixedEntry {
+                hit,
+                charge,
+                sort: &sort,
+                relevance: false,
+                ordinal_sort: Some(OrdinalSortKey::Value(doc_id)),
+                key_hash: Some(runtime_doc_key_hash(key.as_str())),
+                deferred_tf: Some(NonZeroU64::new(1).expect("positive")),
+            }
+        };
+
+        let mut entries = vec![make(0), make(1), make(2)];
+        // Reference bits are computed through the same prepared scorer *before* the
+        // observation reset, so the count below measures only finalization.
+        let expected: Vec<u64> = (0..3u64)
+            .map(|doc_id| {
+                let dl = field.length(0, doc_id);
+                let mut score = 0.0_f64;
+                score += field.bm25_score("common", 1, dl).expect("eager score");
+                score.to_bits()
+            })
+            .collect();
+        crate::search::score::c3_score_observation::reset();
+        c3_observation::reset();
+        finalize_deferred_entries(&mut entries, 2, &cert).expect("valid finalization");
+        assert_eq!(
+            crate::search::score::c3_score_observation::calls(),
+            2,
+            "only the first k retained entries are scored"
+        );
+        for (index, entry) in entries.iter().enumerate().take(2) {
+            assert_eq!(
+                entry.hit.score.expect("scored").to_bits(),
+                expected[index],
+                "entry {index} keeps the eager bits"
+            );
+            assert!(entry.deferred_tf.is_none(), "consumed frequency cleared");
+        }
+        assert_eq!(
+            entries[2].hit.score, None,
+            "the K+1 lookahead stays unscored"
+        );
+        assert!(
+            entries[2].deferred_tf.is_some(),
+            "the lookahead keeps its own frequency"
+        );
+        assert_eq!(
+            c3_observation::final_scores(),
+            vec![(0usize, 0u64, 1u64), (0, 1, 1)],
+            "exact final identity records"
+        );
+        eprintln!("C3 U12 finalize k=2 bm25=2 lookahead-unscored=ok");
+
+        // The first two entries keep their expected eager bits independently.
+        let field_again = stats_owner.field(grp_field_id).expect("grp stats");
+        for doc_id in 0..2u64 {
+            let dl = field_again.length(0, doc_id);
+            let mut independent = 0.0_f64;
+            independent += field_again
+                .bm25_score("common", 1, dl)
+                .expect("independent eager score");
+            assert_eq!(
+                entries[doc_id as usize]
+                    .hit
+                    .score
+                    .expect("scored")
+                    .to_bits(),
+                independent.to_bits(),
+                "independent bits for doc {doc_id}"
+            );
+        }
+
+        // Four private-misuse rows: only the last (lookahead) entry is mutated.
+        for (label, mutate) in [
+            ("deferred_tf=None", 0usize),
+            ("preexisting-score", 1),
+            ("ordinal_sort=None", 2),
+            ("relevance=true", 3),
+        ] {
+            let mut case = vec![make(0), make(1), make(2)];
+            match mutate {
+                0 => case[2].deferred_tf = None,
+                1 => case[2].hit.score = Some(0.0),
+                2 => case[2].ordinal_sort = None,
+                _ => case[2].relevance = true,
+            }
+            let first_before: Vec<Option<u64>> = case[..2]
+                .iter()
+                .map(|entry| entry.hit.score.map(f64::to_bits))
+                .collect();
+            crate::search::score::c3_score_observation::reset();
+            c3_observation::reset();
+            match finalize_deferred_entries(&mut case, 2, &cert) {
+                Err(SearchError::CorruptIndex { detail }) => {
+                    assert_eq!(detail, "invalid deferred ordinal candidate", "{label}")
+                }
+                other => panic!("{label}: unexpected {other:?}"),
+            }
+            assert_eq!(
+                crate::search::score::c3_score_observation::calls(),
+                0,
+                "{label}: no score before validation"
+            );
+            assert!(
+                c3_observation::final_scores().is_empty(),
+                "{label}: no final identity recorded"
+            );
+            let first_after: Vec<Option<u64>> = case[..2]
+                .iter()
+                .map(|entry| entry.hit.score.map(f64::to_bits))
+                .collect();
+            assert_eq!(
+                first_before, first_after,
+                "{label}: first entries untouched"
+            );
+            assert!(
+                case[..2].iter().all(|entry| entry.deferred_tf.is_some()),
+                "{label}: no frequency consumed"
+            );
+        }
+        // Silence the unused-mut warning while keeping the owned statistics alive
+        // for every assertion above.
+        let _ = &stats_owner;
+        eprintln!("C3 U12 misuse-guard rows=4");
     }
 }
 // C2_TESTS_CLOSE_MARKER
