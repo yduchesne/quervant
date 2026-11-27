@@ -500,3 +500,24 @@ branch are unchanged from the reviewed head
   live PR body and the external handoff. G10 remains maintainer-owned and open;
   C4 is unstarted; nothing merged, no readiness change, no performance claim or
   baseline promotion.
+
+## PERF-06-C4 integrated C-series warm qualification (2026-11-27)
+
+C2 and C3 merged at `f169fbba93e10d174cad8ab3bca55cdb7ae6aa03`.
+C4 executed **COMPLETE** using A=`8c9f51f311afa5b327f70432e32c0f6f5c205eab`
+(merged B4, accepted A+B) and B=`f169fbba93e10d174cad8ab3bca55cdb7ae6aa03`
+(merged C3) with `policy.readiness.mode="advisory"` and a binding native A/A
+control (16/16 PASS). Result
+[`quervant-perf06c4-paired-warm-2026-11-27-001.json`](../benchmarks/studies/perf-06/warm/results/quervant-perf06c4-paired-warm-2026-11-27-001.json),
+configuration
+[`quervant-perf06c4-paired-warm-2026-11-27.json`](../benchmarks/studies/perf-06/warm/configurations/quervant-perf06c4-paired-warm-2026-11-27.json),
+run `1331bb4d-fdd9-47e2-8784-fd4b94470bed`.
+Disposition **`PERF06_C4_QUALIFIED_TARGETS_NOT_MET_REVIEW_REQUIRED`**: 1/4 primary
+lanes met (`100000/common/k10/warm` +5.723%), 12/12 guards within the −10% bound
+and low-hit 8/8; medium K10 +2.675%, medium K100 +1.370% and common K100 +4.194%
+missed the +5% primary threshold. Unit/integration/quality checks were **not rerun**
+by explicit maintainer instruction; native benchmark correctness and the A/A control
+passed. Report: [PERF06C4_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C4_EXECUTION_REPORT.md).
+Independent acceptance/promotion pending. No automatic rollback, no baseline
+promotion, and no performance claim beyond the measured lanes; the cumulative
+pre-A1→C effect remains unmeasured.

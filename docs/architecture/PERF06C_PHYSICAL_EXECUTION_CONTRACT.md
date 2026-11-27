@@ -297,3 +297,27 @@ records status and changes **no** normative C1/C3 rule above. Report:
   `docs/pr-artifacts/perf-06-c/evidence/c3-f2/`. G10 (independent review and
   maintainer acceptance) and C4 (warm qualification) remain open; no performance
   claim is made.
+
+## 14. C4 warm qualification status note (2026-11-27)
+
+**Status:** measurement-only status note; this records an executed qualification and
+changes **no** normative C1/C2/C3 rule above. Report:
+[PERF06C4_EXECUTION_REPORT.md](../pr-artifacts/perf-06-c/PERF06C4_EXECUTION_REPORT.md).
+
+- C2 and C3 merged at `f169fbba93e10d174cad8ab3bca55cdb7ae6aa03`. C4 executed
+  **COMPLETE** using A=`8c9f51f311afa5b327f70432e32c0f6f5c205eab` (merged B4,
+  accepted A+B) and B=`f169fbba93e10d174cad8ab3bca55cdb7ae6aa03` (merged C3) with
+  `policy.readiness.mode="advisory"` and the binding native A/A control (16/16 PASS),
+  12 balanced blocks, 2 slots per arm, 5 warmups and 20 samples per lane, no excluded
+  blocks. Result
+  [`quervant-perf06c4-paired-warm-2026-11-27-001.json`](../../benchmarks/studies/perf-06/warm/results/quervant-perf06c4-paired-warm-2026-11-27-001.json).
+- Disposition **`PERF06_C4_QUALIFIED_TARGETS_NOT_MET_REVIEW_REQUIRED`**: 1/4 primary
+  lanes reached the +5% threshold (`100000/common/k10/warm` +5.723%), 12/12 guards
+  stayed inside the −10% bound, low-hit 8/8. Medium K10 +2.675%, medium K100 +1.370%
+  and common K100 +4.194% are measured improvements below the primary threshold.
+  Native `INCONCLUSIVE` lanes are reported unchanged.
+- Unit/integration/quality checks were **not rerun** by explicit maintainer
+  instruction; native build, index, oracle, control and schedule validity passed.
+  G10 (independent review and maintainer acceptance) and the C-series performance
+  adoption decision remain open. No automatic rollback or baseline promotion is
+  performed, and no performance claim is made beyond the measured lanes.
