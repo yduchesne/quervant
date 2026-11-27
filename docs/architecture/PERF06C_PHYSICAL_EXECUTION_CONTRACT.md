@@ -250,3 +250,29 @@ evidence: [PERF06C3_EXECUTION_REPORT.md](../pr-artifacts/perf-06-c/PERF06C3_EXEC
 - **No performance claim.** C4 remains the only stage authorized to measure the
   incremental warm effect and to guard absent/rare lanes and the one-word entry
   growth. Independent review and maintainer acceptance (G10) remain open.
+
+## 12. C3-F1 acceptance-status note (2026-11-26)
+
+**Status:** acceptance repair only. This note records status and changes **no**
+normative C1/C3 rule above. Plan:
+[PERF06C3F1_DETAILED_FIXUP_PLAN.md](../pr-artifacts/perf-06-c/PERF06C3F1_DETAILED_FIXUP_PLAN.md);
+report: [PERF06C3F1_EXECUTION_REPORT.md](../pr-artifacts/perf-06-c/PERF06C3F1_EXECUTION_REPORT.md).
+
+- The C3 production implementation — the conservative certificate, the deferred
+  executor, the inline integer frequency, the finalizer, the eager fallback, the
+  preserved eager/`Legacy` routes and all accounting — is **byte-identical** to
+  the independently reviewed head `ee77917d303b060b0d38ab88e5d9ae73625f6676`.
+- Only test acceptance was repaired: certificate guard isolation, the exact
+  dispatch domain, literal fault descriptors, literal resource outcomes and
+  every-hit snapshot oracles. No scoring, accounting, projection-order,
+  cancellation-poll, duplicate-policy, cursor or storage semantics changed.
+- Clarified checkpoint: the U09 exact-peak case for `M = 102, K = 100` is refused
+  by the **existing projection ledger** with `ResourceLimit { 13056, 13160 }`
+  *after* C3 finalized exactly `100` scores. The original plan's broader
+  "no final scores on any exact-peak failure" expectation was an author error for
+  this specific request and is corrected in the F1 report; the accepted
+  production order (collect/finalize, then project) is unchanged. Earlier
+  failures still score zero.
+- Coverage is reported from the `Lines` column only. G10 (independent review and
+  maintainer acceptance) and C4 (warm qualification) remain open; no performance
+  claim is made.

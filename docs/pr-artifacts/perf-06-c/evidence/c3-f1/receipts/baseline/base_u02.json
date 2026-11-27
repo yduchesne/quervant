@@ -1,0 +1,42 @@
+{
+  "after": {
+    "head": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+    "index_tree": "38b892beffb81dccbc651b5923bf1fa311fdb454",
+    "tracked_status_b64": "",
+    "tree": "38b892beffb81dccbc651b5923bf1fa311fdb454"
+  },
+  "argv": [
+    "cargo",
+    "+1.98.1",
+    "test",
+    "-p",
+    "quervant-core",
+    "--lib",
+    "search::unified::c2_tests::c3_u02_dispatch_and_count_matrix",
+    "--",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "before": {
+    "head": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+    "index_tree": "38b892beffb81dccbc651b5923bf1fa311fdb454",
+    "tracked_status_b64": "",
+    "tree": "38b892beffb81dccbc651b5923bf1fa311fdb454"
+  },
+  "combined_output_base64": "ICAgIEZpbmlzaGVkIGB0ZXN0YCBwcm9maWxlIFt1bm9wdGltaXplZCArIGRlYnVnaW5mb10gdGFyZ2V0KHMpIGluIDAuMDZzCiAgICAgUnVubmluZyB1bml0dGVzdHMgc3JjL2xpYi5ycyAodGFyZ2V0L2RlYnVnL2RlcHMvcXVlcnZhbnRfY29yZS00YmNlMDVkZWU0ZTRmZWQ0KQoKcnVubmluZyAxIHRlc3QKdGVzdCBzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjM191MDJfZGlzcGF0Y2hfYW5kX2NvdW50X21hdHJpeCAuLi4gQzMgVTAyIGRpc3BhdGNoLXJvd3M9MjUKQzMgVTAyIHNwbGl0IHNlZ21lbnRzPTMgbWVtYmVyc2hpcD0xMiBmaW5hbC1jYWxscz0xMgpDMyBVMDIgaW5lbGlnaWJsZS1hbmQtY3Vyc29yLXJvd3M9b2sKb2sKCnRlc3QgcmVzdWx0OiBvay4gMSBwYXNzZWQ7IDAgZmFpbGVkOyAwIGlnbm9yZWQ7IDAgbWVhc3VyZWQ7IDEyMTggZmlsdGVyZWQgb3V0OyBmaW5pc2hlZCBpbiAwLjQ3cwoK",
+  "combined_output_sha256": "f048dca40623750759240a1878d08d45f58a224ad76dbbd8ae6ae42c6e462f96",
+  "combined_output_size": 459,
+  "command_exit_code": 0,
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "ended_utc": "2026-11-27T03:50:43.642325+00:00",
+  "expected_commit": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+  "label": "base_u02",
+  "removed_env_names": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE"
+  ],
+  "schema": "quervant-perf06-c3-receipt-v1",
+  "source_identity_valid": true,
+  "started_utc": "2026-11-27T03:50:43.086349+00:00"
+}

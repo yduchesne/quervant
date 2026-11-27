@@ -1,0 +1,6 @@
+f1_fin_s01: C3 F1 S01 rows=24 isolated-df-rows=2
+f1_fin_u02: C3 F1 U02 matrix-rows=25 certified=5 legacy=20 split-c3=10 ineligible-result-rows=6
+f1_fin_u04: C3 F1 U04 rows=9 isolated-C29=true unarmed-synthetic-snapshot=C3
+f1_fin_u05: C3 F1 U05 rows=4 recoveries=4 literal-reference-errors=3
+f1_fin_u09: C3 F1 U09 rows=12 failed-rows=7 recoveries=7 fixed-projection-failure=13056/13160/100
+f1_fin_i02: C3 F1 I02 phases=5 checked-hits=198 old-pages=14 new-pages=13

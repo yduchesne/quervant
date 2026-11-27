@@ -513,3 +513,73 @@ size and SHA-256 are verified in `evidence/c3/manifest.json`.
   statistics fall back to eager C2. The physical heap entry grows by one `u64`
   word; C4 must measure absent/rare lanes and layout/codegen effects. No
   performance improvement is claimed.
+
+---
+
+# Errata and closeout (PERF-06-C3-F1, 2026-11-26)
+
+This section is an **append-only correction** of specific statements above. The
+historical text is retained verbatim as the record of what was claimed at the
+time; nothing above has been rewritten. Plan:
+[PERF06C3F1_DETAILED_FIXUP_PLAN.md](PERF06C3F1_DETAILED_FIXUP_PLAN.md); F1
+report: [PERF06C3F1_EXECUTION_REPORT.md](PERF06C3F1_EXECUTION_REPORT.md).
+
+1. **Coverage column mislabel.** The §5 and §9 gate values `93.85 %` / `93.54 %`
+   were **region** coverage, not line coverage. The actual historical **line**
+   coverage from those same receipts is:
+   `qa_cov_198.json` → total 77,232, missed 5,023, covered 72,209 → **93.50 %**;
+   `qa_cov_198_af.json` → total 78,742, missed 5,438, covered 73,304 → **93.09 %**.
+   Both exceed the 85 % line floor; this is a reporting correction, not a
+   coverage failure. F1 reports measured **Lines** separately.
+2. **U02 matrix domain.** The earlier `25` rows iterated `M = K+1+delta` with
+   `delta ∈ [-2..2]`, i.e. `M ∈ {K-1, K, K+1, K+2, K+3}`, not the planned
+   `M ∈ {0, 1, K, K+1, K+2}`. The earlier `C3 U02 split ... final-calls=12`
+   diagnostic read the live counter **after** the Legacy reference run, so `12`
+   was the Legacy count; the certified split assertion itself correctly observed
+   `10`. The corrected empty/singleton matrix had not been executed before F1.
+3. **U04 C29 descriptor.** The earlier `C29` row also set the final-posting
+   mutation flag (`record == 29`), so it was not an isolated column-29 case; the
+   isolated `C29` name was therefore not established. F1 makes it column-only and
+   validates the nine descriptors against a literal ordered table.
+4. **I02 later-page oracle coverage.** The earlier I02 verified later-page keys,
+   counts and cursor continuation, but its per-hit score/field oracles covered
+   only the first page of the old and new views. F1 validates every hit of all
+   five view phases (198 checks).
+5. **S01 guard independence.** The earlier `df = 0` and `df > n` rows also
+   removed the prepared IDF, so they could pass through the independent
+   missing-IDF refusal even if the advertised df guard were broken. The earlier
+   PASS therefore did not independently prove those two guards.
+6. **U09 exact-peak expectation (author correction).** The original plan's
+   "any exact-peak failure must have no final scores" was **too broad** for the
+   prescribed request. The accepted checkpoint order is collection/finalization
+   then projection; for `M = 102, K = 100` at the exact virtual peak the
+   projection ledger refuses with `ResourceLimit { 13056, 13160 }` **after**
+   exactly 100 private scores and 100 recorded identities were computed. The
+   earlier generic `scores == 0 || scores == K` allowance was **not** previously
+   authorized; F1 replaces it with the literal twelve-row table and this single
+   documented projection checkpoint.
+7. **U04 execution classification.** The nine U04 rows are **eight byte-only
+   corruption cases plus one real key-byte fault combined with
+   `INJECTED_C2_ONLY`**; three column rows fail **before route dispatch** and are
+   not C3 candidate execution. No assertion claimed that all nine executed C3
+   candidate handling.
+8. **Workspace test counts.** The all-visible sums `2759` / `2804` include ten
+   child-process passes. The parent libtest totals are `2749 / 0 / 16 ignored`
+   (default) and `2794 / 0 / 100 ignored` (all-features) on both toolchains;
+   Criterion test-mode targets (10) and ignored tests are separate scopes; **no
+   doctest target appeared** in those `--all-targets` commands.
+9. **Hosted run closeout.** Run
+   [45925006538](https://github.com/yduchesne/quervant/actions/runs/45925006538)
+   (`pull_request`, attempt 1, workflow head `START`) **completed successfully**;
+   all five jobs succeeded. Its workflow metadata identifies the PR head
+   (`ee77917…`), while the job checkout identifies the separate GitHub merge
+   commit `592241ec0ad408f30cbe1a0ab6cc0b7968aa56b6`. The `rustfs` job
+   (`140264172087`) log contains 32 `test result: ok` summaries summing to
+   **65 passed / 0 failed / 0 ignored** across repeated invocations, 37 unique
+   named real-service tests and 53 top-level `test … ok` lines; that is not 32
+   unique test bodies. The earlier "pending" observation was truthful at the time.
+10. **Broad `c3_` inventory.** The `--lib c3_` count of `26` comprises **17 new
+    PERF-06-C3** registrations plus **9 unrelated pre-existing**
+    `search::unified::tests::c3_*` accounting tests. The original
+    implementation-plan expectation of `17` for that broad filter was an author
+    mistake; no test registration changed.

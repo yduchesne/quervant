@@ -441,3 +441,34 @@ report and evidence:
   (including absent/rare lanes and the entry-layout/codegen guard) and to report
   the cumulative series. C3 must not be marked DONE and no baseline may be
   promoted before G10 maintainer acceptance.
+
+## PERF-06-C3-F1 acceptance repair (2026-11-26)
+
+Acceptance repair and evidence closeout for PR
+[#132](https://github.com/yduchesne/quervant/pull/132). Plan:
+[PERF06C3F1_DETAILED_FIXUP_PLAN.md](pr-artifacts/perf-06-c/PERF06C3F1_DETAILED_FIXUP_PLAN.md);
+report:
+[PERF06C3F1_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C3F1_EXECUTION_REPORT.md).
+
+- **Production source is byte-frozen.** Every normal-build byte and every
+  unrelated test byte is identical to the reviewed C3 head
+  `ee77917d303b060b0d38ab88e5d9ae73625f6676`; only six existing test functions
+  plus the I02 paging helper changed, each verified by the supplied function-only
+  freeze checker.
+- **Repaired acceptance:** S01 isolates the two df guards with a valid prepared
+  IDF; U02 executes the literal 25-tuple `M ∈ {0,1,K,K+1,K+2}` domain and asserts
+  the six previously discarded sort/batch/aggregation responses; U04 validates
+  nine literal fault descriptors with an isolated `C29` and a same-snapshot
+  unarmed C3 check; U05 binds normal, eager and Legacy results to the literal
+  scanned-cap errors; U09 asserts twelve literal resource outcomes, seven
+  recoveries and the documented projection-after-finalization
+  `{13056,13160}` refusal with 100 private scores; I02 verifies every hit of all
+  five view phases (198 checks).
+- **Corrected reporting.** Historical region coverage had been labelled as line
+  coverage: the actual historical line figures were `93.50 %` / `93.09 %`. The
+  `U02` split diagnostic, the `C29` descriptor, the I02 later-page oracle scope,
+  the S01 guard independence, the U09 expectation, the U04 execution classes, the
+  parent/child test-count scopes and the `c3_` 26-vs-17 inventory are corrected by
+  dated errata in the original report.
+- **C4 has not started.** No performance sample, profiler, timing run or baseline
+  promotion. G10 remains maintainer-owned and open.

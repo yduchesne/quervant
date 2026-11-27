@@ -1,0 +1,37 @@
+{
+  "after": {
+    "head": "8f82f8290f838547dfc7d490f44ba8c0c8798d24",
+    "index_tree": "d22e2da175cb627a5e81b88905290d2a13958c11",
+    "tracked_status_b64": "",
+    "tree": "d22e2da175cb627a5e81b88905290d2a13958c11"
+  },
+  "argv": [
+    "cargo",
+    "+1.98.1",
+    "doc",
+    "--workspace",
+    "--all-features",
+    "--no-deps"
+  ],
+  "before": {
+    "head": "8f82f8290f838547dfc7d490f44ba8c0c8798d24",
+    "index_tree": "d22e2da175cb627a5e81b88905290d2a13958c11",
+    "tracked_status_b64": "",
+    "tree": "d22e2da175cb627a5e81b88905290d2a13958c11"
+  },
+  "combined_output_base64": "IERvY3VtZW50aW5nIHF1ZXJ2YW50LW9iamVjdHN0b3JlIHYwLjEuMCAoL2hvbWUveWR1Y2hlc25lL0Rldi9HaXRodWIveWR1Y2hlc25lL3F1ZXJ2YW50L2NyYXRlcy9xdWVydmFudC1vYmplY3RzdG9yZSkKICAgIENoZWNraW5nIHF1ZXJ2YW50LWNvcmUgdjAuMS4wICgvaG9tZS95ZHVjaGVzbmUvRGV2L0dpdGh1Yi95ZHVjaGVzbmUvcXVlcnZhbnQvY3JhdGVzL3F1ZXJ2YW50LWNvcmUpCiBEb2N1bWVudGluZyBxdWVydmFudC1jb3JlIHYwLjEuMCAoL2hvbWUveWR1Y2hlc25lL0Rldi9HaXRodWIveWR1Y2hlc25lL3F1ZXJ2YW50L2NyYXRlcy9xdWVydmFudC1jb3JlKQogRG9jdW1lbnRpbmcgcXVlcnZhbnQtZGlzdHJpYnV0ZWQgdjAuMS4wICgvaG9tZS95ZHVjaGVzbmUvRGV2L0dpdGh1Yi95ZHVjaGVzbmUvcXVlcnZhbnQvY3JhdGVzL3F1ZXJ2YW50LWRpc3RyaWJ1dGVkKQogICAgRmluaXNoZWQgYGRldmAgcHJvZmlsZSBbdW5vcHRpbWl6ZWQgKyBkZWJ1Z2luZm9dIHRhcmdldChzKSBpbiA2Ljg0cwogICBHZW5lcmF0ZWQgL2hvbWUveWR1Y2hlc25lL0Rldi9HaXRodWIveWR1Y2hlc25lL3F1ZXJ2YW50L3RhcmdldC9kb2MvcXVlcnZhbnRfY29yZS9pbmRleC5odG1sIGFuZCAyIG90aGVyIGZpbGVzCg==",
+  "combined_output_sha256": "8986273f5c7579666d7168d9e8443fefe1c8019d681c7cc889fc2ab837c908bf",
+  "combined_output_size": 625,
+  "command_exit_code": 0,
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "ended_utc": "2026-11-27T04:14:56.699905+00:00",
+  "expected_commit": "8f82f8290f838547dfc7d490f44ba8c0c8798d24",
+  "label": "f1_qa_doc_198_af",
+  "removed_env_names": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE"
+  ],
+  "schema": "quervant-perf06-c3-receipt-v1",
+  "source_identity_valid": true,
+  "started_utc": "2026-11-27T04:14:49.837261+00:00"
+}

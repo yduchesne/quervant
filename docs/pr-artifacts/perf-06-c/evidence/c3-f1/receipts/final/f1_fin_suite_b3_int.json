@@ -1,0 +1,38 @@
+{
+  "after": {
+    "head": "8f82f8290f838547dfc7d490f44ba8c0c8798d24",
+    "index_tree": "d22e2da175cb627a5e81b88905290d2a13958c11",
+    "tracked_status_b64": "",
+    "tree": "d22e2da175cb627a5e81b88905290d2a13958c11"
+  },
+  "argv": [
+    "cargo",
+    "+1.98.1",
+    "test",
+    "-p",
+    "quervant-core",
+    "--test",
+    "perf06_b3_keys"
+  ],
+  "before": {
+    "head": "8f82f8290f838547dfc7d490f44ba8c0c8798d24",
+    "index_tree": "d22e2da175cb627a5e81b88905290d2a13958c11",
+    "tracked_status_b64": "",
+    "tree": "d22e2da175cb627a5e81b88905290d2a13958c11"
+  },
+  "combined_output_base64": "ICAgQ29tcGlsaW5nIHF1ZXJ2YW50LWNvcmUgdjAuMS4wICgvaG9tZS95ZHVjaGVzbmUvRGV2L0dpdGh1Yi95ZHVjaGVzbmUvcXVlcnZhbnQvY3JhdGVzL3F1ZXJ2YW50LWNvcmUpCiAgICBGaW5pc2hlZCBgdGVzdGAgcHJvZmlsZSBbdW5vcHRpbWl6ZWQgKyBkZWJ1Z2luZm9dIHRhcmdldChzKSBpbiAwLjU1cwogICAgIFJ1bm5pbmcgdGVzdHMvcGVyZjA2X2IzX2tleXMucnMgKHRhcmdldC9kZWJ1Zy9kZXBzL3BlcmYwNl9iM19rZXlzLThlN2E1Y2ZkNzA1MDc2NGMpCgpydW5uaW5nIDggdGVzdHMKdGVzdCBiM19pMDZfcnVzdGZzX3N1aXRlX3JlZ2lzdHJhdGlvbl9pc191bmNoYW5nZWQgLi4uIG9rCnRlc3QgYjNfaTA4X3Jlc291cmNlX2xpbWl0c19hbmRfZXhhY3Rfc2V0X2ZhbGxiYWNrIC4uLiBvawp0ZXN0IGIzX2kwNF9nZW51aW5lX3YxX2ZpeHR1cmVfdGhlbl9jb21wYWN0aW9uIC4uLiBvawp0ZXN0IGIzX2kwN19jb3JydXB0X2RvY19rZXlzX2lzX2F1dGhvcml0YXRpdmUgLi4uIG9rCnRlc3QgYjNfaTA1X2N1cnNvcl9wYWdlc19waW5uZWRfYmF0Y2hfYW5kX2luZWxpZ2libGVfc2hhcGVzIC4uLiBvawp0ZXN0IGIzX2kwMV9maWxlc3lzdGVtX2NvcnB1c19mdWxsX29yZGVyX3Byb2plY3Rpb25fYW5kX3Njb3JlcyAuLi4gb2sKdGVzdCBiM19pMDNfaGVsZF9waXRzX2FuZF9pbW11dGFibGVfb2JqZWN0c19hY3Jvc3NfbXV0YXRpb24gLi4uIG9rCnRlc3QgYjNfaTAyX3NlcXVlbnRpYWxfa2V5c19yZXBlYXRfcXVlcmllc19hcmVfc3RhYmxlIC4uLiBvawoKdGVzdCByZXN1bHQ6IG9rLiA4IHBhc3NlZDsgMCBmYWlsZWQ7IDAgaWdub3JlZDsgMCBtZWFzdXJlZDsgMCBmaWx0ZXJlZCBvdXQ7IGZpbmlzaGVkIGluIDAuMzFzCgo=",
+  "combined_output_sha256": "33be1d32001186f03b4c2f9b061c2da40f8317d2823db42133311951f87ac13f",
+  "combined_output_size": 866,
+  "command_exit_code": 0,
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "ended_utc": "2026-11-27T03:58:23.022218+00:00",
+  "expected_commit": "8f82f8290f838547dfc7d490f44ba8c0c8798d24",
+  "label": "f1_fin_suite_b3_int",
+  "removed_env_names": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE"
+  ],
+  "schema": "quervant-perf06-c3-receipt-v1",
+  "source_identity_valid": true,
+  "started_utc": "2026-11-27T03:58:22.135281+00:00"
+}

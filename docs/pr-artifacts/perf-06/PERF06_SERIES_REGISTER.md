@@ -341,3 +341,26 @@ the F1/A1 closeout. Results:
   warm qualification and the cumulative series report. G10 independent review
   and maintainer acceptance remain open; C3 is not DONE and no baseline is
   promoted.
+
+## 2026-11-26 — C3-F1 acceptance repair
+
+- PR [#132](https://github.com/yduchesne/quervant/pull/132) received an
+  acceptance-repair pass with **no production change**: every normal-build byte
+  is identical to the reviewed head
+  `ee77917d303b060b0d38ab88e5d9ae73625f6676`.
+- Plan/report:
+  [plan](../perf-06-c/PERF06C3F1_DETAILED_FIXUP_PLAN.md),
+  [report](../perf-06-c/PERF06C3F1_EXECUTION_REPORT.md); evidence under
+  `docs/pr-artifacts/perf-06-c/evidence/c3-f1/`.
+- Repaired: S01 df-guard isolation; U02 exact 25-tuple dispatch domain and the six
+  previously discarded ineligible-result responses; U04 nine literal fault
+  descriptors with isolated `C29` and same-snapshot unarmed C3; U05 literal
+  scanned-cap reference errors; U09 twelve literal resource outcomes with seven
+  recoveries and the documented projection-after-finalization refusal; I02
+  every-hit oracles across five view phases (198 checks).
+- Corrected by dated errata: region-vs-line coverage labels (historical line
+  figures `93.50 %` / `93.09 %`), the U02 split diagnostic, the C29 descriptor,
+  I02 later-page scope, S01 guard independence, the U09 expectation, U04 execution
+  classes, parent/child test-count scopes and the `c3_` 26-vs-17 inventory.
+- No new test names, API, storage, dependency or CI change. C4 remains unstarted;
+  G10 remains maintainer-owned and open; no performance claim.

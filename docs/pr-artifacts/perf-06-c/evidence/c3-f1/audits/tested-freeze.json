@@ -1,0 +1,49 @@
+{
+  "changed_paths": [
+    "crates/quervant-core/src/search/score.rs",
+    "crates/quervant-core/src/search/unified.rs",
+    "crates/quervant-core/tests/perf06_c2_physical.rs"
+  ],
+  "checker_sha256": "85012631836e96d62181f5ade033f59e4eaff2a8bf8256634b41ab5f67ca225b",
+  "current": "8f82f8290f838547dfc7d490f44ba8c0c8798d24",
+  "normal_build_source_equal": true,
+  "post_test_paths": null,
+  "source_regions": [
+    {
+      "after_sha256": "9cdcd9046e796f23c2e640e77310365c1c99cee27b70fb7b7dc873436d370f80",
+      "authorized_functions": [
+        "c3_s01_certificate_matrix"
+      ],
+      "before_sha256": "967610e7108ccca9a2e09b42745f64c59cd7ab849db7830312cc00c36893b6f1",
+      "path": "crates/quervant-core/src/search/score.rs",
+      "protected_sha256": "0145dbbeeaab56d9fe423cf22d4575ddaf5dba9c5d8c32d679b24fcde5b606cc"
+    },
+    {
+      "after_sha256": "272eac941c7e28e6fb1cb70656de137731b1a00c347fbadd950d83541a5894bf",
+      "authorized_functions": [
+        "c3_u02_dispatch_and_count_matrix",
+        "c3_u04_corruption_precedence",
+        "c3_u05_native_later_segment_boundary",
+        "c3_u09_logical_budget_edges"
+      ],
+      "before_sha256": "05965ec05d8a2b40c65f4881d007f6ce32b67bce63bab2dcf3507019f93bb34a",
+      "path": "crates/quervant-core/src/search/unified.rs",
+      "protected_sha256": "7efcd06279205e6f47a46fe980e53e84df4760cba9eca8c2fc0f8ec55cafecf7"
+    },
+    {
+      "after_sha256": "6ee4d2438512b3b0048fe6498fb2d2be40268da4720a1ac0e00afb96b9397faa",
+      "authorized_functions": [
+        "collect_pages",
+        "c3_i02_real_pit_update_merge_and_paging"
+      ],
+      "before_sha256": "73a4added5e0e4eeda58ebaca21e6aec689d2133061e9c477b788c2790aee5d4",
+      "path": "crates/quervant-core/tests/perf06_c2_physical.rs",
+      "protected_sha256": "0e546087972d99dee5fde00ef242c0b275b2c962bcdb91d4fbe79a5ee2b621e2"
+    }
+  ],
+  "start": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+  "status": "PASS",
+  "tested": null,
+  "tested_to_final_docs_only": false,
+  "unapproved_test_bytes_equal": true
+}
