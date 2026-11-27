@@ -15548,7 +15548,8 @@ mod c2_tests {
 
         // -------------------------------------------------------------------
         // Six ineligible sort/batch/aggregation rows with complete response
-        // contracts. Every document has one `grp` token, so n = df = avgdl = 24.
+        // contracts. Every document has one `grp` token, so n = df = 24 and
+        // avgdl = 1.
         // -------------------------------------------------------------------
         let expected_score = {
             let idf = (1.0_f64 + (24.0_f64 - 24.0 + 0.5) / (24.0 + 0.5)).ln();
@@ -15752,6 +15753,7 @@ mod c2_tests {
                 .search_with_batch(&request, &Budgets::new(), &NeverCancel, &mut meter)
                 .expect("batch search");
             assert_ineligible_observation("batch");
+            assert!(response.aggregation.is_none(), "batch: no aggregation");
             assert_ineligible_result(
                 "batch",
                 &response,
@@ -15774,7 +15776,12 @@ mod c2_tests {
                     .expect("batch legacy reference")
             };
             assert_eq!(c2_observation::legacy_routes(), 1, "batch legacy route");
+            assert!(
+                reference.aggregation.is_none(),
+                "batch reference: no aggregation"
+            );
             c3_assert_full_response(&response, &reference, "batch legacy parity");
+            eprintln!("C3 F2 U02 plain-batch aggregation=none normal+legacy");
             result_rows.push("batch");
         }
         // empty aggregation
@@ -17496,35 +17503,6 @@ mod c2_tests {
             }
         }
 
-        /// Same-snapshot recovery with the generous limits of the `-G` row for this
-        /// `M`; the complete response must equal the independently executed control.
-        #[allow(clippy::too_many_arguments)]
-        fn recover_at(
-            fixture: &Fixture,
-            request: &UnifiedRequest,
-            m: usize,
-            k: usize,
-            entries: u64,
-            bytes: u64,
-            control: &UnifiedResponse,
-            expected_keys: &[String],
-            config: TopKDuplicateConfig,
-            label: &str,
-        ) {
-            c3_reset_all();
-            let recovered = run_with(fixture, request, limits(entries, bytes), config)
-                .expect("same-snapshot generous recovery");
-            c3_assert_certified(m, k, 1);
-            assert_eq!(recovered.total_hits, m as u64, "{label}: recovery total");
-            assert_eq!(
-                keys(&recovered),
-                expected_keys,
-                "{label}: recovery literal keys"
-            );
-            assert!(recovered.next_cursor.is_some(), "{label}: recovery cursor");
-            c3_assert_full_response(&recovered, control, label);
-        }
-
         #[derive(Clone, Copy, Debug)]
         enum Expect {
             Ok,
@@ -17708,18 +17686,24 @@ mod c2_tests {
                                 "U09 one-under legacy",
                             );
                         }
-                        recover_at(
+                        // Same-snapshot recovery under the generous G-row limits.
+                        c3_reset_all();
+                        let recovered = run_with(
                             &fixture,
                             &request,
-                            m,
-                            k,
-                            peak_entries,
-                            generous_bytes,
-                            &control,
-                            &expected_keys,
+                            limits(peak_entries, generous_bytes),
                             config,
-                            id,
+                        )
+                        .expect("same-snapshot generous recovery");
+                        c3_assert_certified(m, k, 1);
+                        assert_eq!(recovered.total_hits, m as u64, "{id}: recovery total");
+                        assert_eq!(
+                            keys(&recovered),
+                            expected_keys,
+                            "{id}: recovery literal keys"
                         );
+                        assert!(recovered.next_cursor.is_some(), "{id}: recovery cursor");
+                        c3_assert_full_response(&recovered, &control, id);
                         recoveries += 1;
                     }
                 }
