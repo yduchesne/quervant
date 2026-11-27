@@ -276,3 +276,24 @@ report: [PERF06C3F1_EXECUTION_REPORT.md](../pr-artifacts/perf-06-c/PERF06C3F1_EX
 - Coverage is reported from the `Lines` column only. G10 (independent review and
   maintainer acceptance) and C4 (warm qualification) remain open; no performance
   claim is made.
+
+## 13. C3-F2 test-only conformance status note (2026-11-27)
+
+**Status:** test-only conformance repair on the existing PR #132. This note
+records status and changes **no** normative C1/C3 rule above. Report:
+[PERF06C3F2_EXECUTION_REPORT.md](../pr-artifacts/perf-06-c/PERF06C3F2_EXECUTION_REPORT.md).
+
+- Production behaviour is unchanged: the certificate, decoder, accounting,
+  eager fallback, heap representation and winner finalization are byte-identical
+  to the reviewed head `051104724125ba95d49a6d94b61500f974a3599f`. C1/C3
+  normative ownership, scoring, accounting and projection order are untouched.
+- Two test bodies changed: the F1-local `#[allow(clippy::too_many_arguments)]`
+  and its nested recovery helper were removed (the recovery operations are
+  inlined unchanged), and the plain-batch row now asserts literal
+  `aggregation.is_none()` on both the normal and forced-Legacy responses. The
+  resource table, exact projection checkpoint `{13056, 13160}` and all accepted
+  outcomes are preserved.
+- Historical C3 and F1 evidence is preserved; F2 evidence lives under
+  `docs/pr-artifacts/perf-06-c/evidence/c3-f2/`. G10 (independent review and
+  maintainer acceptance) and C4 (warm qualification) remain open; no performance
+  claim is made.

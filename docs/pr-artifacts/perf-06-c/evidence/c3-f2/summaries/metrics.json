@@ -1,0 +1,151 @@
+{
+  "apply_verify_f2_sha256": "c612fff5e3674273e3e4957aa084bd57e274660146758af7c932c6732f00473b",
+  "build_f2_contract_sha256": "278a391cca07fa10803a72279bf020dbd65fdb5d9b97f04b8b2bba4df993a614",
+  "case_output_sha256": "4e914ccaafe60ec12353700a1ad42bfd94947a9b5a110cc1f1d710459c032990",
+  "command_contract_sha256": "aacc2fb71199bda21f42bd27b72aea646096786518736c9ef51f58c253a54fa0",
+  "coverage_lines": {
+    "f2_qa_cov_198": {
+      "covered": 72647,
+      "missed": 5026,
+      "percent": "93.53%",
+      "total": 77673
+    },
+    "f2_qa_cov_198_af": {
+      "covered": 73742,
+      "missed": 5441,
+      "percent": "93.13%",
+      "total": 79183
+    }
+  },
+  "f2_plan_sha256": "08063c9e3e9f0589695d560db05a697ed6bf1352a059330ac521eb02e724912b",
+  "f2_tested": "",
+  "f2_tested_tree": "eb0695985f36bcb954e1da36e9f856b786f6640d",
+  "historical_f1_verification_sha256": "8cdb7f8b6d18ed1f9c9ac39d6a22774a42cef7cf03edecc2a9ab0abc5bce93c2",
+  "inventories_sha256": "7481de6946671ffd711ad3578b78bfcef8940572809cbab4175989204f4683d9",
+  "inventory_counts": {
+    "f2_fin_list_c2_broad": 52,
+    "f2_fin_list_c2p": 5,
+    "f2_fin_list_c2u": 24,
+    "f2_fin_list_c3": 26,
+    "f2_fin_list_integration": 12
+  },
+  "receipt_count": 45,
+  "schema": "quervant-perf06-c3-f2-metrics-v1",
+  "start": "051104724125ba95d49a6d94b61500f974a3599f",
+  "tested_diff_sha256": "1e44141de2030780fa60640c2670fc51f86bf6e9bfd7ed5d1bbc0bf18c767bfe",
+  "verification_sha256": "60aa2ad6709c08fc3603a1c469cc7385e61ad79652fb41c1a0d2395afe12d7d9",
+  "workspace_test_scopes": {
+    "f2_qa_test_185": {
+      "bench_test_mode_targets": {
+        "benches/bm25.rs": 1,
+        "benches/dictionary.rs": 6,
+        "benches/geo.rs": 2,
+        "benches/merge.rs": 3,
+        "benches/phrase.rs": 6,
+        "benches/postings.rs": 3,
+        "benches/search.rs": 18,
+        "benches/typed_analytics.rs": 3,
+        "benches/unified_diagnostics.rs": 30,
+        "benches/writer_mutation.rs": 2
+      },
+      "cargo_target_launches": 146,
+      "child_output_ambiguous": false,
+      "doctest_scope": "none",
+      "observed_child_totals": {
+        "failed": 0,
+        "ignored": 0,
+        "passed": 10
+      },
+      "parent_libtest_targets": 136,
+      "parent_totals": {
+        "failed": 0,
+        "ignored": 16,
+        "passed": 2749
+      }
+    },
+    "f2_qa_test_185_af": {
+      "bench_test_mode_targets": {
+        "benches/bm25.rs": 1,
+        "benches/dictionary.rs": 6,
+        "benches/geo.rs": 2,
+        "benches/merge.rs": 3,
+        "benches/phrase.rs": 6,
+        "benches/postings.rs": 3,
+        "benches/search.rs": 18,
+        "benches/typed_analytics.rs": 3,
+        "benches/unified_diagnostics.rs": 30,
+        "benches/writer_mutation.rs": 2
+      },
+      "cargo_target_launches": 146,
+      "child_output_ambiguous": false,
+      "doctest_scope": "none",
+      "observed_child_totals": {
+        "failed": 0,
+        "ignored": 0,
+        "passed": 10
+      },
+      "parent_libtest_targets": 136,
+      "parent_totals": {
+        "failed": 0,
+        "ignored": 100,
+        "passed": 2794
+      }
+    },
+    "f2_qa_test_198": {
+      "bench_test_mode_targets": {
+        "benches/bm25.rs": 1,
+        "benches/dictionary.rs": 6,
+        "benches/geo.rs": 2,
+        "benches/merge.rs": 3,
+        "benches/phrase.rs": 6,
+        "benches/postings.rs": 3,
+        "benches/search.rs": 18,
+        "benches/typed_analytics.rs": 3,
+        "benches/unified_diagnostics.rs": 30,
+        "benches/writer_mutation.rs": 2
+      },
+      "cargo_target_launches": 146,
+      "child_output_ambiguous": false,
+      "doctest_scope": "none",
+      "observed_child_totals": {
+        "failed": 0,
+        "ignored": 0,
+        "passed": 10
+      },
+      "parent_libtest_targets": 136,
+      "parent_totals": {
+        "failed": 0,
+        "ignored": 16,
+        "passed": 2749
+      }
+    },
+    "f2_qa_test_198_af": {
+      "bench_test_mode_targets": {
+        "benches/bm25.rs": 1,
+        "benches/dictionary.rs": 6,
+        "benches/geo.rs": 2,
+        "benches/merge.rs": 3,
+        "benches/phrase.rs": 6,
+        "benches/postings.rs": 3,
+        "benches/search.rs": 18,
+        "benches/typed_analytics.rs": 3,
+        "benches/unified_diagnostics.rs": 30,
+        "benches/writer_mutation.rs": 2
+      },
+      "cargo_target_launches": 146,
+      "child_output_ambiguous": false,
+      "doctest_scope": "none",
+      "observed_child_totals": {
+        "failed": 0,
+        "ignored": 0,
+        "passed": 10
+      },
+      "parent_libtest_targets": 136,
+      "parent_totals": {
+        "failed": 0,
+        "ignored": 100,
+        "passed": 2794
+      }
+    }
+  }
+}

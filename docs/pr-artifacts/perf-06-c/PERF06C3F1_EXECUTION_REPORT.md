@@ -258,3 +258,33 @@ appeared in these `--all-targets` commands, so no doctest claim is made.
   `{13056,13160}` tuple is tied to the verified 64-bit `FieldValues == 32`
   geometry and is not an ABI-independent claim; C4 owns performance and
   layout/codegen qualification.
+
+---
+
+# F2 independent-review erratum (2026-11-27 UTC)
+
+F1's assertion of no lint suppression was incorrect. The nested `recover_at`
+helper in `c3_u09_logical_budget_edges` introduced
+`#[allow(clippy::too_many_arguments)]`, contrary to F1 D08; the recorded F1
+Clippy commands did pass with that attribute present, so those green runs never
+demonstrated its absence. U02's plain-batch row also lacked a literal assertion
+that the response aggregation was `None`; its complete forced-Legacy parity was
+present but did not independently establish absence.
+
+F2 removes the nested suppression and helper and inlines its unchanged recovery
+operations, asserts `is_none()` for both the normal and forced-Legacy plain-batch
+responses, and corrects the nearby average-length comment (`n = df = 24`,
+`avgdl = 1`). All other test and production bytes are frozen: `F2_TESTED`
+`e4816c51f0063383596e8ee8a644b38d7a39a400` is a direct child of
+`051104724125ba95d49a6d94b61500f974a3599f` and changes only
+`crates/quervant-core/src/search/unified.rs` inside those two test bodies. The F1
+historical receipts are unchanged and were re-verified read-only (51 rows,
+`PASS`, identical JSON, tree linkage confirmed).
+
+The current acceptance record is
+[PERF06C3F2_EXECUTION_REPORT.md](PERF06C3F2_EXECUTION_REPORT.md).
+
+F1 external artifact delivery: The historical archive was recovered and fully validated (archive SHA-256, Markdown SHA-256, archive integrity, 23 payload members plus manifest, every member digest and the embedded Markdown all verified, with the START/F1_TESTED identities present) and is delivered unchanged with this handoff.
+
+C4 performance work and G10 maintainer acceptance remain outside executor
+acceptance.

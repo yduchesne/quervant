@@ -1,0 +1,116 @@
+{
+  "ancestry": {
+    "B_is_ancestor_of_START": true,
+    "F1_TESTED_is_ancestor_of_START": true,
+    "f1_tested_to_start_non_docs": []
+  },
+  "behind_tracking": null,
+  "branch": "dev/perf06-c3",
+  "f1_historical_verification": {
+    "json_equals_committed": true,
+    "receipt_count": 51,
+    "status": "PASS",
+    "tree_linkage_mismatches": []
+  },
+  "frozen_hashes": {
+    "apply_verify_f2_py": "c612fff5e3674273e3e4957aa084bd57e274660146758af7c932c6732f00473b",
+    "build_f2_contract_py": "278a391cca07fa10803a72279bf020dbd65fdb5d9b97f04b8b2bba4df993a614",
+    "f1_baseline_contract": "f2da2e3bba4c188052fd48d42a46f0ce9392b58f9976189159baead2d664f05c",
+    "f1_command_contract": "1107c78e330559d8631882fc815a2d78dd0cc901e8517fcb32487c4663e545c4",
+    "f1_plan": "78a67331a496791c223ceb642180f9b7dd30da21530e231bc03bb01eb5d9408f",
+    "f1_verification": "8cdb7f8b6d18ed1f9c9ac39d6a22774a42cef7cf03edecc2a9ab0abc5bce93c2",
+    "f2_plan": "08063c9e3e9f0589695d560db05a697ed6bf1352a059330ac521eb02e724912b",
+    "original_plan": "69b1aeba951d13361936ef8ffed75f77ec88362d3c7a38727b4eedd684f9a755",
+    "record_py": "5bbb38e1b4b7538c56e80eacf1f694de19ccbd49528333f95553fde4bf80418d",
+    "run_contract_py": "42ba6fa6a9eacc1f698dfe7c0076228071b41fccb720b0daeb5b372ff0583c07",
+    "verify_f1_receipts_py": "f83e1ecc8e6c38cb86498e81e524d9a2ca1aab3cfa63fe8a425b507ba816a8e7"
+  },
+  "head": "051104724125ba95d49a6d94b61500f974a3599f",
+  "head_tree": "7d4221394e85c7414674018a9be129bd3549bb72",
+  "index_tree": "7d4221394e85c7414674018a9be129bd3549bb72",
+  "observed": {
+    "origin_branch": "051104724125ba95d49a6d94b61500f974a3599f",
+    "origin_main": "6bc977e6a26c183609b7ca53eca51d3ab09ce337",
+    "pr_state": {
+      "baseRefName": "main",
+      "baseRefOid": "6bc977e6a26c183609b7ca53eca51d3ab09ce337",
+      "headRefName": "dev/perf06-c3",
+      "headRefOid": "051104724125ba95d49a6d94b61500f974a3599f",
+      "isDraft": true,
+      "mergedAt": null,
+      "number": 132,
+      "state": "OPEN",
+      "url": "https://github.com/yduchesne/quervant/pull/132"
+    }
+  },
+  "pins": {
+    "B": "6bc977e6a26c183609b7ca53eca51d3ab09ce337",
+    "f1_start": "ee77917d303b060b0d38ab88e5d9ae73625f6676",
+    "f1_tested": "8f82f8290f838547dfc7d490f44ba8c0c8798d24",
+    "f1_tested_tree": "d22e2da175cb627a5e81b88905290d2a13958c11",
+    "original_red": "0c295d1390869826c581a6c589d299cd13c4c99f",
+    "original_tested": "6ea6b7ce049d613a29864f1eae53dea5fd61e75f",
+    "start": "051104724125ba95d49a6d94b61500f974a3599f"
+  },
+  "preserved_untracked": [
+    {
+      "path": "docs/pr-artifacts/perf-06-b/evidence/f2-ci-status.txt",
+      "sha256": "c286db999aeaf3943fdb3f731cf823a9336eedc79311fa77254a66976ea3e7c7"
+    }
+  ],
+  "remote": "git@github.com:yduchesne/quervant.git",
+  "repository": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "schema": "quervant-perf06-c3-f2-preflight-v1",
+  "shadow_inputs": {
+    "cargo_config_tracked_only_alias": true,
+    "checked": true,
+    "new_inputs": []
+  },
+  "source_blobs": {
+    "crates/quervant-core/src/search/execute.rs": "dbc863219716475db21cbb9739bf52557c2e61c3",
+    "crates/quervant-core/src/search/score.rs": "7c181a556dca5f69614c739a466478a7bee0b7da",
+    "crates/quervant-core/src/search/unified.rs": "eb1d1f31d7554bb99d030858e99b3d3d2946c2f7",
+    "crates/quervant-core/tests/perf06_c2_physical.rs": "76dc464a519dd5faf34653ab374a3033ffc43a0c"
+  },
+  "toolchains": {
+    "cargo_1_85_0": "cargo 1.85.0 (d73d2caf9 2024-12-31)",
+    "cargo_1_98_1": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+    "cargo_llvm_cov": "cargo-llvm-cov 0.9.1",
+    "python3": "Python 3.12.3",
+    "rustc_1_85_0": [
+      "rustc 1.85.0 (4d91de4e4 2025-02-17)",
+      "binary: rustc",
+      "commit-hash: 4d91de4e48198da2e33413efdcd9cd2cc0c46688",
+      "commit-date: 2025-02-17",
+      "host: x86_64-unknown-linux-gnu",
+      "release: 1.85.0",
+      "LLVM version: 19.1.7"
+    ],
+    "rustc_1_98_1": [
+      "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "binary: rustc",
+      "commit-hash: 48a229ceaefd4985c50990b14116b6d856af0985",
+      "commit-date: 2026-09-01",
+      "host: x86_64-unknown-linux-gnu",
+      "release: 1.98.1",
+      "LLVM version: 22.1.8"
+    ],
+    "rustfmt_1_85_0": "rustfmt 1.8.0-stable (4d91de4e48 2025-02-17)",
+    "rustfmt_1_98_1": "rustfmt 1.9.0-stable (48a229ceae 2026-09-01)"
+  },
+  "utc": "2026-11-27T19:43:06Z",
+  "whitespace_config": {
+    "core_whitespace": null,
+    "gitattributes_present": false,
+    "unset_exit": 1
+  },
+  "worksheet": {
+    "1_why_clippy_passed": "F1's nested recover_at had ten parameters and carried #[allow(clippy::too_many_arguments)], so Clippy passed with the suppression present; that outcome never proved the absence of a suppression.",
+    "2_why_parity_does_not_prove_absence": "c3_assert_full_response compares aggregation for equality, so two identically wrong Some values could pass; the batch rows therefore need literal is_none() on both responses.",
+    "3_which_counters_may_change": "None of the route, membership, numeric, callback, score, final-identity or recovery counts; inlining adds no query, decoder or scorer operation.",
+    "4_why_avgdl_24_is_wrong": "The common keyword fixture has one grp token per document, so n = df = 24 and avgdl = 1; only the comment was wrong.",
+    "5_which_qa_is_reusable": "Historical evidence, the command contract and helper scripts are reusable; historical outcomes cannot be relabelled as F2, so all 45 final commands rerun on F2_TESTED. No baseline or RED reconstruction.",
+    "6_why_final_zip_is_external": "Committing the final-head receipt would advance the head it describes; terminal evidence belongs outside the checkout after the docs commit and CI observation, and a name or hash is not an attachment.",
+    "7_if_historical_f1_zip_is_lost": "It cannot be reconstructed as an original-time receipt; the gap is qualified, committed evidence is preserved, and the complete new F2 package closes current delivery independently."
+  }
+}

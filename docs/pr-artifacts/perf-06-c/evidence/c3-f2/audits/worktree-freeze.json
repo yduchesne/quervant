@@ -1,0 +1,32 @@
+{
+  "actual_source_sha256": "3cc656947533ed93d942f2993d6021edc8e710490e987f87c4629103662ecaf2",
+  "all_other_test_bytes_equal": true,
+  "authorized_functions": [
+    "c3_u02_dispatch_and_count_matrix",
+    "c3_u09_logical_budget_edges"
+  ],
+  "changed_paths": [
+    "crates/quervant-core/src/search/unified.rs"
+  ],
+  "checker_sha256": "c612fff5e3674273e3e4957aa084bd57e274660146758af7c932c6732f00473b",
+  "current": "WORKTREE",
+  "formatted_prescribed_sha256": "3cc656947533ed93d942f2993d6021edc8e710490e987f87c4629103662ecaf2",
+  "formatter_argv": [
+    "rustfmt",
+    "+1.98.1",
+    "--edition",
+    "2024",
+    "--emit",
+    "stdout"
+  ],
+  "no_new_lint_suppression": true,
+  "normal_build_source_equal": true,
+  "protected_bytes_sha256": "0554361a819f52f47c1102e8ce8b6f794c45392fb9667e321ed9f37e28cef4aa",
+  "raw_prescribed_sha256": "5afa58259b4fe099b63306cceb9d645a5b49d421e6ef8079d35fd916fe429b12",
+  "source_before_sha256": "272eac941c7e28e6fb1cb70656de137731b1a00c347fbadd950d83541a5894bf",
+  "source_blob_at_start": "eb1d1f31d7554bb99d030858e99b3d3d2946c2f7",
+  "start": "051104724125ba95d49a6d94b61500f974a3599f",
+  "status": "PASS",
+  "tested": null,
+  "tested_to_final_docs_only": false
+}

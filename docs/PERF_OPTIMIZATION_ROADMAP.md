@@ -472,3 +472,31 @@ report:
   dated errata in the original report.
 - **C4 has not started.** No performance sample, profiler, timing run or baseline
   promotion. G10 remains maintainer-owned and open.
+
+## PERF-06-C3-F2 test-only conformance repair (2026-11-27)
+
+Continuation of C3/F1 on the existing PR
+[#132](https://github.com/yduchesne/quervant/pull/132). **Test-only.** Production
+source, the public API, codecs, accounting, projection order and every runtime
+branch are unchanged from the reviewed head
+`051104724125ba95d49a6d94b61500f974a3599f`.
+
+- **F2-01:** removed the F1-added `#[allow(clippy::too_many_arguments)]` and its
+  nested `recover_at` helper in `c3_u09_logical_budget_edges`, inlining the
+  identical recovery operations at the single call site. No lint suppression
+  remains.
+- **F2-02:** added explicit `aggregation.is_none()` assertions to the plain batch
+  response and its forced-Legacy reference, and corrected the nearby
+  average-length comment (`n = df = 24`, `avgdl = 1`).
+- **F2-03:** the historical F1 terminal archive was recovered and fully validated
+  (archive and Markdown hashes, archive integrity, member manifest and every
+  member digest) and is delivered unchanged; a complete new terminal package is
+  produced for the F2 head.
+- **Evidence:** 45 fresh final receipts (not relabelled historical results), 51
+  historical F1 receipts re-verified read-only, exact Appendix A source proof,
+  Lines coverage `93.53 %` / `93.13 %`, unchanged inventories `24/5/52/26/12`.
+  Report: [PERF06C3F2_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C3F2_EXECUTION_REPORT.md).
+- **Status:** current final-head CI and terminal closeout are supplied in the
+  live PR body and the external handoff. G10 remains maintainer-owned and open;
+  C4 is unstarted; nothing merged, no readiness change, no performance claim or
+  baseline promotion.

@@ -364,3 +364,27 @@ the F1/A1 closeout. Results:
   classes, parent/child test-count scopes and the `c3_` 26-vs-17 inventory.
 - No new test names, API, storage, dependency or CI change. C4 remains unstarted;
   G10 remains maintainer-owned and open; no performance claim.
+
+## 2026-11-27 — C3-F2 test-only conformance repair
+
+- PR [#132](https://github.com/yduchesne/quervant/pull/132), continuation of
+  C3/F1. **Test-only**: `F2_TESTED` `e4816c51f0063383596e8ee8a644b38d7a39a400`
+  is a direct child of `051104724125ba95d49a6d94b61500f974a3599f` and changes
+  only the bodies of `c3_u02_dispatch_and_count_matrix` and
+  `c3_u09_logical_budget_edges` in
+  `crates/quervant-core/src/search/unified.rs`.
+- Repaired: the F1-added `#[allow(clippy::too_many_arguments)]` and its nested
+  `recover_at` helper are gone (recovery logic inlined unchanged); the plain
+  batch row now asserts `aggregation.is_none()` on both the normal and
+  forced-Legacy responses; the `avgdl` comment is corrected (`n = df = 24`,
+  `avgdl = 1`).
+- Evidence: 45 fresh final receipts verified (`PASS`), the 51 historical F1
+  receipts re-verified read-only with tree linkage, exact source proof, Lines
+  coverage `93.53 %` / `93.13 %`, inventories unchanged at `24/5/52/26/12`.
+  Plan/report: [plan](../perf-06-c/PERF06C3F2_DETAILED_FIXUP_PLAN.md),
+  [report](../perf-06-c/PERF06C3F2_EXECUTION_REPORT.md).
+- The historical F1 terminal archive was recovered and fully validated and is
+  delivered unchanged; the F2 terminal package is produced for the F2 head.
+  Current final-head CI and closeout appear in the live PR body and the external
+  handoff. C3/F1 historical evidence is preserved; G10 remains open; C4 is
+  unstarted; no performance claim.

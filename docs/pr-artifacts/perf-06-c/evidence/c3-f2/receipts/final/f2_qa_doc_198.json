@@ -1,0 +1,36 @@
+{
+  "after": {
+    "head": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+    "index_tree": "eb0695985f36bcb954e1da36e9f856b786f6640d",
+    "tracked_status_b64": "",
+    "tree": "eb0695985f36bcb954e1da36e9f856b786f6640d"
+  },
+  "argv": [
+    "cargo",
+    "+1.98.1",
+    "doc",
+    "--workspace",
+    "--no-deps"
+  ],
+  "before": {
+    "head": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+    "index_tree": "eb0695985f36bcb954e1da36e9f856b786f6640d",
+    "tracked_status_b64": "",
+    "tree": "eb0695985f36bcb954e1da36e9f856b786f6640d"
+  },
+  "combined_output_base64": "IERvY3VtZW50aW5nIHF1ZXJ2YW50LW9iamVjdHN0b3JlIHYwLjEuMCAoL2hvbWUveWR1Y2hlc25lL0Rldi9HaXRodWIveWR1Y2hlc25lL3F1ZXJ2YW50L2NyYXRlcy9xdWVydmFudC1vYmplY3RzdG9yZSkKICAgIENoZWNraW5nIHF1ZXJ2YW50LWNvcmUgdjAuMS4wICgvaG9tZS95ZHVjaGVzbmUvRGV2L0dpdGh1Yi95ZHVjaGVzbmUvcXVlcnZhbnQvY3JhdGVzL3F1ZXJ2YW50LWNvcmUpCiBEb2N1bWVudGluZyBxdWVydmFudC1jb3JlIHYwLjEuMCAoL2hvbWUveWR1Y2hlc25lL0Rldi9HaXRodWIveWR1Y2hlc25lL3F1ZXJ2YW50L2NyYXRlcy9xdWVydmFudC1jb3JlKQogRG9jdW1lbnRpbmcgcXVlcnZhbnQtZGlzdHJpYnV0ZWQgdjAuMS4wICgvaG9tZS95ZHVjaGVzbmUvRGV2L0dpdGh1Yi95ZHVjaGVzbmUvcXVlcnZhbnQvY3JhdGVzL3F1ZXJ2YW50LWRpc3RyaWJ1dGVkKQogICAgRmluaXNoZWQgYGRldmAgcHJvZmlsZSBbdW5vcHRpbWl6ZWQgKyBkZWJ1Z2luZm9dIHRhcmdldChzKSBpbiA2LjQ2cwogICBHZW5lcmF0ZWQgL2hvbWUveWR1Y2hlc25lL0Rldi9HaXRodWIveWR1Y2hlc25lL3F1ZXJ2YW50L3RhcmdldC9kb2MvcXVlcnZhbnRfY29yZS9pbmRleC5odG1sIGFuZCAyIG90aGVyIGZpbGVzCg==",
+  "combined_output_sha256": "303356862e58bf1b6b87f255e464c4f2b0c0f1e545310a338e825337d16ad996",
+  "combined_output_size": 625,
+  "command_exit_code": 0,
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "ended_utc": "2026-11-27T20:01:20.331521+00:00",
+  "expected_commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+  "label": "f2_qa_doc_198",
+  "removed_env_names": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE"
+  ],
+  "schema": "quervant-perf06-c3-receipt-v1",
+  "source_identity_valid": true,
+  "started_utc": "2026-11-27T20:01:13.851341+00:00"
+}

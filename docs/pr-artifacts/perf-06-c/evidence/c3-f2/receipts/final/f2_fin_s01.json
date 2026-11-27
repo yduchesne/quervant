@@ -1,0 +1,42 @@
+{
+  "after": {
+    "head": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+    "index_tree": "eb0695985f36bcb954e1da36e9f856b786f6640d",
+    "tracked_status_b64": "",
+    "tree": "eb0695985f36bcb954e1da36e9f856b786f6640d"
+  },
+  "argv": [
+    "cargo",
+    "+1.98.1",
+    "test",
+    "-p",
+    "quervant-core",
+    "--lib",
+    "search::score::tests::c3_s01_certificate_matrix",
+    "--",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "before": {
+    "head": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+    "index_tree": "eb0695985f36bcb954e1da36e9f856b786f6640d",
+    "tracked_status_b64": "",
+    "tree": "eb0695985f36bcb954e1da36e9f856b786f6640d"
+  },
+  "combined_output_base64": "ICAgQ29tcGlsaW5nIHF1ZXJ2YW50LWNvcmUgdjAuMS4wICgvaG9tZS95ZHVjaGVzbmUvRGV2L0dpdGh1Yi95ZHVjaGVzbmUvcXVlcnZhbnQvY3JhdGVzL3F1ZXJ2YW50LWNvcmUpCiAgICBGaW5pc2hlZCBgdGVzdGAgcHJvZmlsZSBbdW5vcHRpbWl6ZWQgKyBkZWJ1Z2luZm9dIHRhcmdldChzKSBpbiA2LjY5cwogICAgIFJ1bm5pbmcgdW5pdHRlc3RzIHNyYy9saWIucnMgKHRhcmdldC9kZWJ1Zy9kZXBzL3F1ZXJ2YW50X2NvcmUtNGJjZTA1ZGVlNGU0ZmVkNCkKCnJ1bm5pbmcgMSB0ZXN0CnRlc3Qgc2VhcmNoOjpzY29yZTo6dGVzdHM6OmMzX3MwMV9jZXJ0aWZpY2F0ZV9tYXRyaXggLi4uIEMzIFMwMSBpc29sYXRlZC1kZi1yb3dzOiBkZj0wIGlkZi1wcmVzZW50PXRydWUgcmVmdXNlZD10cnVlOyBkZj0zMSBpZGYtcHJlc2VudD10cnVlIHJlZnVzZWQ9dHJ1ZQpDMyBTMDEgY29tcGxldGVkPTI0IHJvd3MKQzMgRjEgUzAxIHJvd3M9MjQgaXNvbGF0ZWQtZGYtcm93cz0yCm9rCgp0ZXN0IHJlc3VsdDogb2suIDEgcGFzc2VkOyAwIGZhaWxlZDsgMCBpZ25vcmVkOyAwIG1lYXN1cmVkOyAxMjE4IGZpbHRlcmVkIG91dDsgZmluaXNoZWQgaW4gMC4wMHMKCg==",
+  "combined_output_sha256": "8ff81fecaab12ddece3fa8b51cfb6c16b4ec9ed744fa6f1f5abe3f89fd99b77a",
+  "combined_output_size": 595,
+  "command_exit_code": 0,
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "ended_utc": "2026-11-27T19:43:39.579221+00:00",
+  "expected_commit": "e4816c51f0063383596e8ee8a644b38d7a39a400",
+  "label": "f2_fin_s01",
+  "removed_env_names": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE"
+  ],
+  "schema": "quervant-perf06-c3-receipt-v1",
+  "source_identity_valid": true,
+  "started_utc": "2026-11-27T19:43:32.863005+00:00"
+}
