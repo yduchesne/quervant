@@ -1549,15 +1549,47 @@ mod tests {
             assert!(!certify(&stats, "alpha"), "S01-02 n=0");
             completed.push("S01-02");
         }
-        // S01-03 df = 0.
+        // S01-03 df = 0. The valid base prepared IDF is retained so this row can
+        // only be excluded by the `df == 0` guard, never by a masking missing-IDF.
         {
-            let stats = cert_stats(30, 2.0, Some(("alpha", 0, None)), &LENGTHS);
+            let base_idf = prepare_idf(30, 30).expect("base prepared IDF");
+            let stats = cert_stats(30, 2.0, Some(("alpha", 0, Some(base_idf))), &LENGTHS);
+            let stat = stats.df.get("alpha").expect("S01-03 term record");
+            assert_eq!(stat.doc_freq, 0, "S01-03 literal df");
+            let idf = stat.idf.expect("S01-03 prepared IDF is present");
+            assert!(
+                idf.is_finite() && (0.0..=64.0).contains(&idf),
+                "S01-03 IDF is finite and in bounds"
+            );
+            assert_eq!(
+                idf.to_bits(),
+                base_idf.to_bits(),
+                "S01-03 retains the valid base prepared IDF"
+            );
+            assert_eq!(stats.n, 30, "S01-03 n");
+            assert_eq!(stats.avgdl.to_bits(), 2.0f64.to_bits(), "S01-03 avgdl");
             assert!(!certify(&stats, "alpha"), "S01-03 df=0");
             completed.push("S01-03");
         }
-        // S01-04 df = 31 > n = 30.
+        // S01-04 df = 31 > n = 30, again with the valid base prepared IDF so the
+        // row isolates the `df > n` guard.
         {
-            let stats = cert_stats(30, 2.0, Some(("alpha", 31, None)), &LENGTHS);
+            let base_idf = prepare_idf(30, 30).expect("base prepared IDF");
+            let stats = cert_stats(30, 2.0, Some(("alpha", 31, Some(base_idf))), &LENGTHS);
+            let stat = stats.df.get("alpha").expect("S01-04 term record");
+            assert_eq!(stat.doc_freq, 31, "S01-04 literal df");
+            let idf = stat.idf.expect("S01-04 prepared IDF is present");
+            assert!(
+                idf.is_finite() && (0.0..=64.0).contains(&idf),
+                "S01-04 IDF is finite and in bounds"
+            );
+            assert_eq!(
+                idf.to_bits(),
+                base_idf.to_bits(),
+                "S01-04 retains the valid base prepared IDF"
+            );
+            assert_eq!(stats.n, 30, "S01-04 n");
+            assert_eq!(stats.avgdl.to_bits(), 2.0f64.to_bits(), "S01-04 avgdl");
             assert!(!certify(&stats, "alpha"), "S01-04 df=31");
             completed.push("S01-04");
         }
@@ -1567,10 +1599,27 @@ mod tests {
             assert!(!certify(&stats, "alpha"), "S01-05 absent term");
             completed.push("S01-05");
         }
-        // S01-06 missing prepared IDF.
+        // S01-06 missing prepared IDF, with a valid df, as the independent case.
         {
             let stats = cert_stats(30, 2.0, Some(("alpha", 30, None)), &LENGTHS);
             assert!(!certify(&stats, "alpha"), "S01-06 missing idf");
+            // The same valid-df/missing-IDF object keeps the accepted eager
+            // precedence: the tf==0 guard returns +0.0 before the missing-IDF
+            // refusal, and the positive-tf call lands on that refusal.
+            assert_eq!(
+                stats
+                    .bm25_score("alpha", 0, 3)
+                    .expect("tf zero guard")
+                    .to_bits(),
+                0.0f64.to_bits(),
+                "S01-06 tf == 0 precedes the missing-IDF error"
+            );
+            match stats.bm25_score("alpha", 1, 3) {
+                Err(SearchError::CorruptIndex { detail }) => {
+                    assert_eq!(detail, "prepared BM25 IDF missing for valid term")
+                }
+                other => panic!("S01-06 unexpected missing-idf outcome: {other:?}"),
+            }
             completed.push("S01-06");
         }
         // S01-07..13 out-of-proof average lengths.
@@ -1663,7 +1712,11 @@ mod tests {
             }
             other => panic!("unexpected missing-idf outcome: {other:?}"),
         }
+        eprintln!(
+            "C3 S01 isolated-df-rows: df=0 idf-present=true refused=true; df=31 idf-present=true refused=true"
+        );
         eprintln!("C3 S01 completed={} rows", completed.len());
+        eprintln!("C3 F1 S01 rows=24 isolated-df-rows=2");
     }
 
     #[test]

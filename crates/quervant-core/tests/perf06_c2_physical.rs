@@ -1413,30 +1413,127 @@ fn c3_i01_real_scores_and_explicit_cursor() {
 fn collect_pages(
     searcher: &UnifiedSearcher<'_>,
     base: &UnifiedRequest,
-    expected_total: u64,
-    hard_page_bound: usize,
+    expected_indices: &[usize],
+    stats: (u64, u64, u64), // df, n, total field length
+    label: &str,
 ) -> Vec<String> {
+    // Every returned hit is verified against the immutable input-derived identity,
+    // full projection and scalar score oracle for its own snapshot. The returned
+    // length equals the verified-hit count because each key is appended only after
+    // every per-hit assertion.
+    let (df, n, total_length) = stats;
+    assert_eq!(
+        expected_indices.len() as u64,
+        df,
+        "{label}: expected index count equals df"
+    );
+    let expected_keys: Vec<String> = expected_indices
+        .iter()
+        .copied()
+        .map(scoring_doc_key)
+        .collect();
     let mut collected: Vec<String> = Vec::new();
     let mut cursor = None;
     let mut pages = 0usize;
+    let mut checked_hits = 0usize;
     loop {
+        assert!(pages < 20, "{label}: at most twenty page queries");
         let mut page = base.clone();
         page.after = cursor;
         let response = searcher
             .search(&page, &Budgets::new(), &NeverCancel)
-            .expect("page");
+            .unwrap_or_else(|error| panic!("{label}: page {} failed: {error:?}", pages + 1));
         assert_eq!(
-            response.total_hits, expected_total,
-            "every page keeps the total"
+            response.total_hits, df,
+            "{label}: every page keeps the exact total"
         );
-        collected.extend(keys(&response));
+        let offset = collected.len();
+        assert!(
+            offset <= expected_indices.len(),
+            "{label}: offset inside the expected sequence"
+        );
+        let remaining = expected_indices.len() - offset;
+        assert!(remaining > 0, "{label}: no query after the final page");
+        let expected_len = remaining.min(3);
+        assert_eq!(
+            response.hits.len(),
+            expected_len,
+            "{label}: page {} hit count",
+            pages + 1
+        );
+        for (rank, hit) in response.hits.iter().enumerate() {
+            let index = expected_indices[offset + rank];
+            assert_eq!(
+                hit.key.as_str(),
+                scoring_doc_key(index),
+                "{label}: page {} rank {rank} input identity",
+                pages + 1
+            );
+            assert_eq!(
+                hit.fields,
+                vec![
+                    (
+                        "doc_id".to_owned(),
+                        FieldValues::Single(FieldValue::Keyword(scoring_doc_key(index)))
+                    ),
+                    (
+                        "body".to_owned(),
+                        FieldValues::Single(FieldValue::Text(scoring_body(index)))
+                    ),
+                ],
+                "{label}: page {} rank {rank} complete projection",
+                pages + 1
+            );
+            let score = hit
+                .score
+                .unwrap_or_else(|| panic!("{label}: page {} rank {rank} unscored", pages + 1));
+            assert!(
+                score.is_finite() && score >= 0.0,
+                "{label}: page {} rank {rank} finite nonnegative score",
+                pages + 1
+            );
+            assert_eq!(
+                score.to_bits(),
+                scoring_oracle(scoring_tf(index), scoring_dl(index), df, n, total_length).to_bits(),
+                "{label}: page {} rank {rank} input-derived scalar bits",
+                pages + 1
+            );
+            checked_hits += 1;
+        }
+        collected.extend(response.hits.iter().map(|hit| hit.key.as_str().to_owned()));
         pages += 1;
-        assert!(pages <= hard_page_bound, "bounded paging");
+        assert!(pages <= 20, "{label}: page bound");
+        let more = collected.len() < expected_indices.len();
         match response.next_cursor {
-            Some(next) => cursor = Some(next),
-            None => break,
+            Some(next) => {
+                assert!(more, "{label}: unexpected cursor after the last page");
+                cursor = Some(next);
+            }
+            None => {
+                assert!(!more, "{label}: missing cursor before the last page");
+                break;
+            }
         }
     }
+    assert_eq!(collected, expected_keys, "{label}: literal sequence");
+    assert_eq!(
+        collected.len(),
+        collected
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        "{label}: no duplicate keys"
+    );
+    assert_eq!(checked_hits as u64, df, "{label}: checked hits equals df");
+    let expected_pages = match df {
+        40 => 14usize,
+        39 => 13,
+        other => panic!("{label}: unexpected df {other}"),
+    };
+    assert_eq!(pages, expected_pages, "{label}: page count");
+    eprintln!(
+        "C3 I02 phase={label} df={df} n={n} total_length={total_length} pages={pages} checked_hits={checked_hits}"
+    );
     collected
 }
 
@@ -1456,23 +1553,59 @@ fn c3_i02_real_pit_update_merge_and_paging() {
         scoring_projection(),
     );
 
+    // Immutable input-derived statistics for the pinned old view.
     let old_total_length: u64 = (0..40).map(scoring_dl).sum();
+    assert_eq!(old_total_length, 180, "input-derived old total length");
+    let old_indices: Vec<usize> = (0..40).collect();
+    let old_stats = (40u64, 40u64, old_total_length);
+
     let old_response = old_searcher
         .search(&page, &Budgets::new(), &NeverCancel)
         .expect("old view");
     assert_eq!(old_response.total_hits, 40);
     let old_cursor = old_response.next_cursor.clone().expect("old cursor");
-    let old_sequence = collect_pages(&old_searcher, &page, 40, 20);
-    let expected_old: Vec<String> = (0..40).map(scoring_doc_key).collect();
-    assert_eq!(old_sequence, expected_old, "old literal sequence");
-    assert_eq!(
-        old_sequence.len(),
-        old_sequence
-            .iter()
-            .collect::<std::collections::BTreeSet<_>>()
-            .len(),
-        "no duplicate pages"
+
+    // I02-OLD-BEFORE: every page of the pinned pre-mutation view.
+    let mut checked_hits = 0usize;
+    let old_sequence = collect_pages(
+        &old_searcher,
+        &page,
+        &old_indices,
+        old_stats,
+        "I02-OLD-BEFORE",
     );
+    checked_hits += old_sequence.len();
+    // First-page direct scalar checks from the input sequence.
+    for (rank, hit) in old_response.hits.iter().enumerate() {
+        let expect = old_indices[rank];
+        assert_eq!(hit.key.as_str(), scoring_doc_key(expect));
+        assert_eq!(
+            hit.score.expect("score").to_bits(),
+            scoring_oracle(
+                scoring_tf(expect),
+                scoring_dl(expect),
+                old_stats.0,
+                old_stats.1,
+                old_stats.2
+            )
+            .to_bits(),
+            "old first page rank {rank} scalar bits"
+        );
+    }
+    // Old-view wrapper Legacy parity (different AST fingerprint, same snapshot).
+    let old_legacy = old_searcher
+        .search(
+            &request(
+                legacy_text_query("body", "alpha"),
+                3,
+                doc_id_sort(SortDirection::Asc),
+                scoring_projection(),
+            ),
+            &Budgets::new(),
+            &NeverCancel,
+        )
+        .expect("old legacy wrapper");
+    assert_response_except_cursor_fingerprint(&old_response, &old_legacy, "I02 old wrapper");
 
     // Delete one match, remove alpha from another, add one new match.
     let new_snapshot = {
@@ -1503,81 +1636,73 @@ fn c3_i02_real_pit_update_merge_and_paging() {
         .expect("new view");
     assert_eq!(new_response.total_hits, 39, "39 live alpha matches");
 
-    // Input-derived new statistics.
+    // Input-derived new statistics: delete s0002 (dl 5), rewrite s0006 (dl 4 -> 1),
+    // insert s0040 (dl 1). The updated document is not an alpha match but still
+    // contributes one length unit.
     let new_total_length: u64 =
         old_total_length - scoring_dl(2) - scoring_dl(6) + 1 + scoring_dl(40);
     assert_eq!(new_total_length, 173, "input-derived new total length");
     assert_eq!(scoring_dl(2), 5);
     assert_eq!(scoring_dl(6), 4);
     assert_eq!(scoring_dl(40), 1);
-
-    let expected_new: Vec<String> = (0..=40)
+    let new_indices: Vec<usize> = (0..=40)
         .filter(|index| *index != 2 && *index != 6)
-        .map(scoring_doc_key)
         .collect();
-    assert_eq!(expected_new.len(), 39);
-    let new_sequence = collect_pages(&new_searcher, &page, 39, 20);
-    assert_eq!(new_sequence, expected_new, "new literal sequence");
-    assert_eq!(
-        new_sequence.len(),
-        new_sequence
-            .iter()
-            .collect::<std::collections::BTreeSet<_>>()
-            .len(),
-        "no duplicate pages"
-    );
+    assert_eq!(new_indices.len(), 39);
+    let new_stats = (39u64, 40u64, new_total_length);
 
-    // Every returned score matches the input-derived formula on both views.
-    for hit in &old_response.hits {
-        let index: usize = hit.key.as_str()[1..].parse().expect("index");
+    // I02-NEW: every page of the post-mutation view.
+    let new_sequence = collect_pages(&new_searcher, &page, &new_indices, new_stats, "I02-NEW");
+    checked_hits += new_sequence.len();
+    for (rank, hit) in new_response.hits.iter().enumerate() {
+        let expect = new_indices[rank];
+        assert_eq!(hit.key.as_str(), scoring_doc_key(expect));
         assert_eq!(
             hit.score.expect("score").to_bits(),
             scoring_oracle(
-                scoring_tf(index),
-                scoring_dl(index),
-                40,
-                40,
-                old_total_length
+                scoring_tf(expect),
+                scoring_dl(expect),
+                new_stats.0,
+                new_stats.1,
+                new_stats.2
             )
             .to_bits(),
-            "old view score bits for {index}"
+            "new first page rank {rank} scalar bits"
         );
     }
-    for hit in &new_response.hits {
-        let index: usize = hit.key.as_str()[1..].parse().expect("index");
-        assert_eq!(
-            hit.score.expect("score").to_bits(),
-            scoring_oracle(
-                scoring_tf(index),
-                scoring_dl(index),
-                39,
-                40,
-                new_total_length
-            )
-            .to_bits(),
-            "new view score bits for {index}"
-        );
-    }
-
-    // Same-snapshot wrapper Legacy parity on the new first page.
-    let wrapper = request(
-        legacy_text_query("body", "alpha"),
-        3,
-        doc_id_sort(SortDirection::Asc),
-        scoring_projection(),
-    );
     let new_legacy = new_searcher
-        .search(&wrapper, &Budgets::new(), &NeverCancel)
-        .expect("legacy wrapper");
-    assert_eq!(keys(&new_response), keys(&new_legacy));
-    assert_eq!(scores(&new_response), scores(&new_legacy));
-    assert_eq!(new_response.total_hits, new_legacy.total_hits);
+        .search(
+            &request(
+                legacy_text_query("body", "alpha"),
+                3,
+                doc_id_sort(SortDirection::Asc),
+                scoring_projection(),
+            ),
+            &Budgets::new(),
+            &NeverCancel,
+        )
+        .expect("new legacy wrapper");
+    assert_response_except_cursor_fingerprint(&new_response, &new_legacy, "I02 new wrapper");
 
-    // The pinned old snapshot is unchanged by the newer publication.
+    // The pinned old snapshot is unchanged by the newer publication, including
+    // every page of its full sequence.
     let pinned = old_searcher
         .search(&page, &Budgets::new(), &NeverCancel)
         .expect("pinned old view");
     assert_eq!(pinned, old_response, "pinned old response is unchanged");
+    // I02-OLD-AFTER-MUTATION: the pinned view is still complete after publication.
+    let old_after_mutation = collect_pages(
+        &old_searcher,
+        &page,
+        &old_indices,
+        old_stats,
+        "I02-OLD-AFTER-MUTATION",
+    );
+    checked_hits += old_after_mutation.len();
+    assert_eq!(
+        old_after_mutation, old_sequence,
+        "pinned sequence unchanged"
+    );
 
     // An old cursor must never be accepted on the new snapshot.
     let mut stale = page.clone();
@@ -1627,12 +1752,22 @@ fn c3_i02_real_pit_update_merge_and_paging() {
         scores(&new_response),
         "post-merge score bits"
     );
-    assert_eq!(
-        collect_pages(&reopened_searcher, &page, 39, 20),
-        expected_new,
-        "post-merge literal paging"
+    // I02-COMPACTED: every page of the freshly reopened post-compaction view.
+    let compacted_sequence = collect_pages(
+        &reopened_searcher,
+        &page,
+        &new_indices,
+        new_stats,
+        "I02-COMPACTED",
     );
-    // The pinned old snapshot still sees its own generation exactly.
+    checked_hits += compacted_sequence.len();
+    assert_eq!(
+        compacted_sequence, new_sequence,
+        "post-compaction logical sequence"
+    );
+
+    // The pinned old snapshot still sees its own generation exactly, across every
+    // page of the range.
     let pinned_after = old_searcher
         .search(&page, &Budgets::new(), &NeverCancel)
         .expect("pinned after compaction");
@@ -1640,11 +1775,23 @@ fn c3_i02_real_pit_update_merge_and_paging() {
         pinned_after, old_response,
         "pinned old response after compaction"
     );
-    assert_eq!(collect_pages(&old_searcher, &page, 40, 20), expected_old);
+    // I02-OLD-AFTER-COMPACTION.
+    let old_after_compaction = collect_pages(
+        &old_searcher,
+        &page,
+        &old_indices,
+        old_stats,
+        "I02-OLD-AFTER-COMPACTION",
+    );
+    checked_hits += old_after_compaction.len();
+    assert_eq!(old_after_compaction, old_sequence);
+
+    assert_eq!(checked_hits, 198, "five phases x per-hit oracles");
     eprintln!(
         "C3 I02 old=40 new=39 new-total-length=173 merged-keys={:?}",
         keys(&merged)
     );
+    eprintln!("C3 F1 I02 phases=5 checked-hits=198 old-pages=14 new-pages=13");
 }
 
 /// Assert two responses are equal except for the cursor query fingerprint.
