@@ -887,7 +887,7 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
             programs=programs, invoke_phase=invoke_phase, index_builder=index_builder,
             report=report, run_started=run_started)
     readiness_advisory = (
-        config["family"] == "perf-06" and
+        config["family"] in ("perf-06", "cross-engine") and
         config["policy"]["readiness"].get("mode", "blocking") == "advisory")
     report["context"]["host_readiness_mode"] = "advisory" if readiness_advisory else "blocking"
     try:

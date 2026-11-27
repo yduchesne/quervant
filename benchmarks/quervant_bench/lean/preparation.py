@@ -318,7 +318,7 @@ def stage_inputs(config_path: Path, *, root: Path, scratch_root: Path | None = N
     scratch = scratch.resolve()
     scratch.mkdir(parents=True, exist_ok=True)
     readiness_advisory = (
-        config["family"] == "perf-06" and
+        config["family"] in ("perf-06", "cross-engine") and
         config["policy"]["readiness"].get("mode", "blocking") == "advisory")
     if check_host:
         host = runtime.host_context(scratch, check=True)

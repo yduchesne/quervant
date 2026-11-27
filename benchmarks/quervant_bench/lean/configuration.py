@@ -51,8 +51,8 @@ def default_configuration(family: str, name: str, description: str, *,
                           quervant_revision: str | None = None,
                           readiness_advisory: bool = False) -> dict[str, Any]:
     """Generate one *new* immutable configuration with its own UUID."""
-    if readiness_advisory and family != "perf-06":
-        raise ArtifactError("advisory host readiness is supported only for perf-06")
+    if readiness_advisory and family not in ("perf-06", "cross-engine"):
+        raise ArtifactError("advisory host readiness is supported only for perf-06 and cross-engine")
     if family not in ("retained-key", "cross-engine", "perf-02", "perf-05", "perf-06"):
         raise ArtifactError("family must be retained-key, cross-engine, perf-02, perf-05 or perf-06")
     if regime not in ("warm", "process-cold") or (family != "cross-engine" and regime != "warm"):
@@ -289,8 +289,8 @@ def validate_configuration(config: Mapping[str, Any]) -> None:
     mode = readiness.get("mode", "blocking")
     if mode not in ("blocking", "advisory"):
         raise ArtifactError("unsupported host readiness mode")
-    if mode == "advisory" and family != "perf-06":
-        raise ArtifactError("advisory host readiness is supported only for perf-06")
+    if mode == "advisory" and family not in ("perf-06", "cross-engine"):
+        raise ArtifactError("advisory host readiness is supported only for perf-06 and cross-engine")
     excluded = policy.get("exclude_blocks", {})
     if not isinstance(excluded, dict):
         raise ArtifactError("exclude_blocks must be a map")
