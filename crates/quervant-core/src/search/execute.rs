@@ -2501,11 +2501,10 @@ where
     let scored_bytes = bytes_for_count(m, SCORED_MAP_BYTES_PER_ENTRY)?;
     ledger.reserve_with_memory(m, scored_bytes, None)?;
 
-    // Eager, complete scoring of every matched document, including those that
-    // will lose numeric Top-K (the unchanged C2 behaviour). Under the certified
-    // `DEFERRED` mode this whole phase is absent: the decoder already proved every
-    // frequency positive, so the second word stays the raw integer term frequency
-    // and only retained returned hits are scored after heap selection.
+    // Under the certified `DEFERRED` mode this phase is absent: the decoder already
+    // proved every frequency positive, so the second word stays the raw integer
+    // term frequency and only retained returned hits are scored after heap
+    // selection. The eager statements below are the accepted C2 block verbatim.
     if !DEFERRED {
         #[cfg(test)]
         c2_observation::record_inplace_start(&scored_postings);
@@ -2514,8 +2513,9 @@ where
         } else {
             None
         };
-        // One deliberate `+0.0` accumulation per document preserves the accepted
-        // float grouping and signed-zero behavior.
+        // Eager, complete scoring of every matched document, including those that
+        // will lose numeric Top-K. One deliberate `+0.0` accumulation per document
+        // preserves the accepted float grouping and signed-zero behavior.
         for row in &mut scored_postings {
             let (doc_id, freq) = *row;
             #[cfg(test)]
