@@ -6,6 +6,7 @@ A	docs/pr-artifacts/perf-06-c/evidence/c3/case-output.txt
 A	docs/pr-artifacts/perf-06-c/evidence/c3/inventories.txt
 A	docs/pr-artifacts/perf-06-c/evidence/c3/manifest.json
 A	docs/pr-artifacts/perf-06-c/evidence/c3/paths-B-TESTED.txt
+A	docs/pr-artifacts/perf-06-c/evidence/c3/paths-TESTED-DOCS.txt
 A	docs/pr-artifacts/perf-06-c/evidence/c3/receipts-baseline/base_list_c2_broad.json
 A	docs/pr-artifacts/perf-06-c/evidence/c3/receipts-baseline/base_list_c2p.json
 A	docs/pr-artifacts/perf-06-c/evidence/c3/receipts-baseline/base_list_c2u.json
