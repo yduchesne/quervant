@@ -1,0 +1,4 @@
+M	crates/quervant-core/src/search/execute.rs
+M	crates/quervant-core/src/search/score.rs
+M	crates/quervant-core/src/search/unified.rs
+M	crates/quervant-core/tests/perf06_c2_physical.rs

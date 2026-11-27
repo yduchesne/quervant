@@ -1,0 +1,37 @@
+{
+  "after": {
+    "head": "6ea6b7ce049d613a29864f1eae53dea5fd61e75f",
+    "index_tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af",
+    "tracked_status_b64": "",
+    "tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af"
+  },
+  "argv": [
+    "cargo",
+    "+1.98.1",
+    "doc",
+    "--workspace",
+    "--all-features",
+    "--no-deps"
+  ],
+  "before": {
+    "head": "6ea6b7ce049d613a29864f1eae53dea5fd61e75f",
+    "index_tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af",
+    "tracked_status_b64": "",
+    "tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af"
+  },
+  "combined_output_base64": "IERvY3VtZW50aW5nIHF1ZXJ2YW50LW9iamVjdHN0b3JlIHYwLjEuMCAoL2hvbWUveWR1Y2hlc25lL0Rldi9HaXRodWIveWR1Y2hlc25lL3F1ZXJ2YW50L2NyYXRlcy9xdWVydmFudC1vYmplY3RzdG9yZSkKICAgIENoZWNraW5nIHF1ZXJ2YW50LWNvcmUgdjAuMS4wICgvaG9tZS95ZHVjaGVzbmUvRGV2L0dpdGh1Yi95ZHVjaGVzbmUvcXVlcnZhbnQvY3JhdGVzL3F1ZXJ2YW50LWNvcmUpCiBEb2N1bWVudGluZyBxdWVydmFudC1jb3JlIHYwLjEuMCAoL2hvbWUveWR1Y2hlc25lL0Rldi9HaXRodWIveWR1Y2hlc25lL3F1ZXJ2YW50L2NyYXRlcy9xdWVydmFudC1jb3JlKQogRG9jdW1lbnRpbmcgcXVlcnZhbnQtZGlzdHJpYnV0ZWQgdjAuMS4wICgvaG9tZS95ZHVjaGVzbmUvRGV2L0dpdGh1Yi95ZHVjaGVzbmUvcXVlcnZhbnQvY3JhdGVzL3F1ZXJ2YW50LWRpc3RyaWJ1dGVkKQogICAgRmluaXNoZWQgYGRldmAgcHJvZmlsZSBbdW5vcHRpbWl6ZWQgKyBkZWJ1Z2luZm9dIHRhcmdldChzKSBpbiA2LjcycwogICBHZW5lcmF0ZWQgL2hvbWUveWR1Y2hlc25lL0Rldi9HaXRodWIveWR1Y2hlc25lL3F1ZXJ2YW50L3RhcmdldC9kb2MvcXVlcnZhbnRfY29yZS9pbmRleC5odG1sIGFuZCAyIG90aGVyIGZpbGVzCg==",
+  "combined_output_sha256": "e8bdd26f19309bec29f7c1d54becf5f145db18d5e39c8ed9e5e48b6a1f5a83fd",
+  "combined_output_size": 625,
+  "command_exit_code": 0,
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "ended_utc": "2026-11-27T01:41:12.579277+00:00",
+  "expected_commit": "6ea6b7ce049d613a29864f1eae53dea5fd61e75f",
+  "label": "qa_doc_198_af",
+  "removed_env_names": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE"
+  ],
+  "schema": "quervant-perf06-c3-receipt-v1",
+  "source_identity_valid": true,
+  "started_utc": "2026-11-27T01:41:05.834520+00:00"
+}

@@ -188,3 +188,65 @@ This note records the status only; it changes no C1 semantic rule above.
 - Independent review and maintainer merge are **open** (G10). See
   `docs/pr-artifacts/perf-06-c/PERF06C2_EXECUTION_REPORT.md` for the executed
   evidence, residual risks and the disclosed limitations.
+
+## 11. C3 implementation note (2026-11-26)
+
+**Status:** C3 is implemented on the draft branch `dev/perf06-c3` exactly within
+§3–§6 above. This note records the implementation and changes **no** normative C1
+rule. Plan: [PERF06C3_DETAILED_IMPLEMENTATION_PLAN.md](../pr-artifacts/perf-06-c/PERF06C3_DETAILED_IMPLEMENTATION_PLAN.md);
+evidence: [PERF06C3_EXECUTION_REPORT.md](../pr-artifacts/perf-06-c/PERF06C3_EXECUTION_REPORT.md).
+
+- **Certificate (§5 point 3).** One private, request-local, read-only
+  `DeferredBm25` token is issued by `FieldStats::certify_deferred` only when the
+  already prepared statistics satisfy all of: `n > 0`, `df > 0`, `df <= n`,
+  finite `avgdl` in the closed interval `[2^-64, 2^64]`, and a finite prepared
+  IDF in `[0, 64]`. These are *sufficient* bounds: every valid decoded posting
+  (`tf >= 1` enforced by the real decoder) then provably yields a finite,
+  nonnegative `bm25_with_idf` result, so the eager `InvalidScore` branch is
+  unreachable for a certified request. The token borrows the exact prepared
+  field and normalized term, so it cannot outlive them or refer to another
+  query. A rejected certificate is a successful decision to keep eager C2, never
+  an error.
+- **Eligibility and fallback.** C2's `strict_term_dispatch_eligible` and
+  `M > K + 1` count guard are byte-identical and are still evaluated first. Only
+  when C2 already selected `StrictTermOrdinalTopK` does C3 attempt the
+  certificate — exactly once per request, before any candidate. Any guard
+  failure keeps the accepted **eager C2** body. Every originally ineligible shape
+  (relevance sort, cursor, batch, aggregation, typed/Boolean/phrase/prefix/
+  regex/glob/fuzzy, B1 `NotAvailable`, non-columnar or multi-value sort) keeps
+  `LegacyUnified` unchanged.
+- **Mechanism.** The single validated `(doc_id, freq)` posting allocation is
+  unchanged. Under the certificate the second word stays the raw positive
+  integer frequency; the `K + 1` bounded heap entry carries it inline as
+  `Option<NonZeroU64>`. After heap selection, `finalize_deferred_entries`
+  validates every retained entry — including the sentinel — and then computes
+  scores for the first `K` only, through the **same**
+  `FieldStats::bm25_score` with the same `+ 0.0` accumulator and the same
+  snapshot/norm lifetime. The `K + 1` lookahead keeps `score = None` and is
+  truncated by the unchanged cursor handoff.
+- **Not deferred.** Full posting-stream validation, exact `total_hits`, `N`
+  lexical examination and scanned-frequency charges, the virtual matched/scored
+  admissions and their release order, per-candidate sort/key validation, the B2
+  numeric comparator, the B3 fingerprint prefilter plus exact key equality and
+  its optional per-segment owned-key fallback, `MultiOne` full-tuple decode, and
+  the **fallible** key/sort materialization of every competitive provisional
+  entry all remain at their accepted points. Only a proven non-erroring score
+  computation moves.
+- **No public, format or accounting change.** No new storage section, sidecar,
+  compatibility version, cursor field, dependency, feature flag, environment
+  switch or runtime telemetry. The candidate-charge *logical* formulas are
+  unchanged; the physical `MixedEntry` grows by exactly one `u64` word
+  (136 → 144 bytes, alignment unchanged), bounded by the existing heap capacity.
+- **Test coverage classes.** Deterministic certificate decision matrix and
+  uniform-bound/bit-parity proof; direct deferred decoder/ledger parity; public
+  dispatch/count matrix; shared synthetic-statistic fallback with competing real
+  corruption; real corrupt-byte precedence; later-segment failure after an
+  earlier collected segment; actual B3 refusal; replacement/final-identity;
+  null/missing and equal-rank ties; exact logical-budget edges; complete
+  cancellation-poll sweep; seeded differential matrix; private representation and
+  finalization guard; B3 collision and `MultiOne`; and three real `FsDirectory`
+  integrations (scores/cursor, PIT update/delete/compact/paging, resource and
+  cancellation atomicity).
+- **No performance claim.** C4 remains the only stage authorized to measure the
+  incremental warm effect and to guard absent/rare lanes and the one-word entry
+  growth. Independent review and maintainer acceptance (G10) remain open.

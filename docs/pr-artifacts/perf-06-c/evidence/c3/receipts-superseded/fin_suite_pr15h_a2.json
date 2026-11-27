@@ -1,0 +1,38 @@
+{
+  "after": {
+    "head": "8b6f827be93a422e858609e20c0fb96647c7c302",
+    "index_tree": "abb50377f40db3e27e8b8e2221106d55a1a82cfe",
+    "tracked_status_b64": "",
+    "tree": "abb50377f40db3e27e8b8e2221106d55a1a82cfe"
+  },
+  "argv": [
+    "cargo",
+    "+1.98.1",
+    "test",
+    "-p",
+    "quervant-core",
+    "--test",
+    "pr15h_a2_dispatch"
+  ],
+  "before": {
+    "head": "8b6f827be93a422e858609e20c0fb96647c7c302",
+    "index_tree": "abb50377f40db3e27e8b8e2221106d55a1a82cfe",
+    "tracked_status_b64": "",
+    "tree": "abb50377f40db3e27e8b8e2221106d55a1a82cfe"
+  },
+  "combined_output_base64": "ICAgIEZpbmlzaGVkIGB0ZXN0YCBwcm9maWxlIFt1bm9wdGltaXplZCArIGRlYnVnaW5mb10gdGFyZ2V0KHMpIGluIDAuMDZzCiAgICAgUnVubmluZyB0ZXN0cy9wcjE1aF9hMl9kaXNwYXRjaC5ycyAodGFyZ2V0L2RlYnVnL2RlcHMvcHIxNWhfYTJfZGlzcGF0Y2gtNmM3N2NlMDIzZGNiNjZkNikKCnJ1bm5pbmcgOCB0ZXN0cwp0ZXN0IGEyX2kwN19jb3JydXB0aW9uX2ZhaWxfY2xvc2VkIC4uLiBvawp0ZXN0IGEyX2kwNF9jYW5kaWRhdGVfYnVkZ2V0X2JvdW5kYXJ5IC4uLiBvawp0ZXN0IGEyX2kwNV9jYW5jZWxsYXRpb25faGlnaF9hbmRfbG93IC4uLiBvawp0ZXN0IGEyX2kwNl9zb3J0X2N1cnNvcl90eXBlZF9uZWdhdGl2ZSAuLi4gb2sKdGVzdCBhMl9pMDFfbG9jYWxfY29tbWl0X3Jlb3Blbl9ib3VuZGFyeSAuLi4gb2sKdGVzdCBhMl9pMDhfZnNfcmVvcGVuX2FuZF9kZXRlcm1pbmlzdGljX3JlYnVpbGQgLi4uIG9rCnRlc3QgYTJfaTAzX3R3b19zZWdtZW50X2xpdmVfZGlzcGF0Y2hfYW5kX3BpdCAuLi4gb2sKdGVzdCBhMl9pMDJfMTAwa19taXhlZF9jYXJkaW5hbGl0eSAuLi4gb2sKCnRlc3QgcmVzdWx0OiBvay4gOCBwYXNzZWQ7IDAgZmFpbGVkOyAwIGlnbm9yZWQ7IDAgbWVhc3VyZWQ7IDAgZmlsdGVyZWQgb3V0OyBmaW5pc2hlZCBpbiA4LjY1cwoK",
+  "combined_output_sha256": "c72889d744990f1f149533ea18086204d301eb2c538cf2f39db6fb94e5db0edb",
+  "combined_output_size": 657,
+  "command_exit_code": 0,
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "ended_utc": "2026-11-27T00:16:20.495705+00:00",
+  "expected_commit": "8b6f827be93a422e858609e20c0fb96647c7c302",
+  "label": "fin_suite_pr15h_a2",
+  "removed_env_names": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE"
+  ],
+  "schema": "quervant-perf06-c3-receipt-v1",
+  "source_identity_valid": true,
+  "started_utc": "2026-11-27T00:16:11.762722+00:00"
+}

@@ -1,0 +1,42 @@
+{
+  "after": {
+    "head": "6bc977e6a26c183609b7ca53eca51d3ab09ce337",
+    "index_tree": "d98508bfec1003ec951bf6e4bde094bec6a0c347",
+    "tracked_status_b64": "",
+    "tree": "d98508bfec1003ec951bf6e4bde094bec6a0c347"
+  },
+  "argv": [
+    "cargo",
+    "+1.98.1",
+    "test",
+    "-p",
+    "quervant-core",
+    "--lib",
+    "search::unified::c2_tests::c2_u",
+    "--",
+    "--list",
+    "--format",
+    "terse"
+  ],
+  "before": {
+    "head": "6bc977e6a26c183609b7ca53eca51d3ab09ce337",
+    "index_tree": "d98508bfec1003ec951bf6e4bde094bec6a0c347",
+    "tracked_status_b64": "",
+    "tree": "d98508bfec1003ec951bf6e4bde094bec6a0c347"
+  },
+  "combined_output_base64": "ICAgQ29tcGlsaW5nIHF1ZXJ2YW50LWNvcmUgdjAuMS4wICgvaG9tZS95ZHVjaGVzbmUvRGV2L0dpdGh1Yi95ZHVjaGVzbmUvcXVlcnZhbnQvY3JhdGVzL3F1ZXJ2YW50LWNvcmUpCiAgICBGaW5pc2hlZCBgdGVzdGAgcHJvZmlsZSBbdW5vcHRpbWl6ZWQgKyBkZWJ1Z2luZm9dIHRhcmdldChzKSBpbiA0LjY5cwogICAgIFJ1bm5pbmcgdW5pdHRlc3RzIHNyYy9saWIucnMgKHRhcmdldC9kZWJ1Zy9kZXBzL3F1ZXJ2YW50X2NvcmUtNGJjZTA1ZGVlNGU0ZmVkNCkKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTAxX3N0YXRpY19kaXNwYXRjaF9tYXRyaXg6IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTAyX2NhcmRpbmFsaXR5X2JvdW5kYXJ5OiB0ZXN0CnNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UwM192YWxpZGF0aW9uX3ByZWNlZGVuY2U6IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTA0X3J1bnRpbWVfc2hhcGVfYW5kX2RlY29kZXI6IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTA1X25fd29ya19hbmRfc2Nhbm5lZF9mcmVxOiB0ZXN0CnNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UwNl9leGFjdF90b3RhbF9oaXRzOiB0ZXN0CnNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UwN19sYXRlX3Njb3JlX2Vycm9yX2JlYXRzX2tleV9lcnJvcjogdGVzdApzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MDhfc2NvcmVfYml0X3Bhcml0eTogdGVzdApzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MDlfaW5wbGFjZV9hbGxvY2F0aW9uX2lkZW50aXR5OiB0ZXN0CnNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UxMF92aXJ0dWFsX2xlZGdlcl9leGFjdF9ib3VuZGFyaWVzOiB0ZXN0CnNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UxMV9wcmVmbGlnaHRfYXRvbWljX2FuZF9yYWlpOiB0ZXN0CnNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UxMl9jb3JydXB0X3NlbGVjdGVkX3Vuc2VsZWN0ZWRfYW5kX211bHRpX2ZhdWx0OiB0ZXN0CnNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UxM19jYW5jZWxsYXRpb25fcHJvZ3Jlc3M6IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTE0X251bWVyaWNfcmFua19udWxsX21pc3NpbmdfbXVsdGlvbmU6IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTE1X2R1cGxpY2F0ZV9jb2xsaXNpb25fYW5kX2xvc2VyOiB0ZXN0CnNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UxNl9jdXJzb3Jfc2VudGluZWxfYW5kX2xlZ2FjeV9jb250aW51YXRpb246IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTE3X29yZGluYWxfdW5hdmFpbGFibGVfYW5kX2IzX3JlZnVzYWw6IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTE4X3BpdF9tdXRhdGlvbl9hbmRfbWl4ZWRfc2VnbWVudHM6IHRlc3QKc2VhcmNoOjp1bmlmaWVkOjpjMl90ZXN0czo6YzJfdTE5X3NpYmxpbmdfcGF0aHNfdW50b3VjaGVkOiB0ZXN0CnNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UyMF9nZW5lcmljX2hvdF9sb29wX2lzb2xhdGlvbjogdGVzdApzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MjFfd29ya19idWRnZXRfZXhoYXVzdGlvbl9hZnRlcl9wcmlvcl9zZWdtZW50OiB0ZXN0CnNlYXJjaDo6dW5pZmllZDo6YzJfdGVzdHM6OmMyX3UyMl9zZWVkZWRfZGlmZmVyZW50aWFsX21hdHJpeDogdGVzdApzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MjNfYjFfYjJfYjNfcmV1c2Vfd2l0bmVzczogdGVzdApzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjMl91MjRfemVyb19lZmZlY3RfYW5kX2Vycm9yX3JlcGV0aXRpb246IHRlc3QK",
+  "combined_output_sha256": "867033570b8423c2f2c4b9f3071fe7aebe66da979aaea1ae8365e95088fe9f2a",
+  "combined_output_size": 1905,
+  "command_exit_code": 0,
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "ended_utc": "2026-11-26T23:25:01.739798+00:00",
+  "expected_commit": "6bc977e6a26c183609b7ca53eca51d3ab09ce337",
+  "label": "base_list_c2u",
+  "removed_env_names": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE"
+  ],
+  "schema": "quervant-perf06-c3-receipt-v1",
+  "source_identity_valid": true,
+  "started_utc": "2026-11-26T23:24:57.000589+00:00"
+}

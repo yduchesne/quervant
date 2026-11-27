@@ -1,0 +1,42 @@
+{
+  "after": {
+    "head": "6ea6b7ce049d613a29864f1eae53dea5fd61e75f",
+    "index_tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af",
+    "tracked_status_b64": "",
+    "tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af"
+  },
+  "argv": [
+    "cargo",
+    "+1.98.1",
+    "test",
+    "-p",
+    "quervant-core",
+    "--lib",
+    "search::unified::c2_tests::c3_u07_replacement_and_final_identity",
+    "--",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "before": {
+    "head": "6ea6b7ce049d613a29864f1eae53dea5fd61e75f",
+    "index_tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af",
+    "tracked_status_b64": "",
+    "tree": "ee12c6b576ebd877e46e56512d4e786ef76a41af"
+  },
+  "combined_output_base64": "ICAgIEZpbmlzaGVkIGB0ZXN0YCBwcm9maWxlIFt1bm9wdGltaXplZCArIGRlYnVnaW5mb10gdGFyZ2V0KHMpIGluIDAuMDdzCiAgICAgUnVubmluZyB1bml0dGVzdHMgc3JjL2xpYi5ycyAodGFyZ2V0L2RlYnVnL2RlcHMvcXVlcnZhbnRfY29yZS00YmNlMDVkZWU0ZTRmZWQ0KQoKcnVubmluZyAxIHRlc3QKdGVzdCBzZWFyY2g6OnVuaWZpZWQ6OmMyX3Rlc3RzOjpjM191MDdfcmVwbGFjZW1lbnRfYW5kX2ZpbmFsX2lkZW50aXR5IC4uLiBDMyBVMDcgQXNjOiB3aW5uZXJzPVsiZG9jMDAwMDAwIiwgImRvYzAwMDAwMSIsICJkb2MwMDAwMDIiXSBzY29yZXM9MyBjb21wYWN0LWtleXM9NCByZWplY3Rpb25zPTM2IGIzLW1ldGE9NDAKQzMgVTA3IERlc2M6IHdpbm5lcnM9WyJkb2MwMDAwMzkiLCAiZG9jMDAwMDM4IiwgImRvYzAwMDAzNyJdIHNjb3Jlcz0zIGNvbXBhY3Qta2V5cz00MCByZWplY3Rpb25zPTAgYjMtbWV0YT00MApDMyBVMDcgYXNjK2Rlc2M9MiBjb21wbGV0ZQpvawoKdGVzdCByZXN1bHQ6IG9rLiAxIHBhc3NlZDsgMCBmYWlsZWQ7IDAgaWdub3JlZDsgMCBtZWFzdXJlZDsgMTIxOCBmaWx0ZXJlZCBvdXQ7IGZpbmlzaGVkIGluIDAuMDRzCgo=",
+  "combined_output_sha256": "c887cce1398097299be8067e37e93b04ba7fc10b316056f0eb68959783611960",
+  "combined_output_size": 596,
+  "command_exit_code": 0,
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "ended_utc": "2026-11-27T00:59:53.610246+00:00",
+  "expected_commit": "6ea6b7ce049d613a29864f1eae53dea5fd61e75f",
+  "label": "fin_u07",
+  "removed_env_names": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE"
+  ],
+  "schema": "quervant-perf06-c3-receipt-v1",
+  "source_identity_valid": true,
+  "started_utc": "2026-11-27T00:59:53.485252+00:00"
+}

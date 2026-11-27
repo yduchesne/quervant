@@ -311,3 +311,33 @@ the F1/A1 closeout. Results:
   reports and the PR body are corrected; PR #131 stays open and **unmerged** with its
   observed readiness preserved; G10 is open; C3/C4 are unstarted and no performance
   claim is made.
+
+## 2026-11-26 — C2 merged; C3 implemented (correctness-only)
+
+- **C2 done at `B`.** PR [#131](https://github.com/yduchesne/quervant/pull/131)
+  merged at `main@6bc977e6a26c183609b7ca53eca51d3ab09ce337`
+  (`mergedAt=2026-11-26T23:00:00Z`, reviewed head
+  `da033ff19b3facd4f0a5319506a64e658156e93f`). Earlier entries in this register
+  that record C2 as open/unmerged or G10/whitespace-blocked are preserved
+  verbatim as contemporaneous history.
+- **C3 implemented, draft, unmerged** on `dev/perf06-c3` from `B`. Plan:
+  [PERF06C3_DETAILED_IMPLEMENTATION_PLAN.md](../perf-06-c/PERF06C3_DETAILED_IMPLEMENTATION_PLAN.md);
+  report and evidence:
+  [PERF06C3_EXECUTION_REPORT.md](../perf-06-c/PERF06C3_EXECUTION_REPORT.md).
+- **Exact proof boundary:** certified deferred BM25 (`n>0`, `df>0`, `df<=n`,
+  finite `avgdl ∈ [2^-64, 2^64]`, finite prepared IDF `∈ [0, 64]`) scores only
+  the `K` returned hits with the unchanged prepared scorer and `+0.0`
+  accumulator. C2 selection and the `M > K+1` guard are byte-identical; unproven
+  statistics keep eager C2, ineligible shapes keep Legacy. Full posting
+  validation, exact counts, work charges, virtual admissions, B1/B2/B3
+  validation/duplicate policy, fallible candidate materialization, cursor and
+  projection are unchanged. Physical heap entry +1 `u64` word; logical charges
+  unchanged.
+- **Evidence:** red-first 40→3 scorer calls; 17 new unit tests + 3 real
+  `FsDirectory` integration tests; old C2 inventories 24/5/9 retained; broad
+  `--lib c2_` 52 and `perf06_c2_physical` 12; stable 1.98.1 and MSRV 1.85.0
+  format/clippy/tests both feature regimes; coverage 93.85 % / 93.54 % lines.
+- **No performance sample.** C4 not started; it owns the integrated incremental
+  warm qualification and the cumulative series report. G10 independent review
+  and maintainer acceptance remain open; C3 is not DONE and no baseline is
+  promoted.

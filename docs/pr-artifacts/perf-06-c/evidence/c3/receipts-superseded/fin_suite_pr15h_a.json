@@ -1,0 +1,38 @@
+{
+  "after": {
+    "head": "8b6f827be93a422e858609e20c0fb96647c7c302",
+    "index_tree": "abb50377f40db3e27e8b8e2221106d55a1a82cfe",
+    "tracked_status_b64": "",
+    "tree": "abb50377f40db3e27e8b8e2221106d55a1a82cfe"
+  },
+  "argv": [
+    "cargo",
+    "+1.98.1",
+    "test",
+    "-p",
+    "quervant-core",
+    "--test",
+    "pr15h_a_candidate_materialization"
+  ],
+  "before": {
+    "head": "8b6f827be93a422e858609e20c0fb96647c7c302",
+    "index_tree": "abb50377f40db3e27e8b8e2221106d55a1a82cfe",
+    "tracked_status_b64": "",
+    "tree": "abb50377f40db3e27e8b8e2221106d55a1a82cfe"
+  },
+  "combined_output_base64": "ICAgIEZpbmlzaGVkIGB0ZXN0YCBwcm9maWxlIFt1bm9wdGltaXplZCArIGRlYnVnaW5mb10gdGFyZ2V0KHMpIGluIDAuMDdzCiAgICAgUnVubmluZyB0ZXN0cy9wcjE1aF9hX2NhbmRpZGF0ZV9tYXRlcmlhbGl6YXRpb24ucnMgKHRhcmdldC9kZWJ1Zy9kZXBzL3ByMTVoX2FfY2FuZGlkYXRlX21hdGVyaWFsaXphdGlvbi1mNDYzMWRkMzc2YWM5MzRhKQoKcnVubmluZyA2IHRlc3RzCnRlc3QgaF9hX2kwNF9waXRfcmVmcmVzaF9kZWxldGVfdXBzZXJ0IC4uLiBvawp0ZXN0IGhfYV9pMDZfY29ycnVwdGlvbl9pbmplY3Rpb24gLi4uIG9rCnRlc3QgaF9hX2kwNV9saW1pdHNfYW5kX2NhbmNlbGxhdGlvbiAuLi4gb2sKdGVzdCBoX2FfaTAxX2xvY2FsX2NvbW1pdF9yZW9wZW5fdGVybV9xdWVyeSAuLi4gb2sKdGVzdCBoX2FfaTAzX21peGVkX2ZhbGxiYWNrX3NoYXBlcyAuLi4gb2sKdGVzdCBoX2FfaTAyX3R3b19zZWdtZW50X2RpZmZlcmVudGlhbCAuLi4gb2sKCnRlc3QgcmVzdWx0OiBvay4gNiBwYXNzZWQ7IDAgZmFpbGVkOyAwIGlnbm9yZWQ7IDAgbWVhc3VyZWQ7IDAgZmlsdGVyZWQgb3V0OyBmaW5pc2hlZCBpbiAwLjI0cwoK",
+  "combined_output_sha256": "f93aad0897c81e6beaff564053af98eb20a8e338a9af10cf4af822add912f09a",
+  "combined_output_size": 582,
+  "command_exit_code": 0,
+  "cwd": "/home/yduchesne/Dev/Github/yduchesne/quervant",
+  "ended_utc": "2026-11-27T00:16:11.716596+00:00",
+  "expected_commit": "8b6f827be93a422e858609e20c0fb96647c7c302",
+  "label": "fin_suite_pr15h_a",
+  "removed_env_names": [
+    "QUERVANT_PR15I_D3C_STRATEGY",
+    "QUERVANT_PR15I_D3C_PREFILTER_PROFILE"
+  ],
+  "schema": "quervant-perf06-c3-receipt-v1",
+  "source_identity_valid": true,
+  "started_utc": "2026-11-27T00:16:11.389606+00:00"
+}

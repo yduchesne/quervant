@@ -400,3 +400,44 @@ decision about exactly 81 whitespace diagnostics in 41 unchanged frozen artifact
 claim is made: C3 has not started and C4 remains the only stage authorized to run the
 incremental warm qualification against the accepted A+B baseline. Independent review
 and maintainer merge remain open.
+
+## PERF-06-C2 merged and PERF-06-C3 implemented (2026-11-26)
+
+**C2 is merged.** PR [#131](https://github.com/yduchesne/quervant/pull/131) is
+`MERGED` at `main@6bc977e6a26c183609b7ca53eca51d3ab09ce337` (merged
+2026-11-26T23:00:00Z, reviewed head `da033ff19b3facd4f0a5319506a64e658156e93f`).
+The earlier sections in this file that describe C2 as open/unmerged, and the
+pre-merge G10/whitespace wording in the C2 artifacts, are retained verbatim as
+contemporaneous history; they are not current PR-state assertions.
+
+**C3 is implemented on a draft, unmerged branch** `dev/perf06-c3`, built from
+`B` exactly. Plan:
+[PERF06C3_DETAILED_IMPLEMENTATION_PLAN.md](pr-artifacts/perf-06-c/PERF06C3_DETAILED_IMPLEMENTATION_PLAN.md);
+report and evidence:
+[PERF06C3_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C3_EXECUTION_REPORT.md).
+
+- **Proof boundary.** C3 defers BM25 only under a request-local, read-only
+  certificate over immutable prepared statistics: `n > 0`, `df > 0`, `df <= n`,
+  finite `avgdl` in `[2^-64, 2^64]`, finite prepared IDF in `[0, 64]`. Under
+  those (sufficient, not necessary) bounds every valid decoded positive posting
+  yields a finite nonnegative score, so only the `K` returned hits are scored —
+  through the unchanged `FieldStats::bm25_score` and the same `+ 0.0`
+  accumulator, bit-equal to eager. C2 eligibility and the `M > K + 1` guard are
+  byte-identical; an unproven statistic keeps eager C2 and every originally
+  ineligible shape keeps Legacy.
+- **Unchanged.** Full posting validation, exact `total_hits`, `N`/scanned work
+  charges, virtual matched/scored admissions and release order, B1/B2/B3
+  validation, duplicate policy, fallible key/sort materialization for every
+  competitive provisional entry, cursor and projection. No new format, public
+  API, dependency or runtime telemetry. The physical heap entry grows by one
+  `u64` word (136 → 144 bytes); the logical charge formulas are unchanged.
+- **Evidence.** Red-first proof (40 → 3 scorer calls), 17 new unit tests and 3
+  real `FsDirectory` integration tests, exact old C2 eager regressions retained
+  (24/5/9), broader inventories 52 (`--lib c2_`) and 12 (`perf06_c2_physical`),
+  stable 1.98.1 and MSRV 1.85.0 format/clippy/tests in both feature regimes, and
+  coverage 93.85 % / 93.54 % lines against the 85 % floor.
+- **No performance sample.** **C4 has not started.** C4 remains the only stage
+  authorized to run the integrated incremental A+B→C warm qualification
+  (including absent/rare lanes and the entry-layout/codegen guard) and to report
+  the cumulative series. C3 must not be marked DONE and no baseline may be
+  promoted before G10 maintainer acceptance.
