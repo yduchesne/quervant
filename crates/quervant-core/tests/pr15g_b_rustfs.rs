@@ -329,6 +329,9 @@ fn perf07a_rf01_real_rustfs_multi_hit_cold_and_warm_projection() {
 
         let mut checks = 0usize;
         let mut provider_baseline = None;
+        let mut cold_responses: Vec<UnifiedResponse> = Vec::with_capacity(4);
+        let mut requests = 0usize;
+        let mut parity_pairs = 0usize;
         for pass in 0..2usize {
             for direction in [SortDirection::Asc, SortDirection::Desc] {
                 for k in [10usize, 100] {
@@ -346,6 +349,8 @@ fn perf07a_rf01_real_rustfs_multi_hit_cold_and_warm_projection() {
                     assert_eq!(response.hits.len(), k);
                     assert!(response.aggregation.is_none());
                     assert!(response.next_cursor.is_some());
+                    assert_eq!(response.generation, snapshot.generation());
+                    assert_eq!(response.view_ordinal, snapshot.view_ordinal());
                     let expected_keys: Vec<String> =
                         expected.iter().map(|i| format!("d{i:05}")).collect();
                     assert_eq!(keys(&response), expected_keys, "literal keys");
@@ -373,6 +378,25 @@ fn perf07a_rf01_real_rustfs_multi_hit_cold_and_warm_projection() {
                         assert!(hit.score.is_none(), "typed-neutral MatchAll is unscored");
                         checks += 1;
                     }
+                    let case_index = match direction {
+                        SortDirection::Asc => 0usize,
+                        SortDirection::Desc => 2usize,
+                    } + if k == 10 { 0 } else { 1 };
+                    if pass == 0 {
+                        assert_eq!(cold_responses.len(), case_index);
+                        cold_responses.push(response);
+                    } else {
+                        let cold = &cold_responses[case_index];
+                        assert_eq!(
+                            &response, cold,
+                            "{direction:?} K={k}: complete cold/warm response parity"
+                        );
+                        parity_pairs += 1;
+                        eprintln!(
+                            "PERF07-A F1 RF01 pair={case_index} direction={direction:?} K={k} full_response_equal=true"
+                        );
+                    }
+                    requests += 1;
                 }
             }
             if pass == 0 {
@@ -380,8 +404,12 @@ fn perf07a_rf01_real_rustfs_multi_hit_cold_and_warm_projection() {
             }
         }
         assert_eq!(checks, 440, "two passes over K=10/100 in both directions");
+        assert_eq!(cold_responses.len(), 4, "four cold responses retained");
+        assert_eq!(requests, 8, "four cases in each of two passes");
+        assert_eq!(parity_pairs, 4, "four complete cold/warm response pairs");
+        let provider_after = reopened.transfer_stats().requests();
         assert_eq!(
-            reopened.transfer_stats().requests(),
+            provider_after,
             provider_baseline.expect("baseline"),
             "warm reread must not add provider requests"
         );
@@ -389,6 +417,9 @@ fn perf07a_rf01_real_rustfs_multi_hit_cold_and_warm_projection() {
         drop(snapshot);
         drop(reopened);
         let _ = std::fs::remove_dir_all(&workspace);
-        eprintln!("PERF07-A RF01 checks={checks} segment-docs=1100");
+        eprintln!(
+            "PERF07-A RF01 checks={checks} segment-docs=1100 requests={requests} parity_pairs={parity_pairs} provider_before={} provider_after={provider_after}",
+            provider_baseline.expect("baseline")
+        );
     });
 }

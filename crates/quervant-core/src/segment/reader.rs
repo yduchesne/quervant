@@ -5055,7 +5055,20 @@ mod column_geometry_tests {
             let (state, budget) =
                 headroom_state(build_with_docs(literals.iter().map(|k| doc(k)).collect()));
             let before = state.access_budget_used().expect("used");
+            assert_eq!(
+                state.key_offsets_state(),
+                None,
+                "{label}: initial empty cell"
+            );
+            assert!(
+                state.key_offsets_ptr().is_none(),
+                "{label}: initial no pointer"
+            );
             let reader = SegmentReader::from_shared(Arc::clone(&state));
+            assert!(
+                !reader.doc_keys_cache_is_populated(),
+                "{label}: no initial full cache"
+            );
             reset_perf07a();
             let guard = perf07a_observation::arm_directory_fault(DirectoryFault::FinalizeRefusal);
             let outcome = verify(&reader, rows).expect("injected refusal");
@@ -5078,6 +5091,10 @@ mod column_geometry_tests {
                 Some(false),
                 "{label}: sticky none"
             );
+            assert!(
+                state.key_offsets_ptr().is_none(),
+                "{label}: no pointer after refusal"
+            );
             assert_eq!(
                 state.access_budget_used(),
                 Some(before),
@@ -5087,32 +5104,43 @@ mod column_geometry_tests {
             rows_done += 1;
 
             let retry = SegmentReader::from_shared(Arc::clone(&state));
+            assert_eq!(perf07a_observation::directory_fault(), DirectoryFault::None);
+            assert_eq!(state.key_offsets_state(), Some(false));
+            assert!(state.key_offsets_ptr().is_none());
             reset_perf07a();
-            let again = verify(&retry, rows).expect("sticky retry");
-            assert_eq!(again, expected_parity, "{label}: retry parity");
-            let expected = Counts {
-                scans: 1,
-                scan_rows: 4,
-                selection_rows: 3,
-                ..Counts::default()
-            };
+            let again = verify(&retry, &selection).expect("sticky correct recovery");
+            assert!(
+                again,
+                "{label}: corrected request must succeed on the same owner"
+            );
             assert_counts(
                 perf07a_observation::counts(),
-                expected,
-                &format!("{label} sticky retry"),
+                Counts {
+                    scans: 1,
+                    scan_rows: 4,
+                    selection_rows: 3,
+                    ..Counts::default()
+                },
+                &format!("{label} sticky correct recovery"),
             );
+            assert_eq!(test_observation::selected_keys_owned(), 0);
             assert_eq!(
                 state.key_offsets_state(),
                 Some(false),
                 "{label}: still none"
             );
+            assert!(state.key_offsets_ptr().is_none());
             assert_eq!(state.access_budget_used(), Some(before));
+            assert!(!retry.doc_keys_cache_is_populated());
             rows_done += 1;
             drop(reader);
             drop(retry);
             drop(state);
-            drop(budget);
+            assert_eq!(budget.used(), 0, "{label}: budget released");
             eprintln!("PERF07-A R05 INJECTED_POST_SCAN_MEASUREMENT label={label} rows=2");
+            eprintln!(
+                "PERF07-A F1 R05 case={label} injected_parity={expected_parity} corrected_parity=true scan_rows=4/4 sticky_none=true rows=2"
+            );
         }
         assert_eq!(rows_done, 4);
         eprintln!("PERF07-A R05 rows={rows_done}");
@@ -5479,61 +5507,98 @@ mod column_geometry_tests {
                 .collect();
             let boundary = build_with_docs(keys);
             let rejected = rebuild_section(&boundary, SectionKind::DocKeys, |body| {
-                let start = 10 + (size - 1) * 8;
-                body[start + 2] = 0xff;
+                let start = 10 + (size - 1) * 8 + 2;
+                body[start] = 0xff;
             });
-            SegmentReader::open(rejected.clone(), SegmentLimits::default()).expect("opens");
+            let pristine = SegmentReader::open(rejected.clone(), SegmentLimits::default())
+                .expect("pristine boundary opens");
+            assert_eq!(pristine.doc_count(), size as u64, "boundary doc count");
+            drop(pristine);
 
-            let invalid_id_rows = vec![(size as u64, DocumentKey::new("k00000").expect("key"))];
-            let mismatch_rows = vec![(0u64, DocumentKey::new("k00001").expect("key"))];
-            for (case, rows, expected) in [
-                ("invalid-id", &invalid_id_rows, P07aExpect::Range),
-                ("late-corrupt", &mismatch_rows, P07aExpect::Range),
-            ] {
-                let unmetered = SegmentReader::open(rejected.clone(), SegmentLimits::default())
-                    .expect("unmetered");
-                reset_perf07a();
-                let outcome = verify(&unmetered, rows);
-                if size == 1024 && case == "invalid-id" {
-                    check_typed(outcome, expected, "boundary large invalid");
-                    assert_eq!(perf07a_observation::counts().scan_rows, 0);
-                } else if size == 1023 && case == "invalid-id" {
-                    match &outcome {
-                        Err(SegmentError::InvalidUtf8 { context }) => {
-                            assert_eq!(*context, "doc key")
-                        }
-                        other => panic!("boundary small invalid: unexpected {other:?}"),
-                    }
+            let check = |case: &str,
+                         mode: &str,
+                         outcome: SegmentResult<bool>,
+                         scan_rows: usize,
+                         cell: Option<bool>| {
+                let early = size == 1024 && case == "invalid-id";
+                let outcome_label;
+                if early {
+                    check_typed(outcome, P07aExpect::Range, "large invalid before body rows");
+                    outcome_label = "range";
                 } else {
-                    match &outcome {
+                    match outcome {
                         Err(SegmentError::InvalidUtf8 { context }) => {
-                            assert_eq!(*context, "doc key")
+                            assert_eq!(context, "doc key");
+                            outcome_label = "invalid-utf8";
                         }
-                        other => panic!("boundary late corrupt: unexpected {other:?}"),
+                        other => panic!("N={size} {case}: expected InvalidUtf8, got {other:?}"),
                     }
                 }
+                let selection_rows = usize::from(case == "late-corrupt");
+                let expected = Counts {
+                    scans: 1,
+                    scan_rows,
+                    selection_rows,
+                    ..Counts::default()
+                };
+                assert_counts(
+                    perf07a_observation::counts(),
+                    expected,
+                    &format!("N={size} {case} {mode}"),
+                );
+                assert_eq!(test_observation::selected_keys_owned(), 0);
+                eprintln!(
+                    "PERF07-A F1 R07 boundary size={size} case={case} mode={mode} outcome={outcome_label} scans=1 scan_rows={scan_rows} selection_rows={selection_rows} cell={cell:?}"
+                );
+            };
+
+            for case in ["invalid-id", "late-corrupt"] {
+                let rows = if case == "invalid-id" {
+                    vec![(size as u64, DocumentKey::new("k00000").expect("key"))]
+                } else {
+                    vec![(0u64, DocumentKey::new("k00001").expect("key"))]
+                };
+                let early = size == 1024 && case == "invalid-id";
+                let scan_rows = if early { 0 } else { size - 1 };
+
+                let unmetered = SegmentReader::open(rejected.clone(), SegmentLimits::default())
+                    .expect("unmetered");
+                assert_eq!(unmetered.doc_count(), size as u64);
+                assert!(!unmetered.shared_state().has_access_budget());
+                assert_eq!(unmetered.shared_state().key_offsets_state(), None);
+                assert!(unmetered.shared_state().key_offsets_ptr().is_none());
+                assert!(!unmetered.doc_keys_cache_is_populated());
+                reset_perf07a();
+                let outcome = verify(&unmetered, &rows);
+                check(case, "unmetered", outcome, scan_rows, None);
+                assert_eq!(unmetered.shared_state().key_offsets_state(), None);
+                assert!(unmetered.shared_state().key_offsets_ptr().is_none());
+                assert!(!unmetered.doc_keys_cache_is_populated());
                 calls += 1;
 
                 let (state, budget) = headroom_state(rejected.clone());
                 let admitted = SegmentReader::from_shared(Arc::clone(&state));
+                assert_eq!(admitted.doc_count(), size as u64);
+                assert_eq!(state.key_offsets_state(), None);
+                assert!(state.key_offsets_ptr().is_none());
+                assert!(!admitted.doc_keys_cache_is_populated());
+                let before = state.access_budget_used().expect("used");
                 reset_perf07a();
-                let outcome = verify(&admitted, rows);
-                match &outcome {
-                    Err(SegmentError::InvalidUtf8 { context }) => {
-                        assert_eq!(*context, "doc key")
-                    }
-                    Err(SegmentError::Corrupt { context, detail })
-                        if size == 1024 && case == "invalid-id" =>
-                    {
-                        assert_eq!(*context, "doc keys");
-                        assert_eq!(detail, "doc id out of range");
-                    }
-                    other => panic!("boundary admitted: unexpected {other:?}"),
-                }
+                let outcome = verify(&admitted, &rows);
+                let cell = if case == "late-corrupt" {
+                    Some(false)
+                } else {
+                    None
+                };
+                check(case, "admitted", outcome, scan_rows, cell);
+                assert_eq!(state.key_offsets_state(), cell);
+                assert!(state.key_offsets_ptr().is_none());
+                assert_eq!(state.access_budget_used(), Some(before));
+                assert!(!admitted.doc_keys_cache_is_populated());
                 calls += 1;
                 drop(admitted);
                 drop(state);
-                drop(budget);
+                assert_eq!(budget.used(), 0);
             }
         }
 
