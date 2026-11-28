@@ -1,0 +1,17 @@
+   Compiling quervant-core v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.12s
+     Running tests/perf06_c2_physical.rs (target/debug/deps/perf06_c2_physical-5e828c4a3c49f893)
+c2_i01_i10_b4_formula_exact_term_lanes: test
+c2_i02_scores_full_projection_and_reverse_sort: test
+c2_i03_pit_update_delete_merge_reopen: test
+c2_i04_duplicates_and_optional_fallback: test
+c2_i05_real_cursor_multi_page: test
+c2_i06_corrupt_container_and_legacy_errors: test
+c2_i07_batch_aggregate_and_unsupported_shapes: test
+c2_i08_resource_cancellation_atomicity: test
+c2_i09_empty_and_sparse_physical_segments: test
+c3_i01_real_scores_and_explicit_cursor: test
+c3_i02_real_pit_update_merge_and_paging: test
+c3_i03_real_resource_and_cancellation_edges: test
+
+12 tests, 0 benchmarks

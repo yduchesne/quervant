@@ -3698,10 +3698,12 @@ fn response_bytes_for(
 
 /// Projection using exact physical `(segment_index, doc_id)` identities.
 ///
-/// PR 15E Phase 3: each touched segment's STORED section is scanned exactly once
-/// and only the selected physical records are materialized. Physical key parity is
-/// still verified for every selected hit **before** any stored materialization, and
-/// the output order, projection plan and ledger charges are unchanged.
+/// PERF-07-A: every selected physical key is verified in original selection order
+/// before STORED materialization for that segment. A ready validated `DOC_KEYS`
+/// offset certificate is reused; otherwise one shared borrowed validation scan
+/// compares the selected keys without rebuilding the full owned key list. Output
+/// order, per-segment parity-before-STORED, the projection plan and ledger charges
+/// are unchanged.
 fn project_selected_hits(
     snapshot: &ReaderSnapshot,
     plan: &ProjectionPlan,
@@ -3717,22 +3719,16 @@ fn project_selected_hits(
     for (segment_index, indices) in by_segment {
         let guard = snapshot.open_segment_reader(segment_index)?;
         let reader = guard.reader();
-        // Physical identity is authoritative: verify every selected hit before any
-        // stored record is materialized. PR 15E Phase 5: a large segment with exactly
-        // one selected hit decodes only that key; other shapes keep the full cache.
-        let single_hit_segment = indices.len() == 1 && reader.doc_count() >= 1024;
-        for index in &indices {
+        // Verify every selected physical key before STORED materialization. The
+        // reader reuses validated offsets or performs one borrowed validation scan.
+        let selected = indices.iter().map(|index| {
             let hit = &hits[*index];
-            let key = if single_hit_segment {
-                reader.doc_key_selected(hit.doc_id)?
-            } else {
-                reader.doc_key(hit.doc_id)?
-            };
-            if key != hit.key {
-                return Err(SearchError::CorruptIndex {
-                    detail: "selected hit key does not match its physical document".to_owned(),
-                });
-            }
+            (hit.doc_id, &hit.key)
+        });
+        if !reader.verify_selected_doc_keys(selected)? {
+            return Err(SearchError::CorruptIndex {
+                detail: "selected hit key does not match its physical document".to_owned(),
+            });
         }
         // Ascending unique physical ids, bounded by the number of already-selected
         // hits (never by the segment's document count).
@@ -18277,6 +18273,981 @@ mod c2_tests {
         // for every assertion above.
         let _ = &stats_owner;
         eprintln!("C3 U12 misuse-guard rows=4");
+    }
+
+    // -----------------------------------------------------------------------
+    // PERF-07-A — selective physical key verification in projection.
+    // -----------------------------------------------------------------------
+
+    /// The explicit two-field projection of one fixture document, in plan order.
+    fn p07a_fields(index: usize) -> Vec<(String, FieldValues)> {
+        vec![
+            (
+                "doc_id".to_owned(),
+                FieldValues::Single(FieldValue::Keyword(bounded_key(index))),
+            ),
+            (
+                "n".to_owned(),
+                FieldValues::Single(FieldValue::I64(index as i64)),
+            ),
+        ]
+    }
+
+    /// Compile the fixed `(doc_id, n)` projection against the fixture schema.
+    fn p07a_plan(fixture: &Fixture) -> ProjectionPlan {
+        ProjectionPlan::compile(
+            &Projection::Fields(vec!["doc_id".to_owned(), "n".to_owned()]),
+            &fixture.schema,
+        )
+        .expect("plan")
+    }
+
+    /// Map each pristine key of one fixture segment to its physical id through a
+    /// fresh guard. The guard's query-local full cache is dropped with the guard.
+    fn p07a_pristine_key_map(fixture: &Fixture, segment: usize) -> BTreeMap<String, u64> {
+        let guard = fixture
+            .snapshot
+            .open_segment_reader(segment)
+            .expect("guard");
+        let keys = guard.reader().doc_keys().expect("pristine keys");
+        let mut map = BTreeMap::new();
+        for (id, key) in keys.iter().enumerate() {
+            let previous = map.insert(key.as_str().to_owned(), id as u64);
+            assert!(previous.is_none(), "duplicate pristine key {key:?}");
+        }
+        map
+    }
+
+    /// A directly constructed selected hit with the exact expected physical key.
+    fn p07a_hit(segment_index: usize, doc_id: u64, key: &str) -> SelectedHit {
+        SelectedHit {
+            segment_index,
+            doc_id,
+            key: DocumentKey::new(key.to_owned()).expect("key"),
+            score: Some(1.0),
+            sort_tuple: Vec::new(),
+        }
+    }
+
+    // PERF-07-A U01 — red-first proof and warm multi-hit scaling.
+    #[test]
+    fn perf07a_u01_projection_prepared_offsets_no_full_keys() {
+        use crate::segment::reader::perf07a_observation::{self, Counts};
+
+        let fixture = Fixture::new(&[(0..1100).map(document).collect()]);
+        assert_eq!(fixture.snapshot.segment_count(), 1, "one native segment");
+
+        // Pristine physical identity from a separate full-decode guard.
+        let key_map = p07a_pristine_key_map(&fixture, 0);
+        let literal: BTreeSet<String> = (0..1100).map(bounded_key).collect();
+        assert_eq!(
+            key_map.keys().cloned().collect::<BTreeSet<String>>(),
+            literal,
+            "physical keys are a bijection over the literal input set"
+        );
+
+        // Prime the shared offset certificate through the unchanged scalar path.
+        {
+            let guard = fixture
+                .snapshot
+                .open_segment_reader(0)
+                .expect("prime guard");
+            assert_eq!(guard.reader().doc_count(), 1100);
+            let _ = guard.reader().doc_key_selected(0).expect("prime offsets");
+            assert_eq!(
+                guard.reader().shared_state().key_offsets_state(),
+                Some(true),
+                "offsets are ready"
+            );
+        }
+        assert_eq!(
+            fixture.snapshot.reader_copy_used(),
+            0,
+            "no reader copy retained"
+        );
+
+        let plan = p07a_plan(&fixture);
+        let descending_1090: Vec<usize> = (1090..=1099).rev().collect();
+        let descending_1000: Vec<usize> = (1000..=1099).rev().collect();
+
+        let run = |indices: &[usize]| -> (Counts, usize) {
+            let hits: Vec<SelectedHit> = indices
+                .iter()
+                .map(|index| p07a_hit(0, key_map[&bounded_key(*index)], &bounded_key(*index)))
+                .collect();
+            let mut ledger = ProjectionLedger::new(1 << 20);
+            perf07a_observation::reset();
+            crate::segment::reader::test_observation::reset();
+            let out =
+                super::project_selected_hits(&fixture.snapshot, &plan, &mut ledger, &hits, None)
+                    .expect("projection");
+            let counts = perf07a_observation::counts();
+            let owned = crate::segment::reader::test_observation::selected_keys_owned();
+            assert_eq!(out.len(), indices.len(), "projected length");
+            for (position, index) in indices.iter().enumerate() {
+                assert_eq!(
+                    out[position],
+                    p07a_fields(*index),
+                    "position {position} fields"
+                );
+            }
+            assert!(ledger.used() > 0, "ledger charged");
+            assert_eq!(counts.stored_calls, 1, "one STORED call");
+            assert_eq!(
+                fixture.snapshot.reader_copy_used(),
+                0,
+                "reader guard released"
+            );
+            (counts, owned)
+        };
+
+        let rows: [(&str, &[usize], usize); 4] = [
+            ("K10-a", &descending_1090, 10),
+            ("K100-a", &descending_1000, 100),
+            ("K10-b", &descending_1090, 10),
+            ("K100-b", &descending_1000, 100),
+        ];
+        let mut completed = 0usize;
+        for (label, indices, k) in rows {
+            let (counts, owned) = run(indices);
+            eprintln!(
+                "PERF07-A U01 GREEN label={label} full_owned={} full_decodes={} scans={} scan_rows={} offset_reads={} selection_rows={} cache_compares={} stored_calls={} selected_owned={}",
+                counts.full_owned,
+                counts.full_decodes,
+                counts.scans,
+                counts.scan_rows,
+                counts.offset_reads,
+                counts.selection_rows,
+                counts.cache_compares,
+                counts.stored_calls,
+                owned,
+            );
+            if completed == 0 {
+                eprintln!(
+                    "PERF07-A RED-WITNESS full_owned={} full_decodes={} expected=0 K=10 N=1100",
+                    counts.full_owned, counts.full_decodes
+                );
+            }
+            assert_eq!(
+                counts.full_owned, 0,
+                "PERF07-A U01 full owned keys ({label})"
+            );
+            assert_eq!(
+                counts.full_decodes, 0,
+                "PERF07-A U01 full decodes ({label})"
+            );
+            assert_eq!(counts.scans, 0, "PERF07-A U01 scans ({label})");
+            assert_eq!(counts.scan_rows, 0, "PERF07-A U01 scan rows ({label})");
+            assert_eq!(
+                counts.offset_reads, k,
+                "PERF07-A U01 offset reads ({label})"
+            );
+            assert_eq!(
+                counts.selection_rows, 0,
+                "PERF07-A U01 selection rows ({label})"
+            );
+            assert_eq!(
+                counts.cache_compares, 0,
+                "PERF07-A U01 cache compares ({label})"
+            );
+            assert_eq!(owned, k, "PERF07-A U01 selected owned keys ({label})");
+            assert_eq!(
+                counts.stored_calls, 1,
+                "PERF07-A U01 stored calls ({label})"
+            );
+            completed += 1;
+        }
+        assert_eq!(completed, 4, "four completed rows on GREEN");
+        eprintln!("PERF07-A U01 rows={completed}");
+    }
+
+    // -----------------------------------------------------------------------
+    // PERF-07-A — projection-path acceptance (U02–U06).
+    // -----------------------------------------------------------------------
+
+    /// Build a one-segment test snapshot from a checksum-valid container copy.
+    fn p07a_snapshot(
+        case_id: &str,
+        copied: &CopiedSegment,
+        bytes: Vec<u8>,
+        metadata_cap: u64,
+    ) -> ReaderSnapshot {
+        ReaderSnapshot::for_test(
+            vec![crate::index::SegmentSnapshot::new(
+                crate::index::SegmentMeta::new(
+                    format!("perf07a-{case_id}"),
+                    format!("test/perf07a-{case_id}"),
+                    quervant_objectstore::ContentDescriptor::of(&bytes),
+                    copied.required.clone(),
+                    copied.optional.clone(),
+                    None,
+                ),
+                Arc::new(bytes),
+                copied.doc_count,
+            )],
+            crate::segment::SegmentLimits::default(),
+            256 * 1024 * 1024,
+            metadata_cap,
+        )
+    }
+
+    /// Build a multi-segment test snapshot preserving canonical content order.
+    fn p07a_multi_snapshot(
+        case_id: &str,
+        segments: &[(&CopiedSegment, Vec<u8>)],
+        metadata_cap: u64,
+    ) -> ReaderSnapshot {
+        let snapshots = segments
+            .iter()
+            .enumerate()
+            .map(|(index, (copied, bytes))| {
+                crate::index::SegmentSnapshot::new(
+                    crate::index::SegmentMeta::new(
+                        format!("perf07a-{case_id}-{index}"),
+                        format!("test/perf07a-{case_id}-{index}"),
+                        quervant_objectstore::ContentDescriptor::of(bytes),
+                        copied.required.clone(),
+                        copied.optional.clone(),
+                        None,
+                    ),
+                    Arc::new(bytes.clone()),
+                    copied.doc_count,
+                )
+            })
+            .collect();
+        ReaderSnapshot::for_test(
+            snapshots,
+            crate::segment::SegmentLimits::default(),
+            256 * 1024 * 1024,
+            metadata_cap,
+        )
+    }
+
+    fn p07a_check_fields(out: &[Vec<(String, FieldValues)>], indices: &[usize], label: &str) {
+        assert_eq!(out.len(), indices.len(), "{label}: projected length");
+        for (position, index) in indices.iter().enumerate() {
+            assert_eq!(
+                out[position],
+                p07a_fields(*index),
+                "{label}: position {position} fields"
+            );
+        }
+    }
+
+    fn p07a_copied(bytes: &[u8]) -> CopiedSegment {
+        CopiedSegment::parse(bytes)
+    }
+
+    fn p07a_reset() {
+        crate::segment::reader::perf07a_observation::reset();
+        crate::segment::reader::test_observation::reset();
+    }
+
+    fn p07a_counts() -> crate::segment::reader::perf07a_observation::Counts {
+        crate::segment::reader::perf07a_observation::counts()
+    }
+
+    fn p07a_owned() -> usize {
+        crate::segment::reader::test_observation::selected_keys_owned()
+    }
+
+    // U02 — cold first use and zero-metadata projector.
+    #[test]
+    fn perf07a_u02_projection_first_use_and_zero_metadata() {
+        use crate::segment::reader::perf07a_observation::Counts as P07aCounts;
+
+        let fixture = Fixture::new(&[(0..1100).map(document).collect()]);
+        assert_eq!(fixture.snapshot.segment_count(), 1);
+        let key_map = p07a_pristine_key_map(&fixture, 0);
+        let pristine = fixture.snapshot.segments()[0].bytes().to_vec();
+        let copied = p07a_copied(&pristine);
+        assert_eq!(copied.doc_count, 1100);
+        let plan = p07a_plan(&fixture);
+        let inputs = [1099usize, 2, 0, 2];
+        let hits: Vec<SelectedHit> = inputs
+            .iter()
+            .map(|index| p07a_hit(0, key_map[&bounded_key(*index)], &bounded_key(*index)))
+            .collect();
+        let mut completed = 0usize;
+
+        let admitted = p07a_snapshot("u02-admitted", &copied, pristine.clone(), 256 * 1024 * 1024);
+        let mut ledger = ProjectionLedger::new(1 << 20);
+        p07a_reset();
+        let out = super::project_selected_hits(&admitted, &plan, &mut ledger, &hits, None)
+            .expect("first use");
+        let expected = P07aCounts {
+            scans: 1,
+            scan_rows: 1100,
+            selection_rows: 4,
+            stored_calls: 1,
+            ..P07aCounts::default()
+        };
+        assert_eq!(p07a_counts(), expected, "first-use counts");
+        assert_eq!(p07a_owned(), 0);
+        p07a_check_fields(&out, &inputs, "first use");
+        assert_eq!(admitted.reader_copy_used(), 0, "guard released");
+        completed += 1;
+        eprintln!("PERF07-A F1 U02 label=first-use outcome=success");
+
+        let mut warm_ledger = ProjectionLedger::new(1 << 20);
+        p07a_reset();
+        let warm = super::project_selected_hits(&admitted, &plan, &mut warm_ledger, &hits, None)
+            .expect("warm use");
+        let expected = P07aCounts {
+            offset_reads: 4,
+            stored_calls: 1,
+            ..P07aCounts::default()
+        };
+        assert_eq!(p07a_counts(), expected, "warm counts");
+        assert_eq!(p07a_owned(), 4);
+        p07a_check_fields(&warm, &inputs, "warm use");
+        assert_eq!(admitted.reader_copy_used(), 0);
+        completed += 1;
+        eprintln!("PERF07-A F1 U02 label=warm-use outcome=success");
+
+        let zero = p07a_snapshot("u02-zero", &copied, pristine, 0);
+        for label in ["zero-a", "zero-b"] {
+            let mut ledger = ProjectionLedger::new(1 << 20);
+            p07a_reset();
+            let out =
+                super::project_selected_hits(&zero, &plan, &mut ledger, &hits, None).expect(label);
+            let expected = P07aCounts {
+                scans: 1,
+                scan_rows: 1100,
+                selection_rows: 4,
+                stored_calls: 1,
+                ..P07aCounts::default()
+            };
+            assert_eq!(p07a_counts(), expected, "{label} counts");
+            assert_eq!(p07a_owned(), 0);
+            p07a_check_fields(&out, &inputs, label);
+            assert_eq!(zero.reader_copy_used(), 0, "{label} guard released");
+            assert_eq!(zero.metadata_used(), 0, "{label} zero metadata");
+            completed += 1;
+            eprintln!("PERF07-A F1 U02 label={label} outcome=success");
+        }
+
+        let mut ledger = ProjectionLedger::new(64);
+        p07a_reset();
+        let empty = super::project_selected_hits(&zero, &plan, &mut ledger, &[], None)
+            .expect("empty selection");
+        assert!(empty.is_empty());
+        assert_eq!(ledger.used(), 0);
+        assert_eq!(p07a_counts(), P07aCounts::default(), "zero work");
+        assert_eq!(zero.reader_copy_used(), 0);
+        assert_eq!(zero.metadata_used(), 0);
+        completed += 1;
+        eprintln!("PERF07-A F1 U02 label=empty-selection outcome=success");
+        assert_eq!(completed, 5, "five completed projector calls");
+        eprintln!("PERF07-A U02 rows={completed}");
+    }
+
+    // U03 — selected order, duplicate positions and physical identity guard.
+    #[test]
+    fn perf07a_u03_projection_selected_order_and_parity() {
+        use crate::segment::reader::perf07a_observation::Counts as P07aCounts;
+        let fixture = Fixture::new(&[(0..4).map(document).collect()]);
+        assert_eq!(fixture.snapshot.segment_count(), 1, "one fixture segment");
+        let key_map = p07a_pristine_key_map(&fixture, 0);
+        let pristine = fixture.snapshot.segments()[0].bytes().to_vec();
+        let copied = p07a_copied(&pristine);
+        assert_eq!(copied.doc_count, 4, "fixture document count");
+        assert_eq!(
+            key_map.keys().cloned().collect::<BTreeSet<String>>(),
+            (0..4).map(bounded_key).collect::<BTreeSet<String>>(),
+            "pristine key set equals the literal input set"
+        );
+        let mut physical: Vec<u64> = key_map.values().copied().collect();
+        physical.sort_unstable();
+        assert_eq!(physical, vec![0, 1, 2, 3], "distinct physical ids");
+        let plan = p07a_plan(&fixture);
+        let id = |index: usize| key_map[&bounded_key(index)];
+        let hit = |doc_id: u64, key_index: usize| p07a_hit(0, doc_id, &bounded_key(key_index));
+
+        let unmetered = p07a_snapshot("u03-unmetered", &copied, pristine.clone(), 0);
+        let admitted = p07a_snapshot("u03-admitted", &copied, pristine, 256 * 1024 * 1024);
+        {
+            let guard = admitted.open_segment_reader(0).expect("prime guard");
+            let _ = guard.reader().doc_key_selected(0).expect("prime");
+            assert_eq!(
+                guard.reader().shared_state().key_offsets_state(),
+                Some(true)
+            );
+            assert!(guard.reader().shared_state().key_offsets_ptr().is_some());
+        }
+        assert_eq!(unmetered.metadata_used(), 0, "zero-cap metadata");
+        assert_eq!(unmetered.reader_copy_used(), 0);
+        assert_eq!(admitted.reader_copy_used(), 0);
+
+        let success: Vec<SelectedHit> =
+            vec![hit(id(3), 3), hit(id(0), 0), hit(id(3), 3), hit(id(1), 1)];
+        let success_inputs = [3usize, 0, 3, 1];
+
+        let assert_success = |snapshot: &ReaderSnapshot,
+                              ledger: &mut ProjectionLedger,
+                              prepared: bool,
+                              label: &str| {
+            assert_eq!(ledger.used(), 0, "{label}: initially empty ledger");
+            assert_eq!(snapshot.reader_copy_used(), 0, "{label}: no active reader");
+            p07a_reset();
+            let out = super::project_selected_hits(snapshot, &plan, ledger, &success, None)
+                .unwrap_or_else(|error| panic!("{label}: {error:?}"));
+            let expected = if prepared {
+                P07aCounts {
+                    offset_reads: 4,
+                    stored_calls: 1,
+                    ..P07aCounts::default()
+                }
+            } else {
+                P07aCounts {
+                    scans: 1,
+                    scan_rows: 4,
+                    selection_rows: 4,
+                    stored_calls: 1,
+                    ..P07aCounts::default()
+                }
+            };
+            assert_eq!(p07a_counts(), expected, "{label}: exact counts");
+            assert_eq!(p07a_owned(), if prepared { 4 } else { 0 }, "{label}: owned");
+            p07a_check_fields(&out, &success_inputs, label);
+            assert!(ledger.used() > 0, "{label}: successful projection charged");
+            assert_eq!(snapshot.reader_copy_used(), 0, "{label}: guard released");
+            if !prepared {
+                assert_eq!(snapshot.metadata_used(), 0, "{label}: zero metadata");
+            }
+            eprintln!(
+                "PERF07-A F1 U03 label={label} outcome=success counts={:?} owned={} ledger_used={} reader_bytes={}",
+                p07a_counts(),
+                p07a_owned(),
+                ledger.used(),
+                snapshot.reader_copy_used()
+            );
+        };
+
+        let mut completed = 0usize;
+        for (label, snapshot, prepared) in [
+            ("unmetered-success", &unmetered, false),
+            ("prepared-success-a", &admitted, true),
+            ("prepared-success-b", &admitted, true),
+        ] {
+            let mut ledger = ProjectionLedger::new(1 << 20);
+            assert_success(snapshot, &mut ledger, prepared, label);
+            completed += 1;
+        }
+
+        type FailedRow = (&'static str, Vec<SelectedHit>, bool, usize, usize);
+        let failed: Vec<FailedRow> = vec![
+            (
+                "wrong-first",
+                vec![hit(id(3), 1), hit(id(0), 0), hit(id(3), 3)],
+                false,
+                3,
+                1,
+            ),
+            (
+                "wrong-later",
+                vec![hit(id(3), 3), hit(id(0), 0), hit(id(3), 2)],
+                false,
+                3,
+                3,
+            ),
+            (
+                "mismatch-then-invalid",
+                vec![hit(id(0), 1), hit(4, 0)],
+                false,
+                1,
+                1,
+            ),
+            (
+                "invalid-then-mismatch",
+                vec![hit(4, 0), hit(id(0), 1)],
+                true,
+                1,
+                0,
+            ),
+        ];
+        let mut failures = 0usize;
+        let mut recoveries = 0usize;
+        for (mode, snapshot, prepared) in [
+            ("unmetered", &unmetered, false),
+            ("prepared", &admitted, true),
+        ] {
+            for (case, hits, range, scratch, reads) in &failed {
+                let label = format!("{mode}-{case}");
+                let mut ledger = ProjectionLedger::new(1 << 20);
+                let before = snapshot.metadata_used();
+                assert_eq!(ledger.used(), 0);
+                assert_eq!(snapshot.reader_copy_used(), 0);
+                if !prepared {
+                    assert_eq!(before, 0);
+                }
+                p07a_reset();
+                let error = super::project_selected_hits(snapshot, &plan, &mut ledger, hits, None)
+                    .expect_err(&label);
+                if *range {
+                    match &error {
+                        SearchError::Segment(crate::segment::SegmentError::Corrupt {
+                            context,
+                            detail,
+                        }) => {
+                            assert_eq!(*context, "doc keys", "{label}: range context");
+                            assert_eq!(detail, "doc id out of range", "{label}: range detail");
+                        }
+                        other => panic!("{label}: expected range, got {other:?}"),
+                    }
+                } else {
+                    match &error {
+                        SearchError::CorruptIndex { detail } => assert_eq!(
+                            detail, "selected hit key does not match its physical document",
+                            "{label}: mismatch detail"
+                        ),
+                        other => panic!("{label}: expected mismatch, got {other:?}"),
+                    }
+                }
+                let expected = if prepared {
+                    P07aCounts {
+                        offset_reads: *reads,
+                        ..P07aCounts::default()
+                    }
+                } else {
+                    P07aCounts {
+                        scans: 1,
+                        scan_rows: 4,
+                        selection_rows: *scratch,
+                        ..P07aCounts::default()
+                    }
+                };
+                assert_eq!(p07a_counts(), expected, "{label}: complete failure counts");
+                assert_eq!(
+                    p07a_owned(),
+                    if prepared { *reads } else { 0 },
+                    "{label}: owned"
+                );
+                assert_eq!(ledger.used(), 0, "{label}: zero admission");
+                assert_eq!(snapshot.reader_copy_used(), 0, "{label}: guard released");
+                assert_eq!(
+                    snapshot.metadata_used(),
+                    before,
+                    "{label}: unchanged metadata"
+                );
+                eprintln!(
+                    "PERF07-A F1 U03 label={label} outcome={error:?} counts={:?} owned={} ledger_used=0 reader_bytes=0",
+                    p07a_counts(),
+                    p07a_owned()
+                );
+                failures += 1;
+                completed += 1;
+
+                // Same reference, same ledger variable, no reset/reassignment of ledger.
+                assert_success(
+                    snapshot,
+                    &mut ledger,
+                    prepared,
+                    &format!("{label}-recovery"),
+                );
+                assert_eq!(
+                    snapshot.metadata_used(),
+                    before,
+                    "{label}: recovery metadata"
+                );
+                recoveries += 1;
+                completed += 1;
+            }
+        }
+        assert_eq!(failures, 8);
+        assert_eq!(recoveries, 8);
+        assert_eq!(
+            completed, 19,
+            "3 positive controls + 8 failures + 8 recoveries"
+        );
+        eprintln!("PERF07-A U03 rows={completed} failures={failures} recoveries={recoveries}");
+    }
+    // U04 — lazy corruption through the real projector precedes STORED.
+    #[test]
+    fn perf07a_u04_projection_unselected_corruption_precedes_stored() {
+        let fixture = Fixture::new(&[(0..4).map(document).collect()]);
+        let key_map = p07a_pristine_key_map(&fixture, 0);
+        let pristine = fixture.snapshot.segments()[0].bytes().to_vec();
+        let copied = p07a_copied(&pristine);
+
+        // Independently reconstruct the record offsets from the v1 wire layout.
+        let guard = fixture.snapshot.open_segment_reader(0).expect("guard");
+        let keys = guard.reader().doc_keys().expect("pristine keys");
+        assert_eq!(keys.len(), 4, "four physical records");
+        drop(guard);
+        let body = copied
+            .sections
+            .iter()
+            .find(|(kind, _, _, _)| *kind == crate::segment::SectionKind::DocKeys)
+            .map(|(_, _, _, body)| body.clone())
+            .expect("doc keys body");
+        let mut starts = Vec::new();
+        let mut offset = 10usize;
+        for key in keys.iter() {
+            starts.push(offset);
+            offset += 2 + key.as_str().len();
+        }
+        assert_eq!(starts.len(), 4);
+        assert_eq!(offset, body.len(), "wire length");
+        assert_eq!(keys[3].as_str(), bounded_key(3));
+
+        let mut corrupt = copied;
+        {
+            let body = corrupt.body_mut(crate::segment::SectionKind::DocKeys);
+            body[starts[3] + 2] = 0xff;
+        }
+        let corrupt_bytes = corrupt.rebuild();
+        let wrong = p07a_snapshot(
+            "u04-admitted",
+            &corrupt,
+            corrupt_bytes.clone(),
+            256 * 1024 * 1024,
+        );
+        let zero = p07a_snapshot("u04-zero", &corrupt, corrupt_bytes.clone(), 0);
+        let plan = p07a_plan(&fixture);
+        let id = |index: usize| key_map[&bounded_key(index)];
+        let hit = |doc_id: u64, key_index: usize| p07a_hit(0, doc_id, &bounded_key(key_index));
+
+        let cases: Vec<(&str, &ReaderSnapshot, Vec<SelectedHit>)> = vec![
+            (
+                "admitted-valid-keys",
+                &wrong,
+                vec![hit(id(0), 0), hit(id(1), 1)],
+            ),
+            ("zero-valid-keys", &zero, vec![hit(id(0), 0), hit(id(1), 1)]),
+            (
+                "admitted-mismatch",
+                &wrong,
+                vec![hit(id(0), 2), hit(id(1), 1)],
+            ),
+            ("zero-mismatch", &zero, vec![hit(id(0), 2), hit(id(1), 1)]),
+        ];
+        let mut rows = 0usize;
+        for (label, snapshot, hits) in &cases {
+            let mut ledger = ProjectionLedger::new(1 << 20);
+            p07a_reset();
+            let error = super::project_selected_hits(snapshot, &plan, &mut ledger, hits, None)
+                .expect_err(label);
+            match &error {
+                SearchError::Segment(crate::segment::SegmentError::InvalidUtf8 { context }) => {
+                    assert_eq!(*context, "doc key", "{label}: utf8 context")
+                }
+                other => panic!("{label}: expected lazy corruption, got {other:?}"),
+            }
+            assert_eq!(ledger.used(), 0, "{label}: no admission");
+            assert_eq!(p07a_counts().stored_calls, 0, "{label}: no STORED");
+            assert_eq!(p07a_counts().scans, 1, "{label}: one validating scan");
+            assert_eq!(
+                p07a_counts().scan_rows,
+                3,
+                "{label}: rows before corruption"
+            );
+            assert_eq!(p07a_owned(), 0, "{label}: no owned key");
+            assert_eq!(p07a_counts().full_owned, 0, "{label}: no full keys");
+            assert_eq!(snapshot.reader_copy_used(), 0, "{label}: guard released");
+            let guard = snapshot.open_segment_reader(0).expect("state guard");
+            if snapshot.metadata_used() == 0 {
+                assert!(
+                    !guard.reader().shared_state().has_access_budget(),
+                    "{label}: zero metadata"
+                );
+            } else {
+                assert_eq!(
+                    guard.reader().shared_state().key_offsets_state(),
+                    Some(false),
+                    "{label}: sticky none"
+                );
+            }
+            rows += 1;
+        }
+
+        // A pristine copy of the same logical fixture still projects.
+        let pristine_copied = p07a_copied(&pristine);
+        let control = p07a_snapshot("u04-control", &pristine_copied, pristine, 256 * 1024 * 1024);
+        let mut ledger = ProjectionLedger::new(1 << 20);
+        p07a_reset();
+        let hits = vec![hit(id(0), 0), hit(id(1), 1), hit(id(0), 0)];
+        let out = super::project_selected_hits(&control, &plan, &mut ledger, &hits, None)
+            .expect("control");
+        p07a_check_fields(&out, &[0usize, 1, 0], "control");
+        assert_eq!(p07a_counts().stored_calls, 1);
+        assert_eq!(p07a_counts().full_owned, 0);
+        assert_eq!(control.reader_copy_used(), 0);
+        rows += 1;
+
+        assert_eq!(rows, 5, "four negative cases plus one control");
+        assert_eq!(plan.field_names(), vec!["doc_id", "n"]);
+        eprintln!("PERF07-A U04 rows={rows}");
+    }
+
+    // U05 — physical grouping and per-segment failure ordering.
+    #[test]
+    fn perf07a_u05_projection_multisegment_order_and_limits() {
+        use crate::contract::result::Projection;
+        use crate::segment::reader::perf07a_observation::Counts as P07aCounts;
+
+        let fixture = Fixture::new(&[
+            (0..4).map(document).collect(),
+            (4..8).map(document).collect(),
+        ]);
+        assert_eq!(fixture.snapshot.segment_count(), 2);
+
+        // Discover canonical segment ordinals from the pristine physical keys.
+        let mut lookup: Vec<Option<(usize, u64)>> = vec![None; 8];
+        let mut segment_bytes = Vec::new();
+        let mut segment_copies = Vec::new();
+        for segment in 0..2 {
+            let map = p07a_pristine_key_map(&fixture, segment);
+            for (input, slot) in lookup.iter_mut().enumerate() {
+                if let Some(doc_id) = map.get(&bounded_key(input)) {
+                    assert!(slot.is_none(), "disjoint input ranges");
+                    *slot = Some((segment, *doc_id));
+                }
+            }
+            let bytes = fixture.snapshot.segments()[segment].bytes().to_vec();
+            segment_copies.push(p07a_copied(&bytes));
+            segment_bytes.push(bytes);
+        }
+        assert!(lookup.iter().all(Option::is_some), "partition of 0..8");
+        let seg0_inputs: Vec<usize> = lookup
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.expect("mapped").0 == 0)
+            .map(|(input, _)| input)
+            .collect();
+        let seg1_inputs: Vec<usize> = lookup
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.expect("mapped").0 == 1)
+            .map(|(input, _)| input)
+            .collect();
+        assert_eq!(seg0_inputs.len() + seg1_inputs.len(), 8);
+        let seg0_set: BTreeSet<usize> = seg0_inputs.iter().copied().collect();
+        let first_range: BTreeSet<usize> = (0..4).collect();
+        let second_range: BTreeSet<usize> = (4..8).collect();
+        assert!(
+            seg0_set == first_range || seg0_set == second_range,
+            "segment 0 holds one complete input range: {seg0_inputs:?}"
+        );
+        let seg1_set: BTreeSet<usize> = seg1_inputs.iter().copied().collect();
+        let complement = if seg0_set == first_range {
+            second_range
+        } else {
+            first_range
+        };
+        assert_eq!(
+            seg1_set, complement,
+            "segment 1 holds the disjoint complement"
+        );
+
+        let segments: Vec<(&CopiedSegment, Vec<u8>)> = segment_copies
+            .iter()
+            .zip(segment_bytes.iter())
+            .map(|(copied, bytes)| (copied, bytes.clone()))
+            .collect();
+        let snapshot = p07a_multi_snapshot("u05", &segments, 256 * 1024 * 1024);
+        let plan = p07a_plan(&fixture);
+        let inputs = [7usize, 0, 5, 2, 7];
+        let hits: Vec<SelectedHit> = inputs
+            .iter()
+            .map(|input| {
+                let (segment, doc_id) = lookup[*input].expect("mapped");
+                p07a_hit(segment, doc_id, &bounded_key(*input))
+            })
+            .collect();
+
+        let mut ledger = ProjectionLedger::new(1 << 20);
+        p07a_reset();
+        let out = super::project_selected_hits(&snapshot, &plan, &mut ledger, &hits, None)
+            .expect("first success");
+        let expected = P07aCounts {
+            scans: 2,
+            scan_rows: 8,
+            selection_rows: 5,
+            stored_calls: 2,
+            ..P07aCounts::default()
+        };
+        assert_eq!(p07a_counts(), expected, "two cold segments");
+        assert_eq!(p07a_owned(), 0);
+        p07a_check_fields(&out, &inputs, "multisegment");
+        assert_eq!(snapshot.reader_copy_used(), 0);
+
+        let mut warm_ledger = ProjectionLedger::new(1 << 20);
+        p07a_reset();
+        let warm = super::project_selected_hits(&snapshot, &plan, &mut warm_ledger, &hits, None)
+            .expect("warm success");
+        let expected = P07aCounts {
+            offset_reads: 5,
+            stored_calls: 2,
+            ..P07aCounts::default()
+        };
+        assert_eq!(p07a_counts(), expected, "warm segments");
+        assert_eq!(p07a_owned(), 5);
+        p07a_check_fields(&warm, &inputs, "multisegment warm");
+        assert_eq!(snapshot.reader_copy_used(), 0);
+
+        let empty_plan =
+            ProjectionPlan::compile(&Projection::Fields(vec![]), &fixture.schema).expect("plan");
+
+        // First canonical segment: mismatch before any STORED work.
+        let first_position = inputs
+            .iter()
+            .position(|input| lookup[*input].expect("mapped").0 == 0)
+            .expect("segment 0 selected");
+        let mut wrong_first = hits.clone();
+        wrong_first[first_position].key =
+            DocumentKey::new(bounded_key((inputs[first_position] + 1) % 8)).expect("key");
+        let mut ledger = ProjectionLedger::new(1 << 20);
+        p07a_reset();
+        let error =
+            super::project_selected_hits(&snapshot, &empty_plan, &mut ledger, &wrong_first, None)
+                .expect_err("segment 0 mismatch");
+        assert!(matches!(
+            &error,
+            SearchError::CorruptIndex { detail }
+                if detail == "selected hit key does not match its physical document"
+        ));
+        assert_eq!(p07a_counts().stored_calls, 0);
+        assert_eq!(ledger.used(), 0);
+        assert_eq!(snapshot.reader_copy_used(), 0);
+
+        // Second canonical segment: the earlier group's exact charge survives.
+        let second_position = inputs
+            .iter()
+            .position(|input| lookup[*input].expect("mapped").0 == 1)
+            .expect("segment 1 selected");
+        let mut wrong_second = hits.clone();
+        wrong_second[second_position].key =
+            DocumentKey::new(bounded_key((inputs[second_position] + 1) % 8)).expect("key");
+        let seg0_count = inputs
+            .iter()
+            .filter(|input| lookup[**input].expect("mapped").0 == 0)
+            .count();
+        let mut ledger = ProjectionLedger::new(1 << 20);
+        p07a_reset();
+        let error =
+            super::project_selected_hits(&snapshot, &empty_plan, &mut ledger, &wrong_second, None)
+                .expect_err("segment 1 mismatch");
+        assert!(matches!(
+            &error,
+            SearchError::CorruptIndex { detail }
+                if detail == "selected hit key does not match its physical document"
+        ));
+        assert_eq!(p07a_counts().stored_calls, 1);
+        assert_eq!(ledger.used(), 33 * seg0_count as u64);
+        assert_eq!(snapshot.reader_copy_used(), 0);
+        eprintln!(
+            "PERF07-A U05 rows=4 seg0_inputs={seg0_inputs:?} seg1_inputs={seg1_inputs:?} seg0_count={seg0_count}"
+        );
+    }
+
+    // U06 — exact logical ledger and one-under batch memory.
+    #[test]
+    fn perf07a_u06_projection_exact_and_one_under_batch_memory() {
+        use crate::contract::budget::BudgetKind;
+        use crate::contract::result::Projection;
+
+        let fixture = Fixture::new(&[(0..4).map(document).collect()]);
+        let key_map = p07a_pristine_key_map(&fixture, 0);
+        let pristine = fixture.snapshot.segments()[0].bytes().to_vec();
+        let copied = p07a_copied(&pristine);
+        let snapshot = p07a_snapshot("u06", &copied, pristine, 256 * 1024 * 1024);
+        let plan =
+            ProjectionPlan::compile(&Projection::Fields(vec![]), &fixture.schema).expect("plan");
+        let hits = vec![
+            p07a_hit(0, key_map[&bounded_key(1)], &bounded_key(1)),
+            p07a_hit(0, key_map[&bounded_key(0)], &bounded_key(0)),
+        ];
+        assert_eq!(
+            projected_hit_bytes(&hits[0].key, &[]),
+            33,
+            "24 + nine-byte key"
+        );
+        let mut rows = 0usize;
+
+        // Standalone ledger: exact 66 succeeds, 65 rejects the second position.
+        let mut ledger = ProjectionLedger::new(66);
+        p07a_reset();
+        let out = super::project_selected_hits(&snapshot, &plan, &mut ledger, &hits, None)
+            .expect("standalone exact");
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(Vec::is_empty));
+        assert_eq!(ledger.used(), 66);
+        assert_eq!(p07a_counts().stored_calls, 1);
+        assert_eq!(p07a_counts().full_owned, 0);
+        assert_eq!(snapshot.reader_copy_used(), 0);
+        rows += 1;
+
+        let mut tight = ProjectionLedger::new(65);
+        p07a_reset();
+        match super::project_selected_hits(&snapshot, &plan, &mut tight, &hits, None) {
+            Err(SearchError::ResourceLimit { limit, requested }) => {
+                assert_eq!((limit, requested), (65, 66));
+            }
+            other => panic!("standalone one-under: {other:?}"),
+        }
+        assert_eq!(tight.used(), 33, "first reservation survived");
+        assert_eq!(p07a_counts().stored_calls, 1);
+        assert_eq!(snapshot.reader_copy_used(), 0);
+        rows += 1;
+
+        let mut retry = ProjectionLedger::new(66);
+        p07a_reset();
+        super::project_selected_hits(&snapshot, &plan, &mut retry, &hits, None)
+            .expect("standalone retry");
+        assert_eq!(retry.used(), 66);
+        rows += 1;
+
+        // Batch sink: exact, batch one-under and local one-under.
+        let mut meter = BatchExecutionMeter::new(1_000_000, 66, 1_000_000);
+        let mut ledger = ProjectionLedger::new(1 << 20);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter.memory);
+            let memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            let out = super::project_selected_hits(&snapshot, &plan, &mut ledger, &hits, memory)
+                .expect("batch exact");
+            assert_eq!(out.len(), 2);
+            assert_eq!(scope.temporary_bytes(), 66);
+        }
+        assert_eq!(meter.memory.current(), 0);
+        rows += 1;
+
+        let mut meter = BatchExecutionMeter::new(1_000_000, 65, 1_000_000);
+        let mut ledger = ProjectionLedger::new(1 << 20);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter.memory);
+            let memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            match super::project_selected_hits(&snapshot, &plan, &mut ledger, &hits, memory) {
+                Err(SearchError::Query(QueryError::BudgetExceeded { kind })) => {
+                    assert_eq!(kind, BudgetKind::BatchMemoryBytes);
+                }
+                other => panic!("batch one-under: {other:?}"),
+            }
+            assert_eq!(ledger.used(), 33);
+            assert_eq!(scope.temporary_bytes(), 33);
+        }
+        assert_eq!(meter.memory.current(), 0);
+        rows += 1;
+
+        let mut meter = BatchExecutionMeter::new(1_000_000, 66, 1_000_000);
+        let mut ledger = ProjectionLedger::new(65);
+        {
+            let mut scope = SlotMemoryScope::new(&mut meter.memory);
+            let memory: Option<&mut (dyn MemoryCharge + '_)> = Some(&mut scope);
+            match super::project_selected_hits(&snapshot, &plan, &mut ledger, &hits, memory) {
+                Err(SearchError::ResourceLimit { limit, requested }) => {
+                    assert_eq!((limit, requested), (65, 66));
+                }
+                other => panic!("local one-under: {other:?}"),
+            }
+            assert_eq!(ledger.used(), 33);
+            assert_eq!(scope.temporary_bytes(), 33);
+        }
+        assert_eq!(meter.memory.current(), 0);
+        rows += 1;
+
+        assert_eq!(rows, 6, "six exact boundaries");
+        eprintln!("PERF07-A U06 rows={rows}");
     }
 }
 // C2_TESTS_CLOSE_MARKER

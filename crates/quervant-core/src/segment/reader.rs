@@ -632,6 +632,20 @@ where
         });
     }
     let measured = capacity_bytes::<u64>(offsets.capacity())?;
+    #[cfg(test)]
+    let measured =
+        match perf07a_observation::directory_fault() {
+            perf07a_observation::DirectoryFault::None => measured,
+            perf07a_observation::DirectoryFault::FinalizeRefusal => allowance
+                .checked_add(1)
+                .ok_or(SegmentError::LimitExceeded {
+                    limit: allowance,
+                    requested: u64::MAX,
+                })?,
+            perf07a_observation::DirectoryFault::PanicAfterScan => {
+                panic!("injected PERF-07-A post-scan directory unwind")
+            }
+        };
     let reservation = meter.finalize(measured)?;
     Ok(ValidatedOffsets {
         ends: offsets,
@@ -1550,6 +1564,8 @@ impl SegmentReader {
         &self,
         ascending_unique_ids: &[u64],
     ) -> SegmentResult<Vec<(u64, StoredRecord)>> {
+        #[cfg(test)]
+        perf07a_observation::record_stored_call();
         let cached = self.stored_cache.borrow().as_ref().map(Rc::clone);
         if let Some(records) = cached {
             let mut selected: Vec<(u64, StoredRecord)> = Vec::new();
@@ -1679,6 +1695,124 @@ impl SegmentReader {
             }
         }
         decode_doc_key_selected(self, doc_id)
+    }
+
+    /// PERF-07-A: verify selected physical keys without rebuilding every key.
+    ///
+    /// The argument is an exact-size, cloneable iterator of borrowed expected keys
+    /// in original selection order. A pre-existing full local cache is borrowed; a
+    /// ready validated offset certificate is reused; otherwise exactly one shared
+    /// validating scan compares the selected keys (and may build the certificate in
+    /// that same scan). The function never installs the full key cache and never
+    /// performs one scalar scan per selected position.
+    pub(crate) fn verify_selected_doc_keys<'a, I>(&self, selected: I) -> SegmentResult<bool>
+    where
+        I: Clone + ExactSizeIterator<Item = (u64, &'a DocumentKey)>,
+    {
+        let Some((first_id, _)) = selected.clone().next() else {
+            return Ok(true);
+        };
+        let shared = &self.shared;
+        let large_singleton = selected.len() == 1 && shared.doc_count >= 1024;
+        if !large_singleton && usize::try_from(first_id).is_err() {
+            return Err(selected_key_range_error());
+        }
+
+        // A pre-existing full cache has already validated the body. Borrow, do not
+        // clone its keys or populate/replace any other cache.
+        if let Some(keys) = self.doc_keys_cache.borrow().as_ref() {
+            for (doc_id, expected) in selected {
+                let index = usize::try_from(doc_id).map_err(|_| selected_key_range_error())?;
+                let actual = keys.get(index).ok_or_else(selected_key_range_error)?;
+                #[cfg(test)]
+                perf07a_observation::record_cache_compare();
+                if actual != expected {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+
+        let body = self
+            .body(SectionKind::DocKeys)
+            .ok_or(SegmentError::MissingSection {
+                kind: SectionKind::DocKeys as u16,
+            })?;
+        let early_range = large_singleton.then_some(first_id);
+
+        // Preserve the old scalar early-range error order on invalid large singleton.
+        if large_singleton && first_id >= shared.doc_count {
+            return scan_selected_key_parity(shared, body, selected, early_range, None)?
+                .into_result();
+        }
+
+        if let Some(budget) = &shared.access_budget {
+            if let Some(directory) = shared.key_offsets.get() {
+                if let Some(offsets) = directory {
+                    return verify_keys_at_offsets(body, offsets, shared.doc_count, selected);
+                }
+                return scan_selected_key_parity(shared, body, selected, early_range, None)?
+                    .into_result();
+            }
+
+            // Malformed ordinary private selections cannot initialize a new directory;
+            // preserve complete body validation and original selection error ordering.
+            if selected
+                .clone()
+                .all(|(id, _)| id < shared.doc_count && usize::try_from(id).is_ok())
+            {
+                let mut scan_started = false;
+                let mut scanned = None;
+                let mut build_error = None;
+                let directory = shared.key_offsets.get_or_init(|| {
+                    let built = build_validated_offsets(
+                        body,
+                        shared.doc_count,
+                        &shared.limits,
+                        budget,
+                        |offsets| {
+                            scan_started = true;
+                            let parity = scan_selected_key_parity(
+                                shared,
+                                body,
+                                selected.clone(),
+                                early_range,
+                                Some(offsets),
+                            )?;
+                            scanned = Some(parity);
+                            Ok(())
+                        },
+                    );
+                    match built {
+                        Ok(offsets) => Some(offsets),
+                        Err(error) => {
+                            build_error = Some(error);
+                            None
+                        }
+                    }
+                });
+
+                if let Some(error) = build_error {
+                    match error {
+                        SegmentError::LimitExceeded { .. } if !scan_started => {
+                            // Optional pre-scan capacity refusal: one scan below.
+                        }
+                        SegmentError::LimitExceeded { .. } if scanned.is_some() => {
+                            // Post-scan capacity refusal: use the completed scan.
+                        }
+                        other => return Err(other),
+                    }
+                }
+                if let Some(parity) = scanned {
+                    return parity.into_result();
+                }
+                if let Some(offsets) = directory {
+                    // Another initializer completed, or this is the ready case.
+                    return verify_keys_at_offsets(body, offsets, shared.doc_count, selected);
+                }
+            }
+        }
+        scan_selected_key_parity(shared, body, selected, early_range, None)?.into_result()
     }
 
     /// Whether this query-local reader holds a fully decoded document-key cache.
@@ -2423,6 +2557,8 @@ fn decode_geo_bounds(
 }
 
 fn decode_doc_keys(reader: &SegmentReader) -> SegmentResult<Vec<DocumentKey>> {
+    #[cfg(test)]
+    perf07a_observation::record_full_decode();
     let body = reader
         .body(SectionKind::DocKeys)
         .ok_or(SegmentError::MissingSection {
@@ -2465,6 +2601,8 @@ fn decode_doc_keys(reader: &SegmentReader) -> SegmentResult<Vec<DocumentKey>> {
             detail: "invalid document key".to_owned(),
         })?;
         keys.push(key);
+        #[cfg(test)]
+        perf07a_observation::record_full_owned();
     }
     bytes.expect_end("doc keys")?;
     Ok(keys)
@@ -2488,6 +2626,122 @@ pub(crate) mod test_observation {
 
     pub(crate) fn record_selected_key_owned() {
         SELECTED_KEYS_OWNED.with(|value| value.set(value.get() + 1));
+    }
+}
+
+/// PERF-07-A test-only structural observations of the projection key path.
+///
+/// These counters are compiled out of production builds and are never a
+/// production metric. Tests reset them immediately before the seam under
+/// observation so earlier fixture work cannot contaminate the counts.
+#[cfg(test)]
+pub(crate) mod perf07a_observation {
+    use std::cell::Cell;
+
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(crate) struct Counts {
+        pub(crate) full_decodes: usize,
+        pub(crate) full_owned: usize,
+        pub(crate) scans: usize,
+        pub(crate) scan_rows: usize,
+        pub(crate) offset_reads: usize,
+        pub(crate) cache_compares: usize,
+        pub(crate) selection_rows: usize,
+        pub(crate) stored_calls: usize,
+    }
+
+    thread_local! {
+        static COUNTS: Cell<Counts> = const { Cell::new(Counts {
+            full_decodes: 0,
+            full_owned: 0,
+            scans: 0,
+            scan_rows: 0,
+            offset_reads: 0,
+            cache_compares: 0,
+            selection_rows: 0,
+            stored_calls: 0,
+        }) };
+    }
+
+    fn add(update: impl FnOnce(&mut Counts)) {
+        COUNTS.with(|cell| {
+            let mut counts = cell.get();
+            update(&mut counts);
+            cell.set(counts);
+        });
+    }
+
+    pub(crate) fn reset() {
+        COUNTS.with(|cell| cell.set(Counts::default()));
+    }
+
+    pub(crate) fn counts() -> Counts {
+        COUNTS.with(Cell::get)
+    }
+
+    pub(crate) fn record_full_decode() {
+        add(|counts| counts.full_decodes += 1);
+    }
+
+    pub(crate) fn record_full_owned() {
+        add(|counts| counts.full_owned += 1);
+    }
+
+    pub(crate) fn record_scan() {
+        add(|counts| counts.scans += 1);
+    }
+
+    pub(crate) fn record_scan_row() {
+        add(|counts| counts.scan_rows += 1);
+    }
+
+    pub(crate) fn record_offset_read() {
+        add(|counts| counts.offset_reads += 1);
+    }
+
+    pub(crate) fn record_cache_compare() {
+        add(|counts| counts.cache_compares += 1);
+    }
+
+    pub(crate) fn record_selection_row() {
+        add(|counts| counts.selection_rows += 1);
+    }
+
+    pub(crate) fn record_stored_call() {
+        add(|counts| counts.stored_calls += 1);
+    }
+
+    /// PERF-07-A test-only deterministic fault injection for the measured-capacity
+    /// refusal that is otherwise allocator-dependent.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum DirectoryFault {
+        None,
+        FinalizeRefusal,
+        PanicAfterScan,
+    }
+
+    thread_local! {
+        static DIRECTORY_FAULT: Cell<DirectoryFault> = const { Cell::new(DirectoryFault::None) };
+    }
+
+    pub(crate) fn directory_fault() -> DirectoryFault {
+        DIRECTORY_FAULT.with(Cell::get)
+    }
+
+    /// RAII arm that restores the previous fault value on drop.
+    pub(crate) struct DirectoryFaultGuard {
+        previous: DirectoryFault,
+    }
+
+    impl Drop for DirectoryFaultGuard {
+        fn drop(&mut self) {
+            DIRECTORY_FAULT.with(|cell| cell.set(self.previous));
+        }
+    }
+
+    pub(crate) fn arm_directory_fault(fault: DirectoryFault) -> DirectoryFaultGuard {
+        let previous = DIRECTORY_FAULT.with(|cell| cell.replace(fault));
+        DirectoryFaultGuard { previous }
     }
 }
 
@@ -2548,8 +2802,142 @@ fn decode_doc_key_at_validated_offset(
     })?;
     bytes.expect_end("doc keys")?;
     #[cfg(test)]
-    test_observation::record_selected_key_owned();
+    {
+        test_observation::record_selected_key_owned();
+        perf07a_observation::record_offset_read();
+    }
     Ok(key)
+}
+
+/// Verify selected expected keys against already-validated offsets.
+///
+/// The offset certificate guarantees the whole body was validated, so each range
+/// and parity result is authoritative in original selection order. At most one
+/// temporary decoded key is alive at any instant.
+fn verify_keys_at_offsets<'a, I>(
+    body: &[u8],
+    offsets: &ValidatedOffsets,
+    count: u64,
+    selected: I,
+) -> SegmentResult<bool>
+where
+    I: Iterator<Item = (u64, &'a DocumentKey)>,
+{
+    for (doc_id, expected) in selected {
+        if doc_id >= count || usize::try_from(doc_id).is_err() {
+            return Err(selected_key_range_error());
+        }
+        let actual = decode_doc_key_at_validated_offset(body, offsets, doc_id)?;
+        if &actual != expected {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn selected_key_range_error() -> SegmentError {
+    SegmentError::Corrupt {
+        context: "doc keys",
+        detail: "doc id out of range".to_owned(),
+    }
+}
+
+/// The request-local outcome of comparing selected expected keys to the body.
+///
+/// A `Mismatch` is a successful validation of well-formed bytes; it is never a
+/// codec error and never suppresses a complete offset certificate.
+#[derive(Clone, Copy)]
+enum KeyParity {
+    Match,
+    Mismatch,
+    OutOfRange,
+}
+
+impl KeyParity {
+    fn into_result(self) -> SegmentResult<bool> {
+        match self {
+            Self::Match => Ok(true),
+            Self::Mismatch => Ok(false),
+            Self::OutOfRange => Err(selected_key_range_error()),
+        }
+    }
+}
+
+fn remember_first_key_failure(
+    failure: &mut Option<(usize, KeyParity)>,
+    ordinal: usize,
+    parity: KeyParity,
+) {
+    if failure
+        .as_ref()
+        .is_none_or(|(previous, _)| ordinal < *previous)
+    {
+        *failure = Some((ordinal, parity));
+    }
+}
+
+/// Compare selected expected keys during one complete validating body scan.
+///
+/// Scratch is bounded by the already-selected positions, not by the section's
+/// declared count. Each selected row borrows its expected key; no unselected key
+/// is materialized and no expected key is cloned. The scanner validates the whole
+/// body before this returns, so a late malformed row or trailing byte wins over an
+/// earlier selected-key mismatch.
+fn scan_selected_key_parity<'a, I>(
+    shared: &VerifiedSegmentState,
+    body: &[u8],
+    selected: I,
+    early_range: Option<u64>,
+    offsets: Option<&mut Vec<u64>>,
+) -> SegmentResult<KeyParity>
+where
+    I: ExactSizeIterator<Item = (u64, &'a DocumentKey)>,
+{
+    let selected_len = selected.len();
+    let mut rows: Vec<(u64, usize, &DocumentKey)> = Vec::new();
+    rows.try_reserve_exact(selected_len)
+        .map_err(|_| SegmentError::LimitExceeded {
+            limit: shared.limits.max_single_allocation(),
+            requested: u64::try_from(selected_len).unwrap_or(u64::MAX),
+        })?;
+    let mut failure = None;
+    for (ordinal, (doc_id, expected)) in selected.enumerate() {
+        if doc_id >= shared.doc_count || usize::try_from(doc_id).is_err() {
+            remember_first_key_failure(&mut failure, ordinal, KeyParity::OutOfRange);
+        } else {
+            rows.push((doc_id, ordinal, expected));
+            #[cfg(test)]
+            perf07a_observation::record_selection_row();
+        }
+    }
+    rows.sort_unstable_by_key(|row| (row.0, row.1));
+    let mut next = 0usize;
+    let _ = scan_doc_keys_with(
+        body,
+        shared.doc_count,
+        &shared.limits,
+        None,
+        early_range,
+        offsets,
+        |physical, actual| {
+            while let Some((doc_id, ordinal, expected)) = rows.get(next) {
+                if *doc_id != physical {
+                    break;
+                }
+                if actual != expected.as_str() {
+                    remember_first_key_failure(&mut failure, *ordinal, KeyParity::Mismatch);
+                }
+                next += 1;
+            }
+        },
+    )?;
+    if next != rows.len() {
+        return Err(SegmentError::Corrupt {
+            context: "doc keys",
+            detail: "selected document key was not decoded".to_owned(),
+        });
+    }
+    Ok(failure.map_or(KeyParity::Match, |(_, parity)| parity))
 }
 
 /// Shared DOC_KEYS scanning body for validation capture and selection.
@@ -2562,8 +2950,33 @@ fn scan_doc_keys(
     expected_count: u64,
     limits: &SegmentLimits,
     selected_doc_id: Option<u64>,
-    mut offsets: Option<&mut Vec<u64>>,
+    offsets: Option<&mut Vec<u64>>,
 ) -> SegmentResult<Option<DocumentKey>> {
+    scan_doc_keys_with(
+        body,
+        expected_count,
+        limits,
+        selected_doc_id,
+        selected_doc_id,
+        offsets,
+        |_, _| {},
+    )
+}
+
+fn scan_doc_keys_with<F>(
+    body: &[u8],
+    expected_count: u64,
+    limits: &SegmentLimits,
+    selected_doc_id: Option<u64>,
+    early_range: Option<u64>,
+    mut offsets: Option<&mut Vec<u64>>,
+    mut on_valid_key: F,
+) -> SegmentResult<Option<DocumentKey>>
+where
+    F: FnMut(u64, &str),
+{
+    #[cfg(test)]
+    perf07a_observation::record_scan();
     let mut bytes = ByteReader::new(body);
     let version = bytes.u16("doc keys version")?;
     if version != 1 {
@@ -2588,7 +3001,7 @@ fn scan_doc_keys(
     })?;
     // Minimum entry: a 2-byte length prefix plus at least one key byte.
     super::format::count_min_bytes("doc keys", count, 3, bytes.remaining() as u64)?;
-    if let Some(selected_doc_id) = selected_doc_id {
+    if let Some(selected_doc_id) = early_range {
         if selected_doc_id >= count {
             return Err(SegmentError::Corrupt {
                 context: "doc keys",
@@ -2630,6 +3043,9 @@ fn scan_doc_keys(
                 });
             }
         }
+        #[cfg(test)]
+        perf07a_observation::record_scan_row();
+        on_valid_key(physical_doc_id, key_ref);
     }
     if let Some(offsets) = offsets.as_mut() {
         let offsets = &mut **offsets;
@@ -4254,6 +4670,1126 @@ mod column_geometry_tests {
         );
         assert_eq!(reader.shared_state().key_offsets_state(), Some(false));
         assert!(reader.doc_key_selected(0).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // PERF-07-A — selected physical-key verification.
+    // -----------------------------------------------------------------------
+
+    use crate::segment::reader::perf07a_observation::{self, Counts, DirectoryFault};
+
+    /// An admitted verified state with ample headroom for lazy directories.
+    fn headroom_state(bytes: Vec<u8>) -> (Arc<VerifiedSegmentState>, Arc<MetadataBudget>) {
+        let budget = MetadataBudget::new(256 * 1024 * 1024);
+        let state =
+            VerifiedSegmentState::build_cached(Arc::new(bytes), SegmentLimits::default(), &budget)
+                .expect("candidate")
+                .expect("admitted");
+        (state, budget)
+    }
+
+    /// Owned expected rows in pristine physical order.
+    fn keys_for(literals: &[&str]) -> Vec<(u64, DocumentKey)> {
+        literals
+            .iter()
+            .enumerate()
+            .map(|(id, key)| (id as u64, DocumentKey::new(*key).expect("key")))
+            .collect()
+    }
+
+    /// Borrow the expected keys for exactly one verification call.
+    fn verify(reader: &SegmentReader, rows: &[(u64, DocumentKey)]) -> SegmentResult<bool> {
+        reader.verify_selected_doc_keys(rows.iter().map(|(id, key)| (*id, key)))
+    }
+
+    fn reset_perf07a() {
+        perf07a_observation::reset();
+        test_observation::reset();
+    }
+
+    fn assert_counts(actual: Counts, expected: Counts, label: &str) {
+        assert_eq!(actual, expected, "{label}: observation counts");
+    }
+
+    fn error_debug(error: &SegmentError) -> String {
+        format!("{error:?}")
+    }
+
+    /// One row of the R07 selected-order table.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum P07aExpect {
+        Ok(bool),
+        Range,
+    }
+
+    fn check_typed(outcome: SegmentResult<bool>, expected: P07aExpect, label: &str) {
+        match (outcome, expected) {
+            (Ok(actual), P07aExpect::Ok(want)) => assert_eq!(actual, want, "{label}: parity"),
+            (Err(SegmentError::Corrupt { context, detail }), P07aExpect::Range) => {
+                assert_eq!(context, "doc keys", "{label}: range context");
+                assert_eq!(detail, "doc id out of range", "{label}: range detail");
+            }
+            (actual, expected) => panic!("{label}: expected {expected:?}, got {actual:?}"),
+        }
+    }
+
+    fn pair(base: &[(u64, DocumentKey)], id: u64, key_index: usize) -> (u64, DocumentKey) {
+        (id, base[key_index].1.clone())
+    }
+
+    // R01 — prepared offsets, reordered/duplicate UTF-8 keys, full-cache control.
+    #[test]
+    fn perf07a_r01_prepared_reordered_duplicate_utf8() {
+        let long = "x".repeat(1024);
+        let literals = ["d10", "d2", "é", "e\u{301}", long.as_str(), "z"];
+        let base = keys_for(&literals);
+        let ids = [4u64, 1, 3, 0, 4, 2];
+        let selection: Vec<(u64, DocumentKey)> = ids
+            .iter()
+            .map(|id| (*id, base[*id as usize].1.clone()))
+            .collect();
+
+        let (state, budget) = headroom_state(build_with_docs(
+            literals.iter().map(|key| doc(key)).collect(),
+        ));
+        let before = state.access_budget_used().expect("used");
+        {
+            let reader = SegmentReader::from_shared(Arc::clone(&state));
+            assert_eq!(reader.doc_key_selected(0).expect("prime"), base[0].1);
+        }
+        assert_eq!(state.key_offsets_state(), Some(true));
+        let pointer = state.key_offsets_ptr().expect("pointer");
+        let charge = lazy_directory_allowance(&SegmentReader::from_shared(Arc::clone(&state)));
+        assert_eq!(charge, 7 * 8, "N+1 u64 positions");
+        let used = state.access_budget_used().expect("used");
+        assert_eq!(used, before + charge, "exact retained directory charge");
+
+        let mut rows_done = 0usize;
+        for label in ["prepared-a", "prepared-b"] {
+            let reader = SegmentReader::from_shared(Arc::clone(&state));
+            assert!(!reader.doc_keys_cache_is_populated());
+            reset_perf07a();
+            assert!(verify(&reader, &selection).expect("verify"), "{label}");
+            let expected = Counts {
+                offset_reads: 6,
+                ..Counts::default()
+            };
+            assert_counts(perf07a_observation::counts(), expected, label);
+            assert_eq!(test_observation::selected_keys_owned(), 6, "{label}");
+            assert!(!reader.doc_keys_cache_is_populated(), "{label}");
+            assert_eq!(state.key_offsets_ptr(), Some(pointer), "{label}");
+            assert_eq!(state.access_budget_used(), Some(used), "{label}");
+            rows_done += 1;
+        }
+
+        // A pre-existing full local cache is borrowed, never replaced.
+        let (cache_state, cache_budget) = headroom_state(build_with_docs(
+            literals.iter().map(|key| doc(key)).collect(),
+        ));
+        let cache_reader = SegmentReader::from_shared(Arc::clone(&cache_state));
+        let full = cache_reader.doc_keys().expect("full cache");
+        assert_eq!(full.len(), 6);
+        assert_eq!(cache_state.key_offsets_state(), None);
+        let cache_used = cache_state.access_budget_used().expect("used");
+        reset_perf07a();
+        assert!(verify(&cache_reader, &selection).expect("verify cache"));
+        let expected = Counts {
+            cache_compares: 6,
+            ..Counts::default()
+        };
+        assert_counts(perf07a_observation::counts(), expected, "full cache");
+        assert_eq!(test_observation::selected_keys_owned(), 0);
+        assert_eq!(cache_state.key_offsets_state(), None, "directory untouched");
+        assert_eq!(cache_state.access_budget_used(), Some(cache_used));
+        rows_done += 1;
+
+        assert_eq!(
+            rows_done, 3,
+            "two prepared calls plus the full-cache control"
+        );
+        eprintln!("PERF07-A R01 rows={rows_done}");
+        drop(cache_reader);
+        drop(cache_state);
+        drop(cache_budget);
+        drop(state);
+        drop(budget);
+    }
+
+    // R02 — first-use single scan, warm reuse and mismatch publication.
+    #[test]
+    fn perf07a_r02_first_use_single_scan_and_warm_reuse() {
+        let literals = ["k0", "k1", "k2", "k3"];
+        let base = keys_for(&literals);
+        let selection = vec![pair(&base, 3, 3), pair(&base, 0, 0), pair(&base, 3, 3)];
+
+        let (state, budget) =
+            headroom_state(build_with_docs(literals.iter().map(|k| doc(k)).collect()));
+        assert_eq!(state.key_offsets_state(), None);
+        let before = state.access_budget_used().expect("used");
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        reset_perf07a();
+        assert!(verify(&reader, &selection).expect("first"));
+        let expected = Counts {
+            scans: 1,
+            scan_rows: 4,
+            selection_rows: 3,
+            ..Counts::default()
+        };
+        assert_counts(perf07a_observation::counts(), expected, "first use");
+        assert_eq!(test_observation::selected_keys_owned(), 0);
+        assert_eq!(state.key_offsets_state(), Some(true));
+        let pointer = state.key_offsets_ptr().expect("pointer");
+        assert_eq!(state.access_budget_used(), Some(before + 40));
+        assert!(!reader.doc_keys_cache_is_populated());
+
+        let warm = SegmentReader::from_shared(Arc::clone(&state));
+        reset_perf07a();
+        assert!(verify(&warm, &selection).expect("warm"));
+        let expected = Counts {
+            offset_reads: 3,
+            ..Counts::default()
+        };
+        assert_counts(perf07a_observation::counts(), expected, "warm reuse");
+        assert_eq!(test_observation::selected_keys_owned(), 3);
+        assert_eq!(state.key_offsets_ptr(), Some(pointer));
+        assert_eq!(state.access_budget_used(), Some(before + 40));
+
+        let (mismatch_state, mismatch_budget) =
+            headroom_state(build_with_docs(literals.iter().map(|k| doc(k)).collect()));
+        let mut mismatch = selection.clone();
+        mismatch[0].1 = base[1].1.clone();
+        let mismatch_reader = SegmentReader::from_shared(Arc::clone(&mismatch_state));
+        let mismatch_before = mismatch_state.access_budget_used().expect("used");
+        reset_perf07a();
+        assert!(!verify(&mismatch_reader, &mismatch).expect("mismatch"));
+        let expected = Counts {
+            scans: 1,
+            scan_rows: 4,
+            selection_rows: 3,
+            ..Counts::default()
+        };
+        assert_counts(perf07a_observation::counts(), expected, "mismatch cold");
+        assert_eq!(mismatch_state.key_offsets_state(), Some(true));
+        assert_eq!(
+            mismatch_state.access_budget_used(),
+            Some(mismatch_before + 40)
+        );
+
+        let correct = SegmentReader::from_shared(Arc::clone(&mismatch_state));
+        reset_perf07a();
+        assert!(verify(&correct, &selection).expect("correct after mismatch"));
+        let expected = Counts {
+            offset_reads: 3,
+            ..Counts::default()
+        };
+        assert_counts(perf07a_observation::counts(), expected, "correct direct");
+
+        drop(reader);
+        drop(warm);
+        drop(mismatch_reader);
+        drop(correct);
+        drop(state);
+        drop(mismatch_state);
+        assert_eq!(budget.used(), 0);
+        assert_eq!(mismatch_budget.used(), 0);
+        eprintln!("PERF07-A R02 rows=4");
+    }
+
+    // R03 — unmetered reader and a real one-under optional refusal.
+    #[test]
+    fn perf07a_r03_unmetered_and_real_optional_refusal() {
+        let literals = ["k0", "k1", "k2", "k3"];
+        let base = keys_for(&literals);
+        let selection = vec![pair(&base, 3, 3), pair(&base, 0, 0), pair(&base, 3, 3)];
+
+        let unmetered = SegmentReader::open(
+            build_with_docs(literals.iter().map(|k| doc(k)).collect()),
+            SegmentLimits::default(),
+        )
+        .expect("unmetered");
+        assert!(!unmetered.shared_state().has_access_budget());
+        for label in ["unmetered-a", "unmetered-b"] {
+            reset_perf07a();
+            assert!(verify(&unmetered, &selection).expect(label));
+            let expected = Counts {
+                scans: 1,
+                scan_rows: 4,
+                selection_rows: 3,
+                ..Counts::default()
+            };
+            assert_counts(perf07a_observation::counts(), expected, label);
+            assert_eq!(test_observation::selected_keys_owned(), 0, "{label}");
+            assert_eq!(unmetered.shared_state().key_offsets_state(), None);
+        }
+
+        let (state, budget) =
+            headroom_state(build_with_docs(literals.iter().map(|k| doc(k)).collect()));
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        let dir = lazy_directory_allowance(&reader);
+        assert_eq!(dir, 40);
+        let (pressure, before) = pressure_for(&state, &budget, dir - 1);
+        assert_eq!(budget.limit() - before, 39, "39 bytes remain free");
+        reset_perf07a();
+        assert!(verify(&reader, &selection).expect("refusal fallback"));
+        let expected = Counts {
+            scans: 1,
+            scan_rows: 4,
+            selection_rows: 3,
+            ..Counts::default()
+        };
+        assert_counts(perf07a_observation::counts(), expected, "one-under refusal");
+        assert_eq!(state.key_offsets_state(), Some(false));
+        assert_eq!(
+            state.access_budget_used(),
+            Some(before),
+            "no extra retained bytes"
+        );
+
+        drop(pressure);
+        let sticky = SegmentReader::from_shared(Arc::clone(&state));
+        let sticky_before = state.access_budget_used().expect("used");
+        reset_perf07a();
+        assert!(verify(&sticky, &selection).expect("sticky"));
+        let expected = Counts {
+            scans: 1,
+            scan_rows: 4,
+            selection_rows: 3,
+            ..Counts::default()
+        };
+        assert_counts(perf07a_observation::counts(), expected, "sticky none");
+        assert_eq!(state.key_offsets_state(), Some(false));
+        assert_eq!(state.access_budget_used(), Some(sticky_before));
+
+        drop(unmetered);
+        drop(reader);
+        drop(sticky);
+        drop(state);
+        assert_eq!(budget.used(), 0);
+        eprintln!("PERF07-A R03 rows=4");
+    }
+
+    // R04 — exact metadata admission and independent owners.
+    #[test]
+    fn perf07a_r04_exact_metadata_and_independent_owners() {
+        fn send_sync<T: Send + Sync>() {}
+
+        let literals = ["k0", "k1", "k2", "k3"];
+        let base = keys_for(&literals);
+        let selection = vec![pair(&base, 3, 3), pair(&base, 0, 0), pair(&base, 3, 3)];
+        let bytes = build_with_docs(literals.iter().map(|k| doc(k)).collect());
+
+        let (state1, budget1) = headroom_state(bytes.clone());
+        let reader1 = SegmentReader::from_shared(Arc::clone(&state1));
+        let dir = lazy_directory_allowance(&reader1);
+        let (pressure1, before1) = pressure_for(&state1, &budget1, dir);
+        assert_eq!(budget1.limit() - before1, dir, "exactly the directory fits");
+        reset_perf07a();
+        assert!(verify(&reader1, &selection).expect("exact admit"));
+        let expected = Counts {
+            scans: 1,
+            scan_rows: 4,
+            selection_rows: 3,
+            ..Counts::default()
+        };
+        assert_counts(perf07a_observation::counts(), expected, "exact admit");
+        assert_eq!(state1.key_offsets_state(), Some(true));
+        let pointer1 = state1.key_offsets_ptr().expect("ptr1");
+        assert_eq!(state1.access_budget_used(), Some(before1 + dir));
+
+        let warm1 = SegmentReader::from_shared(Arc::clone(&state1));
+        reset_perf07a();
+        assert!(verify(&warm1, &selection).expect("warm exact"));
+        let expected = Counts {
+            offset_reads: 3,
+            ..Counts::default()
+        };
+        assert_counts(perf07a_observation::counts(), expected, "warm exact");
+        assert_eq!(state1.access_budget_used(), Some(before1 + dir));
+
+        let (state2, budget2) = headroom_state(bytes);
+        let reader2 = SegmentReader::from_shared(Arc::clone(&state2));
+        let before2 = state2.access_budget_used().expect("used");
+        reset_perf07a();
+        assert!(verify(&reader2, &selection).expect("independent"));
+        let expected = Counts {
+            scans: 1,
+            scan_rows: 4,
+            selection_rows: 3,
+            ..Counts::default()
+        };
+        assert_counts(perf07a_observation::counts(), expected, "independent");
+        let pointer2 = state2.key_offsets_ptr().expect("ptr2");
+        assert_ne!(pointer1, pointer2, "independent owners");
+        assert_eq!(state2.access_budget_used(), Some(before2 + dir));
+
+        send_sync::<ValidatedOffsets>();
+        send_sync::<OnceLock<Option<ValidatedOffsets>>>();
+
+        drop(state1);
+        assert!(budget1.used() > 0, "directory still accounted");
+        drop(warm1);
+        drop(reader1);
+        drop(pressure1);
+        assert_eq!(budget1.used(), 0);
+        assert!(budget2.used() > 0, "second owner unaffected");
+        drop(reader2);
+        drop(state2);
+        assert_eq!(budget2.used(), 0);
+        eprintln!("PERF07-A R04 rows=3 states=2");
+    }
+
+    // R05 — post-scan measured-capacity refusal reuses the completed scan.
+    #[test]
+    fn perf07a_r05_post_scan_finalize_refusal_no_rescan() {
+        let literals = ["k0", "k1", "k2", "k3"];
+        let base = keys_for(&literals);
+        let selection = vec![pair(&base, 3, 3), pair(&base, 0, 0), pair(&base, 3, 3)];
+        let mut wrong = selection.clone();
+        wrong[0].1 = base[1].1.clone();
+        let mut rows_done = 0usize;
+
+        for (label, rows, expected_parity) in [
+            ("match", selection.as_slice(), true),
+            ("mismatch", wrong.as_slice(), false),
+        ] {
+            let (state, budget) =
+                headroom_state(build_with_docs(literals.iter().map(|k| doc(k)).collect()));
+            let before = state.access_budget_used().expect("used");
+            assert_eq!(
+                state.key_offsets_state(),
+                None,
+                "{label}: initial empty cell"
+            );
+            assert!(
+                state.key_offsets_ptr().is_none(),
+                "{label}: initial no pointer"
+            );
+            let reader = SegmentReader::from_shared(Arc::clone(&state));
+            assert!(
+                !reader.doc_keys_cache_is_populated(),
+                "{label}: no initial full cache"
+            );
+            reset_perf07a();
+            let guard = perf07a_observation::arm_directory_fault(DirectoryFault::FinalizeRefusal);
+            let outcome = verify(&reader, rows).expect("injected refusal");
+            drop(guard);
+            assert_eq!(outcome, expected_parity, "{label}: private parity survives");
+            let expected = Counts {
+                scans: 1,
+                scan_rows: 4,
+                selection_rows: 3,
+                ..Counts::default()
+            };
+            assert_counts(
+                perf07a_observation::counts(),
+                expected,
+                &format!("{label} refusal"),
+            );
+            assert_eq!(test_observation::selected_keys_owned(), 0);
+            assert_eq!(
+                state.key_offsets_state(),
+                Some(false),
+                "{label}: sticky none"
+            );
+            assert!(
+                state.key_offsets_ptr().is_none(),
+                "{label}: no pointer after refusal"
+            );
+            assert_eq!(
+                state.access_budget_used(),
+                Some(before),
+                "{label}: no delta"
+            );
+            assert!(!reader.doc_keys_cache_is_populated());
+            rows_done += 1;
+
+            let retry = SegmentReader::from_shared(Arc::clone(&state));
+            assert_eq!(perf07a_observation::directory_fault(), DirectoryFault::None);
+            assert_eq!(state.key_offsets_state(), Some(false));
+            assert!(state.key_offsets_ptr().is_none());
+            reset_perf07a();
+            let again = verify(&retry, &selection).expect("sticky correct recovery");
+            assert!(
+                again,
+                "{label}: corrected request must succeed on the same owner"
+            );
+            assert_counts(
+                perf07a_observation::counts(),
+                Counts {
+                    scans: 1,
+                    scan_rows: 4,
+                    selection_rows: 3,
+                    ..Counts::default()
+                },
+                &format!("{label} sticky correct recovery"),
+            );
+            assert_eq!(test_observation::selected_keys_owned(), 0);
+            assert_eq!(
+                state.key_offsets_state(),
+                Some(false),
+                "{label}: still none"
+            );
+            assert!(state.key_offsets_ptr().is_none());
+            assert_eq!(state.access_budget_used(), Some(before));
+            assert!(!retry.doc_keys_cache_is_populated());
+            rows_done += 1;
+            drop(reader);
+            drop(retry);
+            drop(state);
+            assert_eq!(budget.used(), 0, "{label}: budget released");
+            eprintln!("PERF07-A R05 INJECTED_POST_SCAN_MEASUREMENT label={label} rows=2");
+            eprintln!(
+                "PERF07-A F1 R05 case={label} injected_parity={expected_parity} corrected_parity=true scan_rows=4/4 sticky_none=true rows=2"
+            );
+        }
+        assert_eq!(rows_done, 4);
+        eprintln!("PERF07-A R05 rows={rows_done}");
+    }
+
+    // R06 — unselected corruption, full validation and sticky-None matrix.
+    #[test]
+    fn perf07a_r06_corrupt_unselected_full_validation_matrix() {
+        let literals = ["k0", "k1", "k2", "k3"];
+        let base = keys_for(&literals);
+        let selection = vec![pair(&base, 0, 0), pair(&base, 1, 1)];
+        let mismatch_selection = vec![pair(&base, 0, 2), pair(&base, 1, 1)];
+        let pristine = build_with_docs(literals.iter().map(|k| doc(k)).collect());
+
+        let invalid_utf8 = || SegmentError::InvalidUtf8 { context: "doc key" };
+        let invalid_key = || SegmentError::Corrupt {
+            context: "doc key",
+            detail: "invalid document key".to_owned(),
+        };
+        let version_9 = SegmentError::Corrupt {
+            context: "doc keys version",
+            detail: "unsupported 9".to_owned(),
+        };
+        let count_mismatch = SegmentError::Corrupt {
+            context: "doc keys",
+            detail: "doc key count does not match segment doc_count".to_owned(),
+        };
+        let truncated_min = SegmentError::Truncated {
+            context: "doc keys",
+            needed: 12,
+            available: 1,
+        };
+        let truncated_prefix = SegmentError::Truncated {
+            context: "doc key",
+            needed: 255,
+            available: 2,
+        };
+        let trailing = SegmentError::Corrupt {
+            context: "doc keys",
+            detail: "1 trailing bytes".to_owned(),
+        };
+        let long = vec![b'a'; 1025];
+
+        let cases: Vec<(&str, Vec<u8>, SegmentError, usize)> = vec![
+            (
+                "C1-invalid-utf8",
+                rebuild_section(&pristine, SectionKind::DocKeys, |body| {
+                    assert_eq!(&body[22..24], &[2u8, 0u8][..], "final length prefix");
+                    body[24] = 0xff;
+                    body[25] = 0xff;
+                }),
+                invalid_utf8(),
+                3,
+            ),
+            (
+                "C2-empty-final-key",
+                rebuild_section(&pristine, SectionKind::DocKeys, |body| {
+                    *body = key_body(&[b"k0", b"k1", b"k2", b""]);
+                }),
+                invalid_key(),
+                3,
+            ),
+            (
+                "C3-oversized-final-key",
+                rebuild_section(&pristine, SectionKind::DocKeys, |body| {
+                    *body = key_body(&[b"k0", b"k1", b"k2", &long]);
+                }),
+                invalid_key(),
+                3,
+            ),
+            (
+                "C4-version-9",
+                rebuild_section(&pristine, SectionKind::DocKeys, |body| {
+                    body[0..2].copy_from_slice(&9u16.to_le_bytes());
+                }),
+                version_9,
+                0,
+            ),
+            (
+                "C5-count-3",
+                rebuild_section(&pristine, SectionKind::DocKeys, |body| {
+                    assert_eq!(&body[2..10], &4u64.to_le_bytes()[..], "declared count");
+                    body[2..10].copy_from_slice(&3u64.to_le_bytes());
+                }),
+                count_mismatch,
+                0,
+            ),
+            (
+                "C6-truncated-header",
+                rebuild_section(&pristine, SectionKind::DocKeys, |body| body.truncate(11)),
+                truncated_min,
+                0,
+            ),
+            (
+                "C7-length-255",
+                rebuild_section(&pristine, SectionKind::DocKeys, |body| {
+                    assert_eq!(&body[22..24], &[2u8, 0u8][..], "final length prefix");
+                    body[22..24].copy_from_slice(&255u16.to_le_bytes());
+                }),
+                truncated_prefix,
+                3,
+            ),
+            (
+                "C8-trailing-byte",
+                rebuild_section(&pristine, SectionKind::DocKeys, |body| body.push(0)),
+                trailing,
+                4,
+            ),
+        ];
+
+        let mut calls = 0usize;
+        for (label, bytes, expected, scan_rows) in &cases {
+            SegmentReader::open(bytes.clone(), SegmentLimits::default()).expect("opens");
+
+            let unmetered =
+                SegmentReader::open(bytes.clone(), SegmentLimits::default()).expect("opens");
+            reset_perf07a();
+            let error = verify(&unmetered, &selection).expect_err(label);
+            assert_eq!(
+                error_debug(&error),
+                error_debug(expected),
+                "{label}: unmetered"
+            );
+            let counts = Counts {
+                scans: 1,
+                scan_rows: *scan_rows,
+                selection_rows: 2,
+                ..Counts::default()
+            };
+            assert_counts(perf07a_observation::counts(), counts, label);
+            assert_eq!(test_observation::selected_keys_owned(), 0, "{label}");
+            calls += 1;
+
+            let oracle =
+                SegmentReader::open(bytes.clone(), SegmentLimits::default()).expect("opens");
+            let oracle_error = oracle.doc_keys().expect_err("oracle");
+            assert_eq!(
+                error_debug(&oracle_error),
+                error_debug(expected),
+                "{label}: full decoder oracle"
+            );
+
+            let (state, budget) = headroom_state(bytes.clone());
+            let reader = SegmentReader::from_shared(Arc::clone(&state));
+            reset_perf07a();
+            let error = verify(&reader, &selection).expect_err(label);
+            assert_eq!(
+                error_debug(&error),
+                error_debug(expected),
+                "{label}: admitted"
+            );
+            let counts = Counts {
+                scans: 1,
+                scan_rows: *scan_rows,
+                selection_rows: 2,
+                ..Counts::default()
+            };
+            assert_counts(perf07a_observation::counts(), counts, label);
+            assert_eq!(test_observation::selected_keys_owned(), 0, "{label}");
+            assert_eq!(
+                state.key_offsets_state(),
+                Some(false),
+                "{label}: sticky none"
+            );
+            calls += 1;
+            drop(reader);
+            drop(state);
+            drop(budget);
+        }
+
+        // C1 mismatch selection: the late malformed unselected key still wins.
+        let c1 = &cases[0].1;
+        let (state, budget) = headroom_state(c1.clone());
+        let admitted = SegmentReader::from_shared(Arc::clone(&state));
+        reset_perf07a();
+        let error = verify(&admitted, &mismatch_selection).expect_err("C1 mismatch admitted");
+        assert_eq!(error_debug(&error), error_debug(&invalid_utf8()));
+        calls += 1;
+        let unmetered = SegmentReader::open(c1.clone(), SegmentLimits::default()).expect("open");
+        reset_perf07a();
+        let error = verify(&unmetered, &mismatch_selection).expect_err("C1 mismatch unmetered");
+        assert_eq!(error_debug(&error), error_debug(&invalid_utf8()));
+        calls += 1;
+
+        // Sticky None is never trust: one repeat validates the same bytes again.
+        let repeat = SegmentReader::from_shared(Arc::clone(&state));
+        reset_perf07a();
+        let error = verify(&repeat, &selection).expect_err("C1 sticky repeat");
+        assert_eq!(error_debug(&error), error_debug(&invalid_utf8()));
+        assert_eq!(state.key_offsets_state(), Some(false));
+        calls += 1;
+
+        // Direct bounded-body count-limit semantics.
+        let body = key_body(&[b"k0", b"k1", b"k2", b"k3"]);
+        let limits = SegmentLimits::default().with_max_decoded_entries(3);
+        let called = std::cell::Cell::new(false);
+        let result =
+            super::scan_doc_keys_with(&body, 4, &limits, None, None, None, |_, _| called.set(true));
+        match result {
+            Err(SegmentError::LimitExceeded { limit, requested }) => {
+                assert_eq!((limit, requested), (3, 4), "count-limit payload");
+            }
+            other => panic!("count-limit: unexpected {other:?}"),
+        }
+        assert!(!called.get(), "callback never runs for a rejected count");
+        calls += 1;
+
+        assert_eq!(calls, 20, "R06 acceptance calls");
+        eprintln!("PERF07-A R06 rows={calls}");
+        drop(admitted);
+        drop(repeat);
+        drop(state);
+        drop(budget);
+    }
+
+    // R07 — selection-order error precedence and singleton boundaries.
+    #[test]
+    fn perf07a_r07_selection_order_and_singleton_boundary() {
+        let literals = ["k0", "k1", "k2", "k3"];
+        let base = keys_for(&literals);
+        let bytes = build_with_docs(literals.iter().map(|k| doc(k)).collect());
+
+        type P07aRow = (&'static str, Vec<(u64, DocumentKey)>, P07aExpect, usize);
+        let table: Vec<P07aRow> = vec![
+            ("S0", Vec::new(), P07aExpect::Ok(true), 0),
+            (
+                "S1",
+                vec![pair(&base, 3, 3), pair(&base, 0, 0), pair(&base, 3, 3)],
+                P07aExpect::Ok(true),
+                3,
+            ),
+            (
+                "S2",
+                vec![pair(&base, 3, 3), pair(&base, 3, 1)],
+                P07aExpect::Ok(false),
+                2,
+            ),
+            (
+                "S3",
+                vec![pair(&base, 0, 1), pair(&base, 9, 2)],
+                P07aExpect::Ok(false),
+                1,
+            ),
+            (
+                "S4",
+                vec![pair(&base, 9, 2), pair(&base, 0, 1)],
+                P07aExpect::Range,
+                0,
+            ),
+            (
+                "S5",
+                vec![pair(&base, 0, 0), pair(&base, 4, 1)],
+                P07aExpect::Range,
+                1,
+            ),
+            (
+                "S6",
+                vec![
+                    pair(&base, 3, 3),
+                    pair(&base, 0, 0),
+                    (u64::MAX, base[2].1.clone()),
+                ],
+                P07aExpect::Range,
+                2,
+            ),
+            (
+                "S7",
+                vec![(u64::MAX, base[0].1.clone()), pair(&base, 0, 0)],
+                P07aExpect::Range,
+                0,
+            ),
+        ];
+
+        let mut calls = 0usize;
+        for (label, rows, expected, prepared_reads) in &table {
+            let valid = rows.iter().filter(|(id, _)| *id < 4).count();
+
+            let unmetered =
+                SegmentReader::open(bytes.clone(), SegmentLimits::default()).expect("unmetered");
+            reset_perf07a();
+            let outcome = verify(&unmetered, rows);
+            check_typed(outcome, *expected, label);
+            let counts = if rows.is_empty() {
+                Counts::default()
+            } else {
+                Counts {
+                    scans: 1,
+                    scan_rows: 4,
+                    selection_rows: valid,
+                    ..Counts::default()
+                }
+            };
+            assert_counts(
+                perf07a_observation::counts(),
+                counts,
+                &format!("{label} unmetered"),
+            );
+            assert_eq!(test_observation::selected_keys_owned(), 0);
+            calls += 1;
+
+            let (state, budget) = headroom_state(bytes.clone());
+            let reader = SegmentReader::from_shared(Arc::clone(&state));
+            reset_perf07a();
+            let outcome = verify(&reader, rows);
+            check_typed(outcome, *expected, label);
+            let counts = if rows.is_empty() {
+                Counts::default()
+            } else {
+                Counts {
+                    scans: 1,
+                    scan_rows: 4,
+                    selection_rows: valid,
+                    ..Counts::default()
+                }
+            };
+            assert_counts(
+                perf07a_observation::counts(),
+                counts,
+                &format!("{label} admitted-empty"),
+            );
+            assert_eq!(test_observation::selected_keys_owned(), 0);
+            if rows.is_empty() || valid != rows.len() {
+                assert_eq!(state.key_offsets_state(), None, "{label}: no new offsets");
+            } else {
+                assert_eq!(state.key_offsets_state(), Some(true), "{label}: ready");
+            }
+            calls += 1;
+
+            let (prepared_state, prepared_budget) = headroom_state(bytes.clone());
+            {
+                let prime = SegmentReader::from_shared(Arc::clone(&prepared_state));
+                let _ = prime.doc_key_selected(0).expect("prime");
+            }
+            assert_eq!(prepared_state.key_offsets_state(), Some(true));
+            let prepared = SegmentReader::from_shared(Arc::clone(&prepared_state));
+            reset_perf07a();
+            let outcome = verify(&prepared, rows);
+            check_typed(outcome, *expected, label);
+            let counts = Counts {
+                offset_reads: *prepared_reads,
+                ..Counts::default()
+            };
+            assert_counts(
+                perf07a_observation::counts(),
+                counts,
+                &format!("{label} prepared"),
+            );
+            assert_eq!(test_observation::selected_keys_owned(), *prepared_reads);
+            calls += 1;
+
+            drop(reader);
+            drop(unmetered);
+            drop(prepared);
+            drop(state);
+            drop(prepared_state);
+            drop(budget);
+            drop(prepared_budget);
+        }
+
+        // Large/small singleton early-range boundary with a corrupt last key.
+        for size in [1023usize, 1024] {
+            let keys: Vec<SegmentDocument> = (0..size)
+                .map(|index| doc(&format!("k{index:05}")))
+                .collect();
+            let boundary = build_with_docs(keys);
+            let rejected = rebuild_section(&boundary, SectionKind::DocKeys, |body| {
+                let start = 10 + (size - 1) * 8 + 2;
+                body[start] = 0xff;
+            });
+            let pristine = SegmentReader::open(rejected.clone(), SegmentLimits::default())
+                .expect("pristine boundary opens");
+            assert_eq!(pristine.doc_count(), size as u64, "boundary doc count");
+            drop(pristine);
+
+            let check = |case: &str,
+                         mode: &str,
+                         outcome: SegmentResult<bool>,
+                         scan_rows: usize,
+                         cell: Option<bool>| {
+                let early = size == 1024 && case == "invalid-id";
+                let outcome_label;
+                if early {
+                    check_typed(outcome, P07aExpect::Range, "large invalid before body rows");
+                    outcome_label = "range";
+                } else {
+                    match outcome {
+                        Err(SegmentError::InvalidUtf8 { context }) => {
+                            assert_eq!(context, "doc key");
+                            outcome_label = "invalid-utf8";
+                        }
+                        other => panic!("N={size} {case}: expected InvalidUtf8, got {other:?}"),
+                    }
+                }
+                let selection_rows = usize::from(case == "late-corrupt");
+                let expected = Counts {
+                    scans: 1,
+                    scan_rows,
+                    selection_rows,
+                    ..Counts::default()
+                };
+                assert_counts(
+                    perf07a_observation::counts(),
+                    expected,
+                    &format!("N={size} {case} {mode}"),
+                );
+                assert_eq!(test_observation::selected_keys_owned(), 0);
+                eprintln!(
+                    "PERF07-A F1 R07 boundary size={size} case={case} mode={mode} outcome={outcome_label} scans=1 scan_rows={scan_rows} selection_rows={selection_rows} cell={cell:?}"
+                );
+            };
+
+            for case in ["invalid-id", "late-corrupt"] {
+                let rows = if case == "invalid-id" {
+                    vec![(size as u64, DocumentKey::new("k00000").expect("key"))]
+                } else {
+                    vec![(0u64, DocumentKey::new("k00001").expect("key"))]
+                };
+                let early = size == 1024 && case == "invalid-id";
+                let scan_rows = if early { 0 } else { size - 1 };
+
+                let unmetered = SegmentReader::open(rejected.clone(), SegmentLimits::default())
+                    .expect("unmetered");
+                assert_eq!(unmetered.doc_count(), size as u64);
+                assert!(!unmetered.shared_state().has_access_budget());
+                assert_eq!(unmetered.shared_state().key_offsets_state(), None);
+                assert!(unmetered.shared_state().key_offsets_ptr().is_none());
+                assert!(!unmetered.doc_keys_cache_is_populated());
+                reset_perf07a();
+                let outcome = verify(&unmetered, &rows);
+                check(case, "unmetered", outcome, scan_rows, None);
+                assert_eq!(unmetered.shared_state().key_offsets_state(), None);
+                assert!(unmetered.shared_state().key_offsets_ptr().is_none());
+                assert!(!unmetered.doc_keys_cache_is_populated());
+                calls += 1;
+
+                let (state, budget) = headroom_state(rejected.clone());
+                let admitted = SegmentReader::from_shared(Arc::clone(&state));
+                assert_eq!(admitted.doc_count(), size as u64);
+                assert_eq!(state.key_offsets_state(), None);
+                assert!(state.key_offsets_ptr().is_none());
+                assert!(!admitted.doc_keys_cache_is_populated());
+                let before = state.access_budget_used().expect("used");
+                reset_perf07a();
+                let outcome = verify(&admitted, &rows);
+                let cell = if case == "late-corrupt" {
+                    Some(false)
+                } else {
+                    None
+                };
+                check(case, "admitted", outcome, scan_rows, cell);
+                assert_eq!(state.key_offsets_state(), cell);
+                assert!(state.key_offsets_ptr().is_none());
+                assert_eq!(state.access_budget_used(), Some(before));
+                assert!(!admitted.doc_keys_cache_is_populated());
+                calls += 1;
+                drop(admitted);
+                drop(state);
+                assert_eq!(budget.used(), 0);
+            }
+        }
+
+        // Real empty segment: empty selection is free, nonempty is out of range.
+        let empty = build_with_docs(Vec::new());
+        let empty_reader =
+            SegmentReader::open(empty, SegmentLimits::default()).expect("empty segment");
+        reset_perf07a();
+        assert!(verify(&empty_reader, &[]).expect("empty selection"));
+        assert_counts(
+            perf07a_observation::counts(),
+            Counts::default(),
+            "empty selection",
+        );
+        calls += 1;
+        reset_perf07a();
+        let outcome = verify(&empty_reader, &[(0, DocumentKey::new("k0").expect("key"))]);
+        check_typed(outcome, P07aExpect::Range, "empty segment id 0");
+        assert_eq!(perf07a_observation::counts().scan_rows, 0);
+        calls += 1;
+
+        // Corrupted-body empty selection never validates unused data.
+        let corrupt = rebuild_section(&pristine_for_r07(), SectionKind::DocKeys, |body| {
+            body[24] = 0xff;
+        });
+        let corrupt_reader =
+            SegmentReader::open(corrupt, SegmentLimits::default()).expect("corrupt opens");
+        reset_perf07a();
+        assert!(verify(&corrupt_reader, &[]).expect("corrupt empty selection"));
+        assert_counts(
+            perf07a_observation::counts(),
+            Counts::default(),
+            "corrupt empty selection",
+        );
+        calls += 1;
+
+        assert_eq!(calls, 35, "R07 acceptance calls");
+        eprintln!("PERF07-A R07 rows={calls}");
+    }
+
+    fn pristine_for_r07() -> Vec<u8> {
+        let literals = ["k0", "k1", "k2", "k3"];
+        build_with_docs(literals.iter().map(|k| doc(k)).collect())
+    }
+
+    // R08 — concurrent initialization is request-local; only offsets are shared.
+    #[test]
+    fn perf07a_r08_concurrent_initialization_is_request_local() {
+        let literals = ["k0", "k1", "k2", "k3"];
+        let base = keys_for(&literals);
+        let bytes = build_with_docs(literals.iter().map(|k| doc(k)).collect());
+        let (state, budget) = headroom_state(bytes);
+        let before = state.access_budget_used().expect("used");
+
+        let a_rows = vec![pair(&base, 3, 3), pair(&base, 0, 0), pair(&base, 3, 3)];
+        let b_rows = vec![pair(&base, 3, 1), pair(&base, 0, 0), pair(&base, 3, 3)];
+        let barrier = std::sync::Barrier::new(2);
+
+        let (a, b) = std::thread::scope(|scope| {
+            let spawn = |rows: Vec<(u64, DocumentKey)>| {
+                let state = Arc::clone(&state);
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let reader = SegmentReader::from_shared(Arc::clone(&state));
+                    reset_perf07a();
+                    barrier.wait();
+                    let outcome = verify(&reader, &rows);
+                    let counts = perf07a_observation::counts();
+                    let owned = test_observation::selected_keys_owned();
+                    (outcome, counts, owned, state.key_offsets_ptr())
+                })
+            };
+            let a = spawn(a_rows);
+            let b = spawn(b_rows);
+            (a.join().expect("worker a"), b.join().expect("worker b"))
+        });
+
+        let (a_outcome, a_counts, a_owned, a_ptr) = a;
+        let (b_outcome, b_counts, b_owned, b_ptr) = b;
+        assert!(a_outcome.expect("a"), "worker a parity");
+        assert!(!b_outcome.expect("b"), "worker b parity");
+        assert_eq!(a_counts.full_owned + b_counts.full_owned, 0);
+        assert_eq!(a_counts.scans + b_counts.scans, 1, "one shared initializer");
+        assert_eq!(a_counts.scan_rows + b_counts.scan_rows, 4);
+        assert_eq!(a_counts.scan_rows.max(b_counts.scan_rows), 4);
+        let initializer_a = a_counts.scans == 1;
+        assert_ne!(
+            initializer_a,
+            b_counts.scans == 1,
+            "exactly one initializer"
+        );
+        let (init_owned, other_owned) = if initializer_a {
+            (a_owned, b_owned)
+        } else {
+            (b_owned, a_owned)
+        };
+        assert_eq!(init_owned, 0, "initializer owns no selected key");
+        let other_reads = if initializer_a {
+            b_counts.offset_reads
+        } else {
+            a_counts.offset_reads
+        };
+        assert_eq!(other_owned, other_reads, "direct reads own their keys");
+        assert!(
+            other_reads == 1 || other_reads == 3,
+            "branch-dependent direct reads: {other_reads}"
+        );
+        let expected_other = if initializer_a { 1 } else { 3 };
+        assert_eq!(other_reads, expected_other, "exact non-initializer reads");
+        assert_eq!(a_ptr, b_ptr, "same shared directory");
+        assert!(a_ptr.is_some());
+        assert_eq!(
+            state.access_budget_used(),
+            Some(before + 40),
+            "charged once"
+        );
+
+        drop(state);
+        assert_eq!(budget.used(), 0);
+        eprintln!("PERF07-A R08 rows=2 initializer_a={initializer_a}");
+    }
+
+    // R09 — initializer unwind publishes nothing and recovery is exact.
+    #[test]
+    fn perf07a_r09_initializer_unwind_and_recovery() {
+        let literals = ["k0", "k1", "k2", "k3"];
+        let base = keys_for(&literals);
+        let selection = vec![pair(&base, 3, 3), pair(&base, 0, 0), pair(&base, 3, 3)];
+        let (state, budget) =
+            headroom_state(build_with_docs(literals.iter().map(|k| doc(k)).collect()));
+        let before = state.access_budget_used().expect("used");
+        let reader = SegmentReader::from_shared(Arc::clone(&state));
+        reset_perf07a();
+        let guard = perf07a_observation::arm_directory_fault(DirectoryFault::PanicAfterScan);
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| verify(&reader, &selection)));
+        drop(guard);
+        let payload = outcome.expect_err("injected panic propagates");
+        let message = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str));
+        assert_eq!(
+            message,
+            Some("injected PERF-07-A post-scan directory unwind")
+        );
+        let expected = Counts {
+            scans: 1,
+            scan_rows: 4,
+            selection_rows: 3,
+            ..Counts::default()
+        };
+        assert_counts(perf07a_observation::counts(), expected, "unwind");
+        assert_eq!(test_observation::selected_keys_owned(), 0);
+        assert_eq!(state.key_offsets_state(), None, "nothing published");
+        assert_eq!(state.access_budget_used(), Some(before), "budget restored");
+        assert!(!reader.doc_keys_cache_is_populated());
+
+        let retry = SegmentReader::from_shared(Arc::clone(&state));
+        reset_perf07a();
+        assert!(verify(&retry, &selection).expect("recovery"));
+        let expected = Counts {
+            scans: 1,
+            scan_rows: 4,
+            selection_rows: 3,
+            ..Counts::default()
+        };
+        assert_counts(perf07a_observation::counts(), expected, "recovery");
+        assert_eq!(state.key_offsets_state(), Some(true));
+        assert_eq!(state.access_budget_used(), Some(before + 40));
+
+        let warm = SegmentReader::from_shared(Arc::clone(&state));
+        reset_perf07a();
+        assert!(verify(&warm, &selection).expect("warm"));
+        let expected = Counts {
+            offset_reads: 3,
+            ..Counts::default()
+        };
+        assert_counts(
+            perf07a_observation::counts(),
+            expected,
+            "warm after recovery",
+        );
+        assert_eq!(test_observation::selected_keys_owned(), 3);
+
+        drop(reader);
+        drop(retry);
+        drop(warm);
+        drop(state);
+        assert_eq!(budget.used(), 0);
+        eprintln!("PERF07-A R09 rows=3");
     }
 }
 

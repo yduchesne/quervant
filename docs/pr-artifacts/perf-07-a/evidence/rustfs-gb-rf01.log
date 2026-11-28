@@ -1,0 +1,9 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running tests/pr15g_b_rustfs.rs (target/debug/deps/pr15g_b_rustfs-b501f185edb07da9)
+
+running 2 tests
+test gb_r01_real_rustfs_cold_bootstrap_selected_access ... ok
+test perf07a_rf01_real_rustfs_multi_hit_cold_and_warm_projection ... PERF07-A RF01 checks=440 segment-docs=1100
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.60s

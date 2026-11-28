@@ -1,0 +1,30 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/quervant_core-4bce05dee4e4fed4)
+
+running 9 tests
+PERF07-A R05 INJECTED_POST_SCAN_MEASUREMENT label=match rows=2
+
+thread 'segment::reader::column_geometry_tests::perf07a_r09_initializer_unwind_and_recovery' (1151171) panicked at crates/quervant-core/src/segment/reader.rs:646:17:
+injected PERF-07-A post-scan directory unwind
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+PERF07-A R09 rows=3
+test segment::reader::column_geometry_tests::perf07a_r09_initializer_unwind_and_recovery ... ok
+PERF07-A R04 rows=3 states=2
+PERF07-A R05 INJECTED_POST_SCAN_MEASUREMENT label=mismatch rows=2
+PERF07-A R05 rows=4
+test segment::reader::column_geometry_tests::perf07a_r04_exact_metadata_and_independent_owners ... ok
+test segment::reader::column_geometry_tests::perf07a_r05_post_scan_finalize_refusal_no_rescan ... ok
+PERF07-A R02 rows=4
+PERF07-A R08 rows=2 initializer_a=true
+test segment::reader::column_geometry_tests::perf07a_r02_first_use_single_scan_and_warm_reuse ... ok
+test segment::reader::column_geometry_tests::perf07a_r08_concurrent_initialization_is_request_local ... ok
+PERF07-A R03 rows=4
+test segment::reader::column_geometry_tests::perf07a_r03_unmetered_and_real_optional_refusal ... ok
+PERF07-A R01 rows=3
+test segment::reader::column_geometry_tests::perf07a_r01_prepared_reordered_duplicate_utf8 ... ok
+PERF07-A R06 rows=20
+test segment::reader::column_geometry_tests::perf07a_r06_corrupt_unselected_full_validation_matrix ... ok
+PERF07-A R07 rows=35
+test segment::reader::column_geometry_tests::perf07a_r07_selection_order_and_singleton_boundary ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 1225 filtered out; finished in 0.16s

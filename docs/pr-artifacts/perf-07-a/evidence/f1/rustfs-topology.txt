@@ -1,0 +1,1 @@
+endpoint=http://127.0.0.1:19007 bucket=quervant-perf07a-f1-1291098 region=us-east-1

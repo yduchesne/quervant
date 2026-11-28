@@ -1,0 +1,9 @@
+   Compiling quervant-core v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.83s
+     Running tests/perf06_b1_rustfs.rs (target/debug/deps/perf06_b1_rustfs-8eb64107fc0cb5b9)
+
+running 1 test
+test b1_r01_cold_shared_ordinals_and_pit ... PERF06_B1_R01_PASS
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.93s
