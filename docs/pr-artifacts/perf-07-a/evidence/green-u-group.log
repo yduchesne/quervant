@@ -1,0 +1,23 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/quervant_core-4bce05dee4e4fed4)
+
+running 6 tests
+PERF07-A U06 rows=6
+test search::unified::c2_tests::perf07a_u06_projection_exact_and_one_under_batch_memory ... ok
+PERF07-A U03 rows=6
+test search::unified::c2_tests::perf07a_u03_projection_selected_order_and_parity ... ok
+PERF07-A U04 rows=5
+test search::unified::c2_tests::perf07a_u04_projection_unselected_corruption_precedes_stored ... ok
+PERF07-A U05 rows=4 seg0_inputs=[0, 1, 2, 3] seg1_inputs=[4, 5, 6, 7] seg0_count=2
+test search::unified::c2_tests::perf07a_u05_projection_multisegment_order_and_limits ... ok
+PERF07-A U01 GREEN label=K10-a full_owned=0 full_decodes=0 scans=0 scan_rows=0 offset_reads=10 selection_rows=0 cache_compares=0 stored_calls=1 selected_owned=10
+PERF07-A RED-WITNESS full_owned=0 full_decodes=0 expected=0 K=10 N=1100
+PERF07-A U01 GREEN label=K100-a full_owned=0 full_decodes=0 scans=0 scan_rows=0 offset_reads=100 selection_rows=0 cache_compares=0 stored_calls=1 selected_owned=100
+PERF07-A U01 GREEN label=K10-b full_owned=0 full_decodes=0 scans=0 scan_rows=0 offset_reads=10 selection_rows=0 cache_compares=0 stored_calls=1 selected_owned=10
+PERF07-A U01 GREEN label=K100-b full_owned=0 full_decodes=0 scans=0 scan_rows=0 offset_reads=100 selection_rows=0 cache_compares=0 stored_calls=1 selected_owned=100
+PERF07-A U01 rows=4
+test search::unified::c2_tests::perf07a_u01_projection_prepared_offsets_no_full_keys ... ok
+PERF07-A U02 rows=6
+test search::unified::c2_tests::perf07a_u02_projection_first_use_and_zero_metadata ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 1228 filtered out; finished in 0.48s

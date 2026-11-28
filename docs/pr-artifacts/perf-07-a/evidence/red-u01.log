@@ -1,0 +1,23 @@
+   Compiling quervant-core v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.45s
+     Running unittests src/lib.rs (target/debug/deps/quervant_core-4bce05dee4e4fed4)
+
+running 1 test
+PERF07-A U01 GREEN label=K10-a full_owned=1100 full_decodes=1 scans=0 scan_rows=0 offset_reads=0 selection_rows=0 cache_compares=0 stored_calls=1 selected_owned=0
+PERF07-A RED-WITNESS full_owned=1100 full_decodes=1 expected=0 K=10 N=1100
+
+thread 'search::unified::c2_tests::perf07a_u01_projection_prepared_offsets_no_full_keys' (1140301) panicked at crates/quervant-core/src/search/unified.rs:18435:13:
+assertion `left == right` failed: PERF07-A U01 full owned keys (K10-a)
+  left: 1100
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test search::unified::c2_tests::perf07a_u01_projection_prepared_offsets_no_full_keys ... FAILED
+
+failures:
+
+failures:
+    search::unified::c2_tests::perf07a_u01_projection_prepared_offsets_no_full_keys
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1219 filtered out; finished in 0.30s
+
+error: test failed, to rerun pass `-p quervant-core --lib`

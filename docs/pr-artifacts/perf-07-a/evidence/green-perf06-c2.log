@@ -1,0 +1,37 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/perf06_c2_physical.rs (target/debug/deps/perf06_c2_physical-5e828c4a3c49f893)
+
+running 14 tests
+test c2_i05_real_cursor_multi_page ... ok
+test c2_i07_batch_aggregate_and_unsupported_shapes ... ok
+test c2_i02_scores_full_projection_and_reverse_sort ... ok
+test c2_i06_corrupt_container_and_legacy_errors ... ok
+test c2_i04_duplicates_and_optional_fallback ... ok
+C3 I01 Asc k=1: total=40 page1=["s0000"] page2=["s0001"]
+C3 I01 Desc k=1: total=40 page1=["s0039"] page2=["s0038"]
+C3 I01 Asc k=3: total=40 page1=["s0000", "s0001", "s0002"] page2=["s0003", "s0004", "s0005"]
+C3 I01 Desc k=3: total=40 page1=["s0039", "s0038", "s0037"] page2=["s0036", "s0035", "s0034"]
+C3 I01 Asc k=10: total=40 page1=["s0000", "s0001", "s0002", "s0003", "s0004", "s0005", "s0006", "s0007", "s0008", "s0009"] page2=["s0010", "s0011", "s0012", "s0013", "s0014", "s0015", "s0016", "s0017", "s0018", "s0019"]
+C3 I02 phase=I02-OLD-BEFORE df=40 n=40 total_length=180 pages=14 checked_hits=40
+C3 I01 Desc k=10: total=40 page1=["s0039", "s0038", "s0037", "s0036", "s0035", "s0034", "s0033", "s0032", "s0031", "s0030"] page2=["s0029", "s0028", "s0027", "s0026", "s0025", "s0024", "s0023", "s0022", "s0021", "s0020"]
+C3 I01 combinations=6
+test c3_i01_real_scores_and_explicit_cursor ... ok
+test c2_i09_empty_and_sparse_physical_segments ... ok
+test c2_i08_resource_cancellation_atomicity ... ok
+C3 I02 phase=I02-NEW df=39 n=40 total_length=173 pages=13 checked_hits=39
+C3 I02 phase=I02-OLD-AFTER-MUTATION df=40 n=40 total_length=180 pages=14 checked_hits=40
+C3 I03 caps=69/2944 failure={68,69}/{2943,2944} scanned=23 failure={22,23} total=23
+test c3_i03_real_resource_and_cancellation_edges ... ok
+C3 I02 phase=I02-COMPACTED df=39 n=40 total_length=173 pages=13 checked_hits=39
+C3 I02 phase=I02-OLD-AFTER-COMPACTION df=40 n=40 total_length=180 pages=14 checked_hits=40
+C3 I02 old=40 new=39 new-total-length=173 merged-keys=["s0000", "s0001", "s0003"]
+C3 F1 I02 phases=5 checked-hits=198 old-pages=14 new-pages=13
+test c3_i02_real_pit_update_merge_and_paging ... ok
+test c2_i03_pit_update_delete_merge_reopen ... ok
+PERF07-A I02 phases=5 page-calls=20 per-hit-checks=200
+test perf07a_i02_real_fs_pit_upsert_delete_compact_projection ... ok
+PERF07-A I01 page-executions=16 total=4950
+test perf07a_i01_real_fs_multi_hit_scores_and_projection ... ok
+test c2_i01_i10_b4_formula_exact_term_lanes ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.05s

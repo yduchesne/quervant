@@ -824,3 +824,7 @@ Report: [PERF06C4_CROSS_ENGINE_AUTONOMOUS_EXECUTION_REPORT.md](pr-artifacts/perf
 The earlier warm `INCOMPLETE`, cold `COMPLETE`, `PERF06_CROSS_ENGINE_PARTIAL` and the C4
 incremental verdict are unchanged. This adds no optimization, no baseline promotion and
 no adoption decision.
+
+## PERF-07-A implementation status (2026-11-28)
+
+Selective multi-hit physical document-key verification is implemented on `dev/perf07-a`, tested revision `29fe4a2d596b3df43cd29f18722983098d664a47`; local acceptance PASS; hosted CI pending at documentation closeout. The existing verified DOC_KEYS offsets are reused; the one-scan borrowed fallback preserves complete validation and original selected-key error precedence without reconstructing N owned keys. The existing STORED projection, scores, exact counts, ordering, reader admission and logical budgets are unchanged. Plan: [PERF07A_DETAILED_IMPLEMENTATION_PLAN.md](pr-artifacts/perf-07-a/PERF07A_DETAILED_IMPLEMENTATION_PLAN.md); report: [PERF07A_EXECUTION_REPORT.md](pr-artifacts/perf-07-a/PERF07A_EXECUTION_REPORT.md). Independent acceptance remains pending. No real benchmark or measured speedup claim; B–I are not started.

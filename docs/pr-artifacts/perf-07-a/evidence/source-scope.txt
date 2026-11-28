@@ -1,0 +1,23 @@
+# PERF-07-A source freeze and whitespace checks
+BASE=c9ca7975ab6f29fc4fe1fac65951cede3799cb8c
+TESTED=29fe4a2d596b3df43cd29f18722983098d664a47
+TESTED_TREE=5828846d3dfcc3a4742848099c873e185fb9a7aa
+
+## git diff --name-only BASE..TESTED
+crates/quervant-core/src/search/unified.rs
+crates/quervant-core/src/segment/reader.rs
+crates/quervant-core/tests/perf06_c2_physical.rs
+crates/quervant-core/tests/pr15g_b_rustfs.rs
+
+## .github changes BASE..TESTED (must be empty)
+
+## git diff --check BASE..TESTED
+PASS
+## git diff --check (worktree)
+PASS
+
+## scanner body equivalence
+Original scan_doc_keys body equals new scan_doc_keys_with body after removing the prescribed cfg(test) observations, visitor call, early_range binding rename, and the new signature/where clause. Only those prescribed differences remain.
+
+## project_selected_hits production diff
+Only the doc comment and the key-check block changed; selected_ids reservation/sort/dedup, stored_docs_selected, binary search, plan.project, projected_hit_bytes, reserve_with_memory and out[index] are unchanged.

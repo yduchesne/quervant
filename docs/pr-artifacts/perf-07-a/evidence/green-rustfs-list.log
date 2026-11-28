@@ -1,0 +1,7 @@
+   Compiling quervant-core v0.1.0 (/home/yduchesne/Dev/Github/yduchesne/quervant/crates/quervant-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.31s
+     Running tests/pr15g_b_rustfs.rs (target/debug/deps/pr15g_b_rustfs-b501f185edb07da9)
+gb_r01_real_rustfs_cold_bootstrap_selected_access: test
+perf07a_rf01_real_rustfs_multi_hit_cold_and_warm_projection: test
+
+2 tests, 0 benchmarks

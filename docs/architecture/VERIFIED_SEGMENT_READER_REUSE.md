@@ -236,3 +236,9 @@ The snapshot-owned optional numeric keyword ordinal map (one field, one exact
   snapshot may retry. Codec corruption, schema disagreement, cancellation and
   poisoning remain typed errors.
 * **No claim.** This is retained numeric metadata accounting, not an RSS bound.
+
+### PERF-07-A — selected physical-key verification in projection (2026-11-28)
+
+Final projection verifies every selected physical key in original selection order before STORED processing for that segment. A ready validated DOC_KEYS offset directory is reused from the exact immutable verified state; no full query-local key cache is built. A pre-existing full local cache is borrowed. Otherwise one shared semantic validation scan compares selected expected keys using bounded O(K) scratch without constructing unselected owned keys. A first-use admitted directory captures offsets during that same scan. If optional metadata admission fails before scanning, perform the one validating fallback; if it fails after a completed scan, reuse the private comparison outcome without rescanning. Invalid or unselected corrupt keys retain the established typed failure ordering. Complete directory publication and RAII metadata accounting remain unchanged. No wire-format, public API, logical-budget, or storage-lifecycle change.
+
+Implementation/tested source: `29fe4a2d596b3df43cd29f18722983098d664a47`; verification: local acceptance PASS (stable and MSRV, both feature regimes, real filesystem and real RustFS); hosted CI pending at documentation closeout. See [PERF-07-A execution report](../pr-artifacts/perf-07-a/PERF07A_EXECUTION_REPORT.md). This is structural correctness evidence, not measured warm-performance qualification; PERF-07-I owns timing.
