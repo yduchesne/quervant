@@ -267,3 +267,128 @@ fn gb_r01_real_rustfs_cold_bootstrap_selected_access() {
         let _ = std::fs::remove_dir_all(&workspace);
     });
 }
+
+/// PERF-07-A RF01 — real RustFS cold multi-hit projection and warm reread.
+#[test]
+#[ignore = "requires a running pinned RustFS instance"]
+fn perf07a_rf01_real_rustfs_multi_hit_cold_and_warm_projection() {
+    run(async {
+        let (endpoint, bucket, access, secret, region) = require_env();
+        let store = Arc::new(
+            S3ObjectStore::new(S3Config::rustfs(endpoint, region, bucket, access, secret))
+                .expect("config"),
+        );
+        store.create_bucket_if_absent().await.expect("bucket");
+
+        let workspace = std::env::temp_dir().join(format!(
+            "quervant-perf07a-rf01-{}-{}",
+            std::process::id(),
+            run_id()
+        ));
+        assert!(!workspace.exists(), "unique disposable workspace");
+        let config = RemoteConfig::new(
+            RemoteKeyPrefix::parse(format!("perf07-a/rf01-{}-{}", std::process::id(), run_id()))
+                .expect("prefix"),
+            workspace.clone(),
+        );
+
+        let index = RemoteIndex::create(
+            Arc::clone(&store),
+            config.clone(),
+            schema(),
+            registry(),
+            IndexLimits::default(),
+        )
+        .await
+        .expect("create");
+        {
+            let mut writer = index.writer().await.expect("writer");
+            for i in 0..1100i64 {
+                writer
+                    .insert(document(&format!("d{i:05}"), "common", i))
+                    .expect("insert");
+            }
+            assert_eq!(writer.commit().await.expect("commit").generation, 1);
+        }
+        drop(index);
+        std::fs::remove_dir_all(&workspace).expect("remove disposable workspace");
+
+        let reopened = RemoteIndex::open_existing(
+            Arc::clone(&store),
+            config.clone(),
+            schema(),
+            registry(),
+            IndexLimits::default(),
+        )
+        .await
+        .expect("cold reopen");
+        assert_eq!(reopened.generation(), Some(1));
+        let snapshot = reopened.snapshot();
+        assert_eq!(snapshot.segment_count(), 1, "one committed segment");
+        assert_eq!(snapshot.segments()[0].doc_count(), 1100);
+
+        let mut checks = 0usize;
+        let mut provider_baseline = None;
+        for pass in 0..2usize {
+            for direction in [SortDirection::Asc, SortDirection::Desc] {
+                for k in [10usize, 100] {
+                    let expected: Vec<usize> = match direction {
+                        SortDirection::Asc => (0..k).collect(),
+                        SortDirection::Desc => (1100 - k..1100).rev().collect(),
+                    };
+                    let request = request(
+                        Query::MatchAll,
+                        Sort::new(vec![SortField::new("n", direction)]),
+                        k,
+                    );
+                    let response = search(&snapshot, &request);
+                    assert_eq!(response.total_hits, 1100, "pass {pass} {direction:?} K={k}");
+                    assert_eq!(response.hits.len(), k);
+                    assert!(response.aggregation.is_none());
+                    assert!(response.next_cursor.is_some());
+                    let expected_keys: Vec<String> =
+                        expected.iter().map(|i| format!("d{i:05}")).collect();
+                    assert_eq!(keys(&response), expected_keys, "literal keys");
+                    for (rank, index) in expected.iter().enumerate() {
+                        let hit = &response.hits[rank];
+                        assert_eq!(hit.key.as_str(), format!("d{index:05}"));
+                        assert_eq!(
+                            hit.fields,
+                            vec![
+                                (
+                                    "title".to_owned(),
+                                    FieldValues::Single(FieldValue::Text("common".into()))
+                                ),
+                                (
+                                    "n".to_owned(),
+                                    FieldValues::Single(FieldValue::I64(*index as i64))
+                                ),
+                                (
+                                    "tag".to_owned(),
+                                    FieldValues::Single(FieldValue::Keyword(format!("t{index}")))
+                                ),
+                            ],
+                            "complete ordered projection"
+                        );
+                        assert!(hit.score.is_none(), "typed-neutral MatchAll is unscored");
+                        checks += 1;
+                    }
+                }
+            }
+            if pass == 0 {
+                provider_baseline = Some(reopened.transfer_stats().requests());
+            }
+        }
+        assert_eq!(checks, 440, "two passes over K=10/100 in both directions");
+        assert_eq!(
+            reopened.transfer_stats().requests(),
+            provider_baseline.expect("baseline"),
+            "warm reread must not add provider requests"
+        );
+
+        drop(snapshot);
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&workspace);
+        eprintln!("PERF07-A RF01 checks={checks} segment-docs=1100");
+    });
+}

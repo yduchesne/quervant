@@ -1978,3 +1978,416 @@ fn c3_i03_real_resource_and_cancellation_edges() {
         "C3 I03 caps=69/2944 failure={{68,69}}/{{2943,2944}} scanned=23 failure={{22,23}} total=23"
     );
 }
+
+// ---------------------------------------------------------------------------
+// PERF-07-A — integration acceptance on real committed local indexes.
+// ---------------------------------------------------------------------------
+
+/// Assert one scored first/continuation page against literal input-derived facts.
+fn p07a_i01_assert_page(
+    response: &UnifiedResponse,
+    expected: &[usize],
+    stats: (u64, u64, u64),
+    label: &str,
+) {
+    let (df, n, total_length) = stats;
+    assert_eq!(response.total_hits, df, "{label}: exact total");
+    assert_eq!(response.hits.len(), expected.len(), "{label}: page length");
+    assert!(response.aggregation.is_none(), "{label}: no aggregation");
+    for (rank, index) in expected.iter().enumerate() {
+        let hit = &response.hits[rank];
+        assert_eq!(
+            hit.key.as_str(),
+            scoring_doc_key(*index),
+            "{label}: rank {rank} literal key"
+        );
+        assert_eq!(
+            hit.fields,
+            vec![
+                (
+                    "doc_id".to_owned(),
+                    FieldValues::Single(FieldValue::Keyword(scoring_doc_key(*index)))
+                ),
+                (
+                    "body".to_owned(),
+                    FieldValues::Single(FieldValue::Text(scoring_body(*index)))
+                ),
+            ],
+            "{label}: rank {rank} complete projection"
+        );
+        let score = hit
+            .score
+            .unwrap_or_else(|| panic!("{label}: rank {rank} must be scored"));
+        assert_eq!(
+            score.to_bits(),
+            scoring_oracle(scoring_tf(*index), scoring_dl(*index), df, n, total_length).to_bits(),
+            "{label}: rank {rank} literal score bits"
+        );
+    }
+    assert!(response.next_cursor.is_some(), "{label}: next cursor");
+}
+
+#[test]
+fn perf07a_i01_real_fs_multi_hit_scores_and_projection() {
+    let (_temp, schema, index) = reopen_scoring_corpus("perf07a-i01", 1100, 1000);
+    let mut counts: Vec<u64> = index
+        .snapshot()
+        .segments()
+        .iter()
+        .map(|segment| segment.doc_count())
+        .collect();
+    counts.sort_unstable();
+    assert_eq!(counts, vec![100, 1000], "two real committed segments");
+
+    let total: u64 = (0..1100)
+        .map(|index| 1 + (index % 4) as u64 + (index % 5) as u64)
+        .sum();
+    assert_eq!(total, 4950, "input-derived total field length");
+    let stats = (1100u64, 1100u64, 4950u64);
+
+    let snapshot = index.snapshot();
+    let registry = AnalyzerRegistry::builtin();
+    let searcher = UnifiedSearcher::new(&snapshot, &schema, &registry, SearchLimits::default());
+
+    let cases = [
+        (1usize, SortDirection::Asc),
+        (10, SortDirection::Asc),
+        (100, SortDirection::Asc),
+        (1, SortDirection::Desc),
+        (10, SortDirection::Desc),
+        (100, SortDirection::Desc),
+    ];
+    let mut executions = 0usize;
+    for (k, direction) in cases {
+        let base = request(
+            text_term("body", "alpha"),
+            k,
+            doc_id_sort(direction),
+            scoring_projection(),
+        );
+        let expected: Vec<usize> = match direction {
+            SortDirection::Asc => (0..k).collect(),
+            SortDirection::Desc => (1100 - k..1100).rev().collect(),
+        };
+        let label = format!("I01 {direction:?} K={k}");
+        let first = searcher
+            .search(&base, &Budgets::new(), &NeverCancel)
+            .expect("first page");
+        p07a_i01_assert_page(&first, &expected, stats, &format!("{label} first"));
+        let repeat = searcher
+            .search(&base, &Budgets::new(), &NeverCancel)
+            .expect("repeat page");
+        assert_eq!(repeat, first, "{label}: repeated response is identical");
+        p07a_i01_assert_page(&repeat, &expected, stats, &format!("{label} repeat"));
+        executions += 2;
+
+        if k >= 10 {
+            let cursor = first.next_cursor.clone().expect("continuation cursor");
+            let mut page = base.clone();
+            page.after = Some(cursor);
+            let continuation = searcher
+                .search(&page, &Budgets::new(), &NeverCancel)
+                .expect("continuation");
+            let expected_next: Vec<usize> = match direction {
+                SortDirection::Asc => (k..2 * k).collect(),
+                SortDirection::Desc => (1100 - 2 * k..1100 - k).rev().collect(),
+            };
+            p07a_i01_assert_page(
+                &continuation,
+                &expected_next,
+                stats,
+                &format!("{label} continuation"),
+            );
+            executions += 1;
+        }
+    }
+    assert_eq!(executions, 16, "twelve first pages plus four continuations");
+    eprintln!("PERF07-A I01 page-executions={executions} total={total}");
+}
+
+const P07A_I02_UPDATED_BODY: &str = "alpha alpha alpha alpha gamma gamma";
+
+fn p07a_i02_body(index: usize, updated: bool) -> String {
+    if updated && index == 6 {
+        P07A_I02_UPDATED_BODY.to_owned()
+    } else {
+        scoring_body(index)
+    }
+}
+
+fn p07a_i02_tf(index: usize, updated: bool) -> u64 {
+    if updated && index == 6 {
+        4
+    } else {
+        scoring_tf(index)
+    }
+}
+
+fn p07a_i02_dl(index: usize, updated: bool) -> u64 {
+    if updated && index == 6 {
+        6
+    } else {
+        scoring_dl(index)
+    }
+}
+
+/// Traverse the four fixed pages of one logical phase and verify every hit.
+fn p07a_i02_pages(
+    searcher: &UnifiedSearcher<'_>,
+    snapshot: &ReaderSnapshot,
+    base: &UnifiedRequest,
+    updated: bool,
+) -> Vec<UnifiedResponse> {
+    let expected: Vec<usize> = if updated {
+        (0..=40).filter(|index| *index != 2).collect()
+    } else {
+        (0..40).collect()
+    };
+    assert_eq!(expected.len(), 40);
+    let (df, n, total_length) = if updated {
+        (40u64, 40u64, 178u64)
+    } else {
+        (40u64, 40u64, 180u64)
+    };
+    let mut responses: Vec<UnifiedResponse> = Vec::new();
+    let mut cursor = None;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut checked = 0usize;
+    for page_index in 0..4usize {
+        let mut page = base.clone();
+        page.after = cursor;
+        let response = searcher
+            .search(&page, &Budgets::new(), &NeverCancel)
+            .unwrap_or_else(|error| panic!("page {page_index} failed: {error:?}"));
+        assert_eq!(response.total_hits, df, "page {page_index}: total");
+        assert_eq!(response.hits.len(), 10, "page {page_index}: length");
+        assert!(response.aggregation.is_none());
+        assert_eq!(response.generation, snapshot.generation());
+        assert_eq!(response.view_ordinal, snapshot.view_ordinal());
+        for (rank, hit) in response.hits.iter().enumerate() {
+            let index = expected[10 * page_index + rank];
+            assert_eq!(
+                hit.key.as_str(),
+                scoring_doc_key(index),
+                "page {page_index} rank {rank}: literal key"
+            );
+            assert_eq!(
+                hit.fields,
+                vec![
+                    (
+                        "doc_id".to_owned(),
+                        FieldValues::Single(FieldValue::Keyword(scoring_doc_key(index)))
+                    ),
+                    (
+                        "body".to_owned(),
+                        FieldValues::Single(FieldValue::Text(p07a_i02_body(index, updated)))
+                    ),
+                ],
+                "page {page_index} rank {rank}: complete projection"
+            );
+            let score = hit
+                .score
+                .unwrap_or_else(|| panic!("page {page_index} rank {rank}: scored"));
+            assert_eq!(
+                score.to_bits(),
+                scoring_oracle(
+                    p07a_i02_tf(index, updated),
+                    p07a_i02_dl(index, updated),
+                    df,
+                    n,
+                    total_length
+                )
+                .to_bits(),
+                "page {page_index} rank {rank}: literal score bits"
+            );
+            assert!(
+                seen.insert(hit.key.as_str().to_owned()),
+                "page {page_index} rank {rank}: duplicate key"
+            );
+            checked += 1;
+        }
+        let more = page_index < 3;
+        match &response.next_cursor {
+            Some(_) => assert!(more, "page {page_index}: unexpected trailing cursor"),
+            None => assert!(!more, "page {page_index}: missing continuation cursor"),
+        }
+        cursor = response.next_cursor.clone();
+        responses.push(response);
+    }
+    assert_eq!(checked, 40, "forty per-hit checks per phase");
+    responses
+}
+
+fn p07a_i02_assert_logical_parity(left: &[UnifiedResponse], right: &[UnifiedResponse]) {
+    assert_eq!(left.len(), right.len());
+    for (page, (a, b)) in left.iter().zip(right).enumerate() {
+        assert_eq!(a.total_hits, b.total_hits, "page {page}: total");
+        assert_eq!(a.hits.len(), b.hits.len(), "page {page}: length");
+        assert_eq!(a.aggregation, b.aggregation, "page {page}: aggregation");
+        assert_eq!(
+            a.next_cursor.is_some(),
+            b.next_cursor.is_some(),
+            "page {page}: cursor presence"
+        );
+        for (rank, (x, y)) in a.hits.iter().zip(&b.hits).enumerate() {
+            assert_eq!(x.key, y.key, "page {page} rank {rank}: key");
+            assert_eq!(x.fields, y.fields, "page {page} rank {rank}: fields");
+            assert_eq!(
+                x.score.map(f64::to_bits),
+                y.score.map(f64::to_bits),
+                "page {page} rank {rank}: score bits"
+            );
+        }
+    }
+}
+
+#[test]
+fn perf07a_i02_real_fs_pit_upsert_delete_compact_projection() {
+    use quervant_core::contract::document::MutationRequest;
+    use quervant_core::contract::error::{InvalidQueryReason, QueryError};
+
+    let (temp, schema, mut index) = reopen_scoring_corpus("perf07a-i02", 40, 6);
+    let registry = AnalyzerRegistry::builtin();
+    let old = index.snapshot();
+    let old_searcher = UnifiedSearcher::new(&old, &schema, &registry, SearchLimits::default());
+    let base = request(
+        text_term("body", "alpha"),
+        10,
+        doc_id_sort(SortDirection::Asc),
+        scoring_projection(),
+    );
+    let old_total_length: u64 = (0..40).map(scoring_dl).sum();
+    assert_eq!(old_total_length, 180, "input-derived old total length");
+
+    // Phase 1: the pinned pre-mutation view.
+    let old_pages = p07a_i02_pages(&old_searcher, &old, &base, false);
+    let old_cursor = old_pages[0].next_cursor.clone().expect("old cursor");
+    let old_s0006 = old_pages[0]
+        .hits
+        .iter()
+        .find(|hit| hit.key.as_str() == scoring_doc_key(6))
+        .expect("old s0006");
+    assert_eq!(
+        old_s0006.fields[1].1,
+        FieldValues::Single(FieldValue::Text(scoring_body(6))),
+        "old body"
+    );
+
+    // Phase 2: real mutation keeps the key a match but changes body and score.
+    let new_snapshot = {
+        let mut writer = index.writer().expect("writer");
+        writer
+            .apply(MutationRequest::delete(
+                DocumentKey::new("s0002").expect("key"),
+            ))
+            .expect("delete");
+        let mut updated = scoring_document(6);
+        updated
+            .insert(
+                "body",
+                FieldValues::Single(FieldValue::Text(P07A_I02_UPDATED_BODY.to_owned())),
+            )
+            .expect("body");
+        writer
+            .apply(MutationRequest::upsert(updated))
+            .expect("upsert");
+        writer.insert(scoring_document(40)).expect("insert");
+        writer.commit().expect("commit");
+        writer.refresh().expect("refresh")
+    };
+    let new_searcher =
+        UnifiedSearcher::new(&new_snapshot, &schema, &registry, SearchLimits::default());
+    let new_total_length: u64 =
+        old_total_length - scoring_dl(2) - scoring_dl(6) + 6 + scoring_dl(40);
+    assert_eq!(new_total_length, 178, "input-derived new total length");
+
+    let new_pages = p07a_i02_pages(&new_searcher, &new_snapshot, &base, true);
+    let new_s0006 = new_pages[0]
+        .hits
+        .iter()
+        .find(|hit| hit.key.as_str() == scoring_doc_key(6))
+        .expect("new s0006");
+    assert_eq!(
+        new_s0006.fields[1].1,
+        FieldValues::Single(FieldValue::Text(P07A_I02_UPDATED_BODY.to_owned())),
+        "updated body"
+    );
+    assert_ne!(
+        new_s0006.score.map(f64::to_bits),
+        old_s0006.score.map(f64::to_bits),
+        "updated score bits differ"
+    );
+
+    // An old cursor is rejected on the new snapshot.
+    let mut stale = base.clone();
+    stale.after = Some(old_cursor);
+    let error = new_searcher
+        .search(&stale, &Budgets::new(), &NeverCancel)
+        .expect_err("stale cursor");
+    assert!(
+        matches!(
+            error,
+            SearchError::Query(QueryError::InvalidQuery(
+                InvalidQueryReason::CursorPitMismatch
+            ))
+        ),
+        "{error:?}"
+    );
+
+    // Phase 3: the original pinned view is unchanged.
+    let pinned = p07a_i02_pages(&old_searcher, &old, &base, false);
+    assert_eq!(pinned, old_pages, "pinned responses are exactly unchanged");
+    for (page, (a, b)) in pinned.iter().zip(&old_pages).enumerate() {
+        for (rank, (x, y)) in a.hits.iter().zip(&b.hits).enumerate() {
+            assert_eq!(
+                x.score.map(f64::to_bits),
+                y.score.map(f64::to_bits),
+                "pinned page {page} rank {rank}: explicit score bits"
+            );
+        }
+    }
+
+    // Phase 4: compact and reopen from the real filesystem.
+    {
+        let mut writer = index.writer().expect("writer");
+        writer.compact().expect("compact");
+        writer.commit().expect("commit compact");
+    }
+    index = Index::open_with_limits(
+        Arc::new(FsDirectory::open(temp.path()).expect("fs")),
+        schema.clone(),
+        AnalyzerRegistry::builtin(),
+        large_index_limits(),
+    )
+    .expect("reopen after compaction");
+    let reopened = index.snapshot();
+    assert_eq!(reopened.segment_count(), 1, "compaction merges segments");
+    let reopened_registry = AnalyzerRegistry::builtin();
+    let reopened_searcher = UnifiedSearcher::new(
+        &reopened,
+        &schema,
+        &reopened_registry,
+        SearchLimits::default(),
+    );
+    let compacted_pages = p07a_i02_pages(&reopened_searcher, &reopened, &base, true);
+    p07a_i02_assert_logical_parity(&compacted_pages, &new_pages);
+
+    // Phase 5: the pinned pre-mutation view survives compaction exactly.
+    let pinned_after = p07a_i02_pages(&old_searcher, &old, &base, false);
+    assert_eq!(
+        pinned_after, old_pages,
+        "pinned pre-mutation responses survive compaction"
+    );
+
+    let page_calls = old_pages.len()
+        + new_pages.len()
+        + pinned.len()
+        + compacted_pages.len()
+        + pinned_after.len();
+    assert_eq!(page_calls, 20, "five phases x four pages");
+    assert_eq!(page_calls * 10, 200, "per-hit checks");
+    eprintln!(
+        "PERF07-A I02 phases=5 page-calls={page_calls} per-hit-checks={}",
+        page_calls * 10
+    );
+}
