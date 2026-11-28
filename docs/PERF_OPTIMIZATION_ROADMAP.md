@@ -521,3 +521,28 @@ passed. Report: [PERF06C4_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C4_E
 Independent acceptance/promotion pending. No automatic rollback, no baseline
 promotion, and no performance claim beyond the measured lanes; the cumulative
 pre-A1→C effect remains unmeasured.
+
+## PERF06_C4_CROSS_ENGINE separate Q/T/J comparison (2026-11-27)
+
+A separate post-C4 cross-engine comparison of production Quervant against
+Tantivy 0.25.0 and Lucene 9.12.3 was executed on the existing C4 branch at
+execution source `0148aaaa922c398a0b8b33581e72918ad212e67f` (the only executable
+change is the advisory host-observation extension to `cross-engine`). Native
+Quervant/Tantivy/Lucene exact-keyword string-sort warm
+(`quervant-perf06c4-tantivy-lucene-lexical-sort-warm`, UUID
+`0c67e2ea-f2be-4dc6-8a31-ef4f892f8008`) published **`INCOMPLETE`**: the binding
+native A/A control failed one of sixteen lanes
+(`10000/absent/k10/warm`, gain -1.140%, CI [-24.702, +0.434]%), so no warm
+comparison is claimed and the single warm invocation is exhausted. The separate
+process-cold study (`quervant-perf06c4-tantivy-lucene-lexical-sort-cold-start`,
+UUID `13cb8e69-0855-4239-b8ad-e78ef0ad62e0`) published **`COMPLETE`**:
+`10000/medium/k100/process-cold` T/Q ratio 0.049416 [0.048871, 0.050003]
+(native gain +95.06%, Tantivy faster) and J/Q ratio 15.331842 [15.295242,
+15.408109] (native gain -1433.18%, Lucene slower). Overall disposition
+**`PERF06_CROSS_ENGINE_PARTIAL`**. Results:
+[`warm`](../../benchmarks/studies/cross-engine/warm/results/quervant-perf06c4-tantivy-lucene-lexical-sort-warm-2026-11-27-001.json),
+[`cold`](../../benchmarks/studies/cross-engine/cold-start/results/quervant-perf06c4-tantivy-lucene-lexical-sort-cold-start-2026-11-27-001.json);
+report: [PERF06C4_CROSS_ENGINE_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C4_CROSS_ENGINE_EXECUTION_REPORT.md).
+General QA suites were not rerun by explicit maintainer instruction. This adds no
+optimization, no baseline promotion and no change to the earlier C4
+incremental-qualification verdict.
