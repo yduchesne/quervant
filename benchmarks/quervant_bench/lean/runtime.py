@@ -890,6 +890,12 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
         config["family"] in ("perf-06", "cross-engine") and
         config["policy"]["readiness"].get("mode", "blocking") == "advisory")
     report["context"]["host_readiness_mode"] = "advisory" if readiness_advisory else "blocking"
+    aa_advisory = (
+        config["family"] == "cross-engine" and config["workload"]["regimes"] == ["warm"]
+        and config["policy"].get("aa_mode", "required") == "advisory")
+    aa_control_failed = False
+    if aa_advisory:
+        report["context"]["aa_control_mode"] = "advisory"
     try:
         started = time.monotonic_ns()
         report["context"]["host"] = host_context(scratch, check=check_host)
@@ -975,8 +981,39 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
                                     lanes=lanes, policy=control_policy)
             report["phase_durations_ns"]["aa_analysis_ns"] = max(1, time.monotonic_ns() - started)
             report["controls"]["analysis"] = control_stats
-            if any(c.get("status") != "PASS" for lane in control_stats["lanes"].values()
-                   for c in lane["comparisons"].values()):
+            if aa_advisory:
+                control_lanes = control_stats.get("lanes") if isinstance(control_stats, dict) else None
+                if (not isinstance(control_lanes, dict) or not control_lanes
+                        or set(control_lanes) != {lane["id"] for lane in lanes}):
+                    raise MeasurementBlocked("advisory A/A requires every declared control lane")
+                failed_lanes = []
+                for lane_id, control_lane in control_lanes.items():
+                    comparisons = control_lane.get("comparisons") if isinstance(control_lane, dict) else None
+                    if not isinstance(comparisons, dict) or set(comparisons) != {"AA2"}:
+                        raise MeasurementBlocked("advisory A/A requires exactly one AA2 comparison per lane")
+                    if (control_lane.get("retained_blocks") != config["policy"]["blocks"]
+                            or control_lane.get("excluded_blocks") != []):
+                        raise MeasurementBlocked("advisory A/A requires every scheduled block without exclusions")
+                    comparison = comparisons["AA2"]
+                    if (not isinstance(comparison, dict) or comparison.get("kind") != "A/A"
+                            or comparison.get("baseline_arm") != "AA"
+                            or comparison.get("treatment_arm") != "AA2"
+                            or comparison.get("status") not in ("PASS", "FAIL")):
+                        raise MeasurementBlocked("advisory A/A accepts only native PASS or FAIL outcomes")
+                    if comparison["status"] == "FAIL":
+                        failed_lanes.append(lane_id)
+                aa_control_failed = bool(failed_lanes)
+                report["controls"]["aa_gate"] = {
+                    "mode": "advisory", "status": "FAIL" if aa_control_failed else "PASS",
+                    "failed_lanes": sorted(failed_lanes),
+                    "continued_after_failure": aa_control_failed,
+                }
+                if aa_control_failed:
+                    report["notes"] += (
+                        " Predeclared advisory A/A allowed acquisition after a native statistical FAIL; "
+                        "comparative values are exploratory and not statistically qualified.")
+            elif any(c.get("status") != "PASS" for lane in control_stats["lanes"].values()
+                     for c in lane["comparisons"].values()):
                 raise MeasurementBlocked("A/A control is unstable; comparative acquisition is blocked")
             if check_host:
                 report["controls"]["readiness_treatment"] = observe()
@@ -1022,7 +1059,8 @@ def run_benchmark(config_path: Path, result_dir: Path | None = None, *, root: Pa
                     if (report["controls"]["readiness_throughput_post"]["status"] != "clear"
                             and not readiness_advisory):
                         raise MeasurementBlocked("host contention after throughput; preserve samples but invalidate run")
-            report["status"] = _run_status(report["analysis"])
+            report["status"] = ("INCONCLUSIVE" if aa_control_failed
+                                else _run_status(report["analysis"]))
     except KeyboardInterrupt:
         # Operator interruption must not discard already captured measurements.
         report["errors"].append("interrupted by operator; partial observations preserved")

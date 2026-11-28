@@ -141,6 +141,7 @@ The retained-key runner constructs a **pinned historical pre-optimization** sour
 | `min_gain_percent` | finite nonnegative number | 0 | Treatment improvement threshold applied to the lower bound of gain CI. |
 | `max_regression_percent` | finite nonnegative number | 0 | Treatment regression threshold applied to the upper bound of gain CI. |
 | `max_aa_gain_percent` | finite nonnegative number | 15 | Maximum absolute signed gain and CI bound for equivalent-baseline A/A PASS. |
+| `aa_mode` | string | absent (= `required`) | Optional `required` or `advisory`; `advisory` is supported only by cross-engine warm. It changes continuation, not the native A/A decision or threshold. |
 | `exclude_blocks` | object | `{}` | Map of declared lane IDs to lists of **unique block numbers** in `[1,blocks]`; exclusions are symmetric across arms. |
 | `control_arms` | array | `[]` | Must be empty in the normal configuration. A/A analysis separately uses `["AA2"]`. |
 | `readiness` | object | See §8 | Predeclared host observation settings. |
@@ -158,6 +159,8 @@ Exclusions must be declared before measurement. The analyzer retains raw samples
 
 **Statistical semantics:** a slot's value is the median of its measured query latencies; an arm's block value is the mean of its slot medians; each block supplies a paired treatment/baseline `B/A` ratio. The point effect is the median of eligible block ratios. The bootstrap resamples **whole blocks**, not individual query samples. Positive signed gain means improvement for the declared direction.
 
+**Optional advisory A/A.** A new cross-engine **warm** configuration may be created with `quervant-bench prepare --family cross-engine --regime warm --aa-advisory ...`. This freezes optional `policy.aa_mode="advisory"`; absent mode or explicit `"required"` retains the existing blocking A/A behavior. Other families and process-cold reject advisory A/A. The flag exists only on `prepare`; `stage` and `run` have no bypass flag. Full A/A acquisition and native analysis still run with unchanged samples, ±15% default bound, bootstrap and PASS/FAIL decisions. Only a native statistical FAIL may continue to the complete treatment/throughput schedule. Missing/incomplete/non-comparable control outcomes and every source, build, oracle, protocol, timer or acquisition failure remain fatal. A completed study that continued after any FAIL has top-level `INCONCLUSIVE`, retains all native values and is reported as exploratory, statistically unqualified comparison; all-PASS retains normal status. No historical configuration or result is reinterpreted. `--readiness-advisory` remains a separate host-observation policy and may be explicitly combined with this option.
+
 ## 8. `policy.readiness` object
 
 | Key | Type | Default | Constraint / role |
@@ -170,7 +173,7 @@ Exclusions must be declared before measurement. The analyzer retains raw samples
 
 The Linux/WSL2 runner checks physical-core availability, usable filesystem/toolchains and contention around timed phases. Readiness results live in the **result's** `controls` object, not in configuration. These checks prevent invalid comparisons; they are not manual approval or cryptographic attestation.
 
-**Advisory mode (PERF-06 and cross-engine).** A `perf-06` or `cross-engine` configuration created explicitly with `quervant-bench prepare --readiness-advisory` declares `policy.readiness.mode="advisory"`. Cross-engine supports this mode for both warm and process-cold studies. The native CPU busy/steal observations are still acquired at every existing checkpoint and retained with their actual `clear`, `busy` or `unavailable` status and unchanged 25%/2% thresholds. These observations are informational and do not block staging or acquisition. An absent mode retains the original blocking behavior. Structural execution capabilities and the native A/A measurement-validity control remain required. Other families reject advisory mode; `stage` and `run` accept no runtime bypass flag. Historical configurations and result interpretations are unchanged.
+**Advisory mode (PERF-06 and cross-engine).** A `perf-06` or `cross-engine` configuration created explicitly with `quervant-bench prepare --readiness-advisory` declares `policy.readiness.mode="advisory"`. Cross-engine supports this mode for both warm and process-cold studies. The native CPU busy/steal observations are still acquired at every existing checkpoint and retained with their actual `clear`, `busy` or `unavailable` status and unchanged 25%/2% thresholds. These observations are informational and do not block staging or acquisition. An absent mode retains the original blocking behavior. Structural execution capabilities remain required. Host advisory mode alone leaves the A/A statistical decision blocking; the separate cross-engine warm `--aa-advisory` option is described in §7. Other families reject advisory mode; `stage` and `run` accept no runtime bypass flag. Historical configurations and result interpretations are unchanged.
 
 ## 9. Current limitations, validation and versioning
 

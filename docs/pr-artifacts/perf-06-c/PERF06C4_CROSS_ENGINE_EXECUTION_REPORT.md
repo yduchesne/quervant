@@ -124,7 +124,7 @@ preparation timestamp is `2026-11-27T23:52:49Z` / `2026-11-27T23:54:07Z`.
   `readiness_treatment`, `readiness_post` and the throughput checkpoints are absent
   because the native control blocked acquisition before them; this is disclosed and
   is not itself treated as an invalidity condition.
-- Phases: host preflight 0.051 s, preparation lookup 2.053 s, A/A acquisition
+- Phases: host preflight 0.051 s, preparation total 2.053 s (cache lookup 0.111 s), A/A acquisition
   89.364 s, A/A analysis 0.778 s, total before save 93.297 s.
 
 ### 6.2 Process-cold
@@ -140,7 +140,7 @@ preparation timestamp is `2026-11-27T23:52:49Z` / `2026-11-27T23:54:07Z`.
 - Host observations (advisory, informational): `readiness_index_pre` `clear` (one of
   four intervals reported busy `7.692%`, still `clear`), `readiness_pre` `clear`,
   `readiness_treatment` `clear`, `readiness_post` `clear`; all with steal `0.0%`.
-- Phases: host preflight 0.050 s, preparation lookup 0.783 s, A/A acquisition
+- Phases: host preflight 0.050 s, preparation total 0.783 s (cache lookup 0.056 s), A/A acquisition
   38.224 s, A/A analysis 0.050 s, treatment acquisition 319.570 s, treatment analysis
   0.095 s, total before save 361.826 s.
 - Build/context (both studies): `rustc 1.98.1`, `cargo 1.98.1`, `python 3.12.3`,
@@ -178,9 +178,10 @@ Warm preparation index metrics (descriptive, preparation stage; segment count 1)
 
 ## 8. Process-cold comparison
 
-Ratios are competitor/Quervant. Ratio > 1 and positive native gain mean the
-**competitor is slower**; ratio < 1 / positive gain mean the **competitor is faster**.
-Native `IMPROVED`/`REGRESSED` describes the competitor relative to Q.
+Ratios are competitor/Quervant, and native gain is `100 * (1 - ratio)`.
+Ratio > 1 and negative native gain mean the **competitor is slower**; ratio < 1
+and positive native gain mean the **competitor is faster**. Ratio = 1 means zero
+native gain. Native `IMPROVED`/`REGRESSED` describes the competitor relative to Q.
 
 | Lane | Q wall (ms) | T wall (ms) | J wall (ms) | Competitor | Ratio vs Q | 95% ratio CI | Competitor gain % | Native status | Blocks |
 | --- | ---: | ---: | ---: | --- | ---: | --- | ---: | --- | ---: |
@@ -243,12 +244,16 @@ throughput phase by contract.
 | D06 | Disjoint untracked `docs/pr-artifacts/perf-06-b/evidence/f2-ci-status.txt` | Preserved untouched; exact-path staging only | status; setup/delivery |
 | D11 | Advisory load observations clear (cold included one `7.692%` busy interval, still `clear`) | Recorded as informational; acquisition continued; no wait/recheck/retune | native `controls`; all stages |
 | D18 | Warm's sole failure was the exact native A/A-instability error | Preserved warm `INCOMPLETE`; ran the already-staged, uninvoked cold config once with its own control | warm result + cold stage/result; acquisition |
-| D17/D14 | Warm run exited 4 with saved `INCOMPLETE` | No retry, no pruning, no reconstructed samples; reported actual counts | warm result/log; acquisition |
-| D19 | Cold `COMPLETE` with an unfavorable Lucene comparison | Reported both comparisons as measured evidence; no threshold or retry | cold result; reporting |
-| D23 | `origin/main` unchanged at `f169fbb…` throughout | No rebase/repin; experiment stayed on the selected source | refs; all stages |
+| D17 | Warm run exited 4 with saved `INCOMPLETE` | No retry, no pruning, no reconstructed samples; reported actual counts | warm result/log; acquisition |
+| D19 | Cold `COMPLETE`; Quervant slower than Tantivy (T/Q `0.049416`) | Reported both competitor comparisons as measured evidence; no threshold change or retry | cold result; reporting |
 | D25 | Only allowlisted artifacts pending after measurement | Exact-path commit; non-force push to `dev/perf06-c4`; append PR description | delivery |
-| D27 | No non-sample Git hooks present | Normal commit, no hook bypass | `.git/hooks`; commit |
 | D28 | Ordinary hosted CI may start from the push | Left alone; not gated | delivery |
+
+D14, D23 and D27 were checked but did not trigger. There was no shared
+source/oracle/protocol failure (D14); `origin/main` remained at
+`f169fbba93e10d174cad8ab3bca55cdb7ae6aa03`, so there was no main advancement
+(D23); and no non-sample Git hook was present or bypassed (D27). The original
+execution therefore applied D01, D06, D11, D17, D18, D19, D25 and D28.
 
 No other rule fired. No unexpected source, oracle, protocol, build or cache failure
 occurred; the single warm failure is a native measurement-validity (A/A) outcome.
@@ -291,3 +296,26 @@ occurred; the single warm failure is a native measurement-validity (A/A) outcome
   natural next step, if warm behaviour is still required, is a separately authorized
   new warm acquisition (the single warm invocation for this plan is exhausted); no
   retry is authorized by this report.
+
+## 14. Independent review corrections
+
+Review basis: delivery commit `0917d94d1c3b9f4ee7dcd887b166a8f3a5a2824b`;
+measurement source `0148aaaa922c398a0b8b33581e72918ad212e67f`. The corrections
+below supersede the earlier presentation at that delivery commit.
+
+| Fix | Correction |
+| --- | --- |
+| F01 | Corrected the sign explanation in §8; ratios and native comparison tables are unchanged. |
+| F02 | Distinguished preparation totals from cache lookups in §6.1 and §6.2. |
+| F03 | Corrected applied-rule attribution: D17 for the warm stop, D18 for cold continuation, and D19 for Quervant's measured loss to Tantivy; D14/D23/D27 did not trigger. |
+| F04 | Corrected the two result-link targets in the new cross-engine roadmap entry. |
+
+These corrections preserve this original experiment's configurations, result
+JSON, source revisions, all measurements and both study statuses. Its disposition
+remains **`PERF06_CROSS_ENGINE_PARTIAL`**; its warm treatment and throughput were
+not acquired. A separately identified new warm acquisition is prospectively
+authorized by the autonomous completion plan below. That new experiment must not
+replace this result or backfill its missing observations. General test and quality
+suites remain waived by the user.
+
+Autonomous completion plan: [PERF06C4_CROSS_ENGINE_AUTONOMOUS_COMPLETION_PLAN.md](PERF06C4_CROSS_ENGINE_AUTONOMOUS_COMPLETION_PLAN.md).

@@ -382,6 +382,18 @@ measurement stability under equivalent baselines. The actual A/A pass/fail
 requirements and subsequent campaign authorization are defined by that
 experiment's frozen control policy, not by post-hoc selection of good blocks.
 
+**Optional cross-engine warm advisory A/A.** A new configuration may prospectively
+declare `policy.aa_mode="advisory"` through `prepare --aa-advisory`. This permits
+complete treatment and serial-throughput acquisition after a native statistical
+A/A FAIL, while preserving all control samples, thresholds, decisions and
+confidence intervals. Only cross-engine warm supports this policy; defaults and
+historical studies retain required A/A. Structural/oracle/protocol/timing failures
+still stop acquisition. A completed study with any failed control lane is
+`INCONCLUSIVE`: its displayed comparative values are exploratory and statistically
+unqualified. They do not qualify an optimization or authorize baseline promotion.
+This prospective acquisition policy does not turn an earlier failed study into
+accepted evidence or permit pruning/repeating selected lanes.
+
 ### Aggregation and paired statistics
 
 For each **lane** and **slot**, compute the **median of its timed samples**.

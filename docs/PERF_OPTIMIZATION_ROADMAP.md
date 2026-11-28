@@ -540,8 +540,8 @@ UUID `13cb8e69-0855-4239-b8ad-e78ef0ad62e0`) published **`COMPLETE`**:
 (native gain +95.06%, Tantivy faster) and J/Q ratio 15.331842 [15.295242,
 15.408109] (native gain -1433.18%, Lucene slower). Overall disposition
 **`PERF06_CROSS_ENGINE_PARTIAL`**. Results:
-[`warm`](../../benchmarks/studies/cross-engine/warm/results/quervant-perf06c4-tantivy-lucene-lexical-sort-warm-2026-11-27-001.json),
-[`cold`](../../benchmarks/studies/cross-engine/cold-start/results/quervant-perf06c4-tantivy-lucene-lexical-sort-cold-start-2026-11-27-001.json);
+[`warm`](../benchmarks/studies/cross-engine/warm/results/quervant-perf06c4-tantivy-lucene-lexical-sort-warm-2026-11-27-001.json),
+[`cold`](../benchmarks/studies/cross-engine/cold-start/results/quervant-perf06c4-tantivy-lucene-lexical-sort-cold-start-2026-11-27-001.json);
 report: [PERF06C4_CROSS_ENGINE_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C4_CROSS_ENGINE_EXECUTION_REPORT.md).
 General QA suites were not rerun by explicit maintainer instruction. This adds no
 optimization, no baseline promotion and no change to the earlier C4
