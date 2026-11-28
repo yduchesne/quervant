@@ -18278,5 +18278,191 @@ mod c2_tests {
         let _ = &stats_owner;
         eprintln!("C3 U12 misuse-guard rows=4");
     }
+
+    // -----------------------------------------------------------------------
+    // PERF-07-A — selective physical key verification in projection.
+    // -----------------------------------------------------------------------
+
+    /// The explicit two-field projection of one fixture document, in plan order.
+    fn p07a_fields(index: usize) -> Vec<(String, FieldValues)> {
+        vec![
+            (
+                "doc_id".to_owned(),
+                FieldValues::Single(FieldValue::Keyword(bounded_key(index))),
+            ),
+            (
+                "n".to_owned(),
+                FieldValues::Single(FieldValue::I64(index as i64)),
+            ),
+        ]
+    }
+
+    /// Compile the fixed `(doc_id, n)` projection against the fixture schema.
+    fn p07a_plan(fixture: &Fixture) -> ProjectionPlan {
+        ProjectionPlan::compile(
+            &Projection::Fields(vec!["doc_id".to_owned(), "n".to_owned()]),
+            &fixture.schema,
+        )
+        .expect("plan")
+    }
+
+    /// Map each pristine key of one fixture segment to its physical id through a
+    /// fresh guard. The guard's query-local full cache is dropped with the guard.
+    fn p07a_pristine_key_map(fixture: &Fixture, segment: usize) -> BTreeMap<String, u64> {
+        let guard = fixture
+            .snapshot
+            .open_segment_reader(segment)
+            .expect("guard");
+        let keys = guard.reader().doc_keys().expect("pristine keys");
+        let mut map = BTreeMap::new();
+        for (id, key) in keys.iter().enumerate() {
+            let previous = map.insert(key.as_str().to_owned(), id as u64);
+            assert!(previous.is_none(), "duplicate pristine key {key:?}");
+        }
+        map
+    }
+
+    /// A directly constructed selected hit with the exact expected physical key.
+    fn p07a_hit(segment_index: usize, doc_id: u64, key: &str) -> SelectedHit {
+        SelectedHit {
+            segment_index,
+            doc_id,
+            key: DocumentKey::new(key.to_owned()).expect("key"),
+            score: Some(1.0),
+            sort_tuple: Vec::new(),
+        }
+    }
+
+    // PERF-07-A U01 — red-first proof and warm multi-hit scaling.
+    #[test]
+    fn perf07a_u01_projection_prepared_offsets_no_full_keys() {
+        use crate::segment::reader::perf07a_observation::{self, Counts};
+
+        let fixture = Fixture::new(&[(0..1100).map(document).collect()]);
+        assert_eq!(fixture.snapshot.segment_count(), 1, "one native segment");
+
+        // Pristine physical identity from a separate full-decode guard.
+        let key_map = p07a_pristine_key_map(&fixture, 0);
+        let literal: BTreeSet<String> = (0..1100).map(bounded_key).collect();
+        assert_eq!(
+            key_map.keys().cloned().collect::<BTreeSet<String>>(),
+            literal,
+            "physical keys are a bijection over the literal input set"
+        );
+
+        // Prime the shared offset certificate through the unchanged scalar path.
+        {
+            let guard = fixture
+                .snapshot
+                .open_segment_reader(0)
+                .expect("prime guard");
+            assert_eq!(guard.reader().doc_count(), 1100);
+            let _ = guard.reader().doc_key_selected(0).expect("prime offsets");
+            assert_eq!(
+                guard.reader().shared_state().key_offsets_state(),
+                Some(true),
+                "offsets are ready"
+            );
+        }
+        assert_eq!(
+            fixture.snapshot.reader_copy_used(),
+            0,
+            "no reader copy retained"
+        );
+
+        let plan = p07a_plan(&fixture);
+        let descending_1090: Vec<usize> = (1090..=1099).rev().collect();
+        let descending_1000: Vec<usize> = (1000..=1099).rev().collect();
+
+        let run = |indices: &[usize]| -> (Counts, usize) {
+            let hits: Vec<SelectedHit> = indices
+                .iter()
+                .map(|index| p07a_hit(0, key_map[&bounded_key(*index)], &bounded_key(*index)))
+                .collect();
+            let mut ledger = ProjectionLedger::new(1 << 20);
+            perf07a_observation::reset();
+            crate::segment::reader::test_observation::reset();
+            let out =
+                super::project_selected_hits(&fixture.snapshot, &plan, &mut ledger, &hits, None)
+                    .expect("projection");
+            let counts = perf07a_observation::counts();
+            let owned = crate::segment::reader::test_observation::selected_keys_owned();
+            assert_eq!(out.len(), indices.len(), "projected length");
+            for (position, index) in indices.iter().enumerate() {
+                assert_eq!(
+                    out[position],
+                    p07a_fields(*index),
+                    "position {position} fields"
+                );
+            }
+            assert!(ledger.used() > 0, "ledger charged");
+            assert_eq!(counts.stored_calls, 1, "one STORED call");
+            assert_eq!(
+                fixture.snapshot.reader_copy_used(),
+                0,
+                "reader guard released"
+            );
+            (counts, owned)
+        };
+
+        let rows: [(&str, &[usize], usize); 4] = [
+            ("K10-a", &descending_1090, 10),
+            ("K100-a", &descending_1000, 100),
+            ("K10-b", &descending_1090, 10),
+            ("K100-b", &descending_1000, 100),
+        ];
+        let mut completed = 0usize;
+        for (label, indices, k) in rows {
+            let (counts, owned) = run(indices);
+            eprintln!(
+                "PERF07-A U01 GREEN label={label} full_owned={} full_decodes={} scans={} scan_rows={} offset_reads={} selection_rows={} cache_compares={} stored_calls={} selected_owned={}",
+                counts.full_owned,
+                counts.full_decodes,
+                counts.scans,
+                counts.scan_rows,
+                counts.offset_reads,
+                counts.selection_rows,
+                counts.cache_compares,
+                counts.stored_calls,
+                owned,
+            );
+            if completed == 0 {
+                eprintln!(
+                    "PERF07-A RED-WITNESS full_owned={} full_decodes={} expected=0 K=10 N=1100",
+                    counts.full_owned, counts.full_decodes
+                );
+            }
+            assert_eq!(
+                counts.full_owned, 0,
+                "PERF07-A U01 full owned keys ({label})"
+            );
+            assert_eq!(
+                counts.full_decodes, 0,
+                "PERF07-A U01 full decodes ({label})"
+            );
+            assert_eq!(counts.scans, 0, "PERF07-A U01 scans ({label})");
+            assert_eq!(counts.scan_rows, 0, "PERF07-A U01 scan rows ({label})");
+            assert_eq!(
+                counts.offset_reads, k,
+                "PERF07-A U01 offset reads ({label})"
+            );
+            assert_eq!(
+                counts.selection_rows, 0,
+                "PERF07-A U01 selection rows ({label})"
+            );
+            assert_eq!(
+                counts.cache_compares, 0,
+                "PERF07-A U01 cache compares ({label})"
+            );
+            assert_eq!(owned, k, "PERF07-A U01 selected owned keys ({label})");
+            assert_eq!(
+                counts.stored_calls, 1,
+                "PERF07-A U01 stored calls ({label})"
+            );
+            completed += 1;
+        }
+        assert_eq!(completed, 4, "four completed rows on GREEN");
+        eprintln!("PERF07-A U01 rows={completed}");
+    }
 }
 // C2_TESTS_CLOSE_MARKER

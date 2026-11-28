@@ -1550,6 +1550,8 @@ impl SegmentReader {
         &self,
         ascending_unique_ids: &[u64],
     ) -> SegmentResult<Vec<(u64, StoredRecord)>> {
+        #[cfg(test)]
+        perf07a_observation::record_stored_call();
         let cached = self.stored_cache.borrow().as_ref().map(Rc::clone);
         if let Some(records) = cached {
             let mut selected: Vec<(u64, StoredRecord)> = Vec::new();
@@ -2423,6 +2425,8 @@ fn decode_geo_bounds(
 }
 
 fn decode_doc_keys(reader: &SegmentReader) -> SegmentResult<Vec<DocumentKey>> {
+    #[cfg(test)]
+    perf07a_observation::record_full_decode();
     let body = reader
         .body(SectionKind::DocKeys)
         .ok_or(SegmentError::MissingSection {
@@ -2465,6 +2469,8 @@ fn decode_doc_keys(reader: &SegmentReader) -> SegmentResult<Vec<DocumentKey>> {
             detail: "invalid document key".to_owned(),
         })?;
         keys.push(key);
+        #[cfg(test)]
+        perf07a_observation::record_full_owned();
     }
     bytes.expect_end("doc keys")?;
     Ok(keys)
@@ -2488,6 +2494,81 @@ pub(crate) mod test_observation {
 
     pub(crate) fn record_selected_key_owned() {
         SELECTED_KEYS_OWNED.with(|value| value.set(value.get() + 1));
+    }
+}
+
+/// PERF-07-A test-only structural observations of the projection key path.
+///
+/// These counters are compiled out of production builds and are never a
+/// production metric. Tests reset them immediately before the seam under
+/// observation so earlier fixture work cannot contaminate the counts.
+#[cfg(test)]
+pub(crate) mod perf07a_observation {
+    use std::cell::Cell;
+
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(crate) struct Counts {
+        pub(crate) full_decodes: usize,
+        pub(crate) full_owned: usize,
+        pub(crate) scans: usize,
+        pub(crate) scan_rows: usize,
+        pub(crate) offset_reads: usize,
+        pub(crate) cache_compares: usize,
+        pub(crate) selection_rows: usize,
+        pub(crate) stored_calls: usize,
+    }
+
+    thread_local! {
+        static COUNTS: Cell<Counts> = const { Cell::new(Counts {
+            full_decodes: 0,
+            full_owned: 0,
+            scans: 0,
+            scan_rows: 0,
+            offset_reads: 0,
+            cache_compares: 0,
+            selection_rows: 0,
+            stored_calls: 0,
+        }) };
+    }
+
+    fn add(update: impl FnOnce(&mut Counts)) {
+        COUNTS.with(|cell| {
+            let mut counts = cell.get();
+            update(&mut counts);
+            cell.set(counts);
+        });
+    }
+
+    pub(crate) fn reset() {
+        COUNTS.with(|cell| cell.set(Counts::default()));
+    }
+
+    pub(crate) fn counts() -> Counts {
+        COUNTS.with(Cell::get)
+    }
+
+    pub(crate) fn record_full_decode() {
+        add(|counts| counts.full_decodes += 1);
+    }
+
+    pub(crate) fn record_full_owned() {
+        add(|counts| counts.full_owned += 1);
+    }
+
+    pub(crate) fn record_scan() {
+        add(|counts| counts.scans += 1);
+    }
+
+    pub(crate) fn record_scan_row() {
+        add(|counts| counts.scan_rows += 1);
+    }
+
+    pub(crate) fn record_offset_read() {
+        add(|counts| counts.offset_reads += 1);
+    }
+
+    pub(crate) fn record_stored_call() {
+        add(|counts| counts.stored_calls += 1);
     }
 }
 
@@ -2548,7 +2629,10 @@ fn decode_doc_key_at_validated_offset(
     })?;
     bytes.expect_end("doc keys")?;
     #[cfg(test)]
-    test_observation::record_selected_key_owned();
+    {
+        test_observation::record_selected_key_owned();
+        perf07a_observation::record_offset_read();
+    }
     Ok(key)
 }
 
@@ -2564,6 +2648,8 @@ fn scan_doc_keys(
     selected_doc_id: Option<u64>,
     mut offsets: Option<&mut Vec<u64>>,
 ) -> SegmentResult<Option<DocumentKey>> {
+    #[cfg(test)]
+    perf07a_observation::record_scan();
     let mut bytes = ByteReader::new(body);
     let version = bytes.u16("doc keys version")?;
     if version != 1 {
@@ -2630,6 +2716,8 @@ fn scan_doc_keys(
                 });
             }
         }
+        #[cfg(test)]
+        perf07a_observation::record_scan_row();
     }
     if let Some(offsets) = offsets.as_mut() {
         let offsets = &mut **offsets;
