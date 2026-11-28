@@ -4,6 +4,15 @@
 **Branch:** `dev/perf06-c4` · **PR:** [#133](https://github.com/yduchesne/quervant/pull/133) (existing, draft, unmerged)
 · **Plan:** [`PERF06C4_CROSS_ENGINE_AUTONOMOUS_COMPLETION_PLAN.md`](PERF06C4_CROSS_ENGINE_AUTONOMOUS_COMPLETION_PLAN.md)
 
+> **Subsequent status and reporting amendment — 2026-11-27 (America/Los_Angeles).**
+> This report records execution and delivery before [PR #133](https://github.com/yduchesne/quervant/pull/133)
+> merged at `44caa511f6e147836c446b970845f03de45eb515` (2026-11-28 UTC).
+> Its draft/unmerged, readiness-preserved and maintainer-review statements describe
+> that historical state. This amendment corrects only the A/A explanation, the
+> Tantivy comparator wording and D16's rule attribution. Configurations, raw samples,
+> numeric tables, native classifications and statistical qualification are unchanged.
+> The warm comparison remains exploratory and statistically unqualified.
+
 ## 1. Disposition
 
 **Disposition: `PERF06_CROSS_ENGINE_WARM_ACQUIRED_AA_FAIL_DESCRIPTIVE`.**
@@ -136,9 +145,10 @@ comparison below is therefore exploratory and statistically unqualified.
 | 100000/rare/k10/warm | -1.437456 | [-2.930758, 4.920979] | PASS |
 | 100000/rare/k100/warm | 0.181692 | [-1.062185, 2.137159] | PASS |
 
-The failure is a confidence-interval width/outlier effect on the 10K absent-K10 lane, not
-a point-estimate threshold breach, and no causal host-load explanation is established.
-The threshold was not changed and no lane was retried or pruned.
+The 10K absent-K10 control lane failed because its 95% gain interval extends to
++19.528730%, above the unchanged +15% upper control bound. Its +1.863506% point
+estimate is within the ±15% bound. No causal explanation is established. No lane
+was retried or pruned.
 
 ## 8. All 32 warm latency comparisons
 
@@ -184,7 +194,8 @@ medians (native `median_block_value`, ms).
 | 100000/rare/k100/warm | 0.158577 | 0.021775 | 0.351030 | J/Q | 2.185727 | [2.046496, 2.327369] | -118.572735 | REGRESSED | EXPLORATORY — A/A FAILED |
 
 Comparison-status counts: **`{"IMPROVED": 20, "INCONCLUSIVE": 1, "REGRESSED": 11}`**.
-Tantivy is the faster engine in all 16 warm lanes (T/Q ratio 0.0195–0.3082). Lucene is
+Tantivy had lower measured latency than Quervant in all 16 warm lanes
+(T/Q ratio 0.0195–0.3082). Lucene is
 faster than Quervant in 4 of 16 lanes (10K common K10; 100K common K10/K100; 100K medium
 K10), inconclusive in 10K common K100, and slower in the remaining 11. All of this is
 **exploratory** because the A/A control failed.
@@ -238,11 +249,12 @@ subcomponents are not added to the total again.
 | D05 | Disjoint untracked `f2-ci-status.txt` → left untouched; exact-path staging only |
 | D10 | Host diagnostics all `clear` → recorded and continued; no wait, retune or rerun |
 | D13 | Full eligible A/A with one native statistical FAIL → runtime continued treatment and throughput; all comparisons reported as exploratory; top status `INCONCLUSIVE` |
+| D16 | Full treatment data include Quervant losses and a native `INCONCLUSIVE` comparison → reported every value and completed reporting without treating unfavorable performance as a harness defect or retuning/repeating the run. |
 | D23 | Ordinary CI may start from the push → left alone; not a gate |
 
 Checked but not triggered: D02 (local branch already at START), D04, D06 (no existing
 task config/result), D07, D08, D09, D11 (stage succeeded first attempt), D12, D14, D15,
-D16, D17, D18, D19, D20 (`origin/main` did not advance), D21 (non-force push and
+D17, D18, D19, D20 (`origin/main` did not advance), D21 (non-force push and
 PR edit succeeded), D22 (no non-sample hooks), D24.
 
 Failure classification: the single control-lane FAIL is a **measurement-control outcome**
