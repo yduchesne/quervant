@@ -2,15 +2,15 @@
 
 > **Milestone:** `v0.1-perf` — standalone Quervant search-engine performance improvements.
 >
-> **Status:** PERF-01 and PERF-02-A DONE; PERF-02-B **MERGED — `PERF02B_BLOCKED`** ([PR #116](https://github.com/yduchesne/quervant/pull/116)). **PERF-05 MERGED** ([PR #117](https://github.com/yduchesne/quervant/pull/117)): B1–B5 implemented; C completed a qualified B-only warm run with historical, unpaired performance targets met (first unstable attempt retained). **PERF-06 IN PROGRESS**: three ordered engineering series, A1–A4, B1–B4, C1–C4; planning [PR #118](https://github.com/yduchesne/quervant/pull/118) remains draft; B1–B3 merged and B4 executed (`PERF06_B4_QUALIFIED_TARGETS_MET_REVIEW_REQUIRED`, G10 open). PERF-03/04 remain separate/deferred; ordinal-sort design is now proposed within PERF-06-B.
+> **Current status (2026-11-27, America/Los_Angeles):** PERF-01 and PERF-02-A are DONE; PERF-02-B remains MERGED with its historical `PERF02B_BLOCKED` disposition. PERF-05 and the PERF-06 A/B/C implementation lineage are merged. **PERF-06-C4 merged in [PR #133](https://github.com/yduchesne/quervant/pull/133)** at `44caa511f6e147836c446b970845f03de45eb515`; its targets-not-met and exploratory statistical outcomes are unchanged. **PERF-07 is the next PLANNED series**, owning all newly identified structural query optimizations, including the remaining PERF-04 projection/reader-state work and postings detail/validation lifetime. PERF-03 heap tuning stays deferred.
 >
 > **Authority boundary:** This is an ordered work register and research agenda, **not** blanket authorization to implement a proposed fast path, change a segment format, relax correctness rules, or run an unapproved benchmark. Each future PR requires a detailed execution plan and explicit acceptance gates under [DETAILED_PR_PLAN_AUTHORING_GUIDE.md](DETAILED_PR_PLAN_AUTHORING_GUIDE.md).
 
 ## Purpose and sequencing
 
-The `v0.1-perf` milestone resumes Quervant's **engine optimization** program using the BM-10 direct benchmarking framework, successor to the terminated BM-09 certification approach. Benchmark framework work supplies measurement, statistical comparison and saved results; it is **not** an engine optimization. BM-09 was terminated incomplete; **BM-10 is DONE — MERGED** and the BM implementation series is closed. BM-10 delivered a corrected native-string-sort warm cross-engine campaign, while the separately planned retained-key and process-cold campaigns remain outstanding operational studies. No BM-series completion status establishes a new search optimization or a causal performance improvement.
+The `v0.1-perf` milestone resumes Quervant's **engine optimization** program using the BM-10 direct benchmarking framework, successor to the terminated BM-09 certification approach. Benchmark framework work supplies measurement, statistical comparison and saved results; it is **not** an engine optimization. BM-09 was terminated incomplete; **BM-10 is DONE — MERGED** and the BM implementation series is closed. BM-10 delivered the native-string-sort comparison framework; subsequent PERF-06 warm and process-cold studies and their separate outcomes are recorded below. No BM-series completion status establishes a new search optimization or a causal performance improvement.
 
-The accepted reference includes the PERF-01 retained-key duplicate **prefilter** and all merged PERF-05-B1–B5 changes. For each future optimization, identify the **actual accepted source** before that change (not an older retained-key diagnostic baseline or a later branch that contains the treatment). Warm-query performance remains authoritative under the [permanent query-optimization selection rule](BENCHMARKING.md#query-optimization-selection-warm-performance-is-authoritative-permanent-rule). The general prospective A/B protocol and the explicitly authorized PERF-05 B-only, historical-A protocol are **different evidence types**: only a contemporaneous paired experiment yields paired A/B intervals. PERF-06 retains the B-only/historical approach when the archived baseline is genuinely comparable; each qualification plan must verify provenance, identical logical work, semantic equivalence, build/host context, and readiness before computing descriptive relative gains. If no qualified historical reference exists, stop and obtain a separately approved acquisition design rather than inventing a comparison. New optimization studies require their own immutable configuration and result identities.
+The current source baseline for PERF-07 is merged C4 at `44caa511f6e147836c446b970845f03de45eb515`, including the PERF-01 retained-key duplicate **prefilter** and all merged PERF-05/PERF-06 changes. Source adoption does not retroactively qualify failed controls or change a measured targets-not-met verdict. For each future optimization, identify the **actual accepted source** before that change (not an older retained-key diagnostic baseline or a later branch that contains the treatment). Warm-query performance remains authoritative under the [permanent query-optimization selection rule](BENCHMARKING.md#query-optimization-selection-warm-performance-is-authoritative-permanent-rule). The general prospective A/B protocol and the explicitly authorized PERF-05 B-only, historical-A protocol are **different evidence types**: only a contemporaneous paired experiment yields paired A/B intervals. PERF-06 retains the B-only/historical approach when the archived baseline is genuinely comparable; each qualification plan must verify provenance, identical logical work, semantic equivalence, build/host context, and readiness before computing descriptive relative gains. If no qualified historical reference exists, stop and obtain a separately approved acquisition design rather than inventing a comparison. New optimization studies require their own immutable configuration and result identities.
 
 This milestone targets the **v0.1 single-shard lexical engine**. It does not include v0.2 distributed orchestration, vector/ANN, ontology, or unrelated product functionality. A performance improvement is not evidence of a functional release boundary being met.
 
@@ -22,18 +22,274 @@ This milestone targets the **v0.1 single-shard lexical engine**. It does not inc
 | **PERF-02-A** | Pinned Quervant-only warm A/B benchmark study | **DONE — implementation, PR #115** | Pinned A/B build/stage study; no full timed readiness campaign |
 | **PERF-02-B** | Bounded warm sort-path profiling | **MERGED — `BLOCKED`, PR #116** | Preserve the report and captured evidence. One lane has valid 11.6% sampled sort-path CPU; three fail the 85% attribution gate. No further PERF-02-B profiling or optimization claim |
 | **PERF-05** | High-hit physical execution and representation reuse | **MERGED — PR #117** | B1–B5 implemented and independently reviewed; [C qualification results](../benchmarks/studies/perf-05/warm/results/quervant-perf05-b-only-warm-2026-11-23-002.json) COMPLETE with 16/16 B/B PASS and all historical-relative targets met. Earlier INCOMPLETE attempt preserved. No profiling was part of final C.
-| **PERF-06-A** | Scoring and postings efficiency | **A1–A3 MERGED; A4 MERGED (targets not all met); A5 IMPLEMENTED — INDEPENDENT REVIEW PENDING; A6 PLANNED** | A1–A3 retained; A4 PR #123 merged with its measured `PERF06_A4_PAIRED_COMPLETE_TARGETS_NOT_MET_REVIEW_REQUIRED` disposition unchanged; A5 adds compact postings for 1–128-document terms and wires compaction to the same encoder; A6 is a separately planned qualification.
+| **PERF-06-A** | Scoring and postings efficiency | **A1–A6 MERGED; historical targets-not-met outcomes preserved** | Reuse query-constant scoring, lean/split/adaptive postings and the completed A6 compatibility/storage work; preserve the recorded A4/A6 performance dispositions. |
 | **PERF-06-B** | Fast-field and document-identity architecture | **B1–B4 MERGED; B4 QUALIFIED, PR #129** | Persistent keyword ordinals, numeric cross-segment sorting and compact document identity; B4 qualified the cumulative paired warm campaign. Historical per-lane result and guardrails remain unchanged. |
-| **PERF-06-C** | Integrated physical query executor | **C1 DOCUMENTATION PR — REVIEW PENDING; C2–C4 PLANNED** | [C1 physical-execution contract](architecture/PERF06C_PHYSICAL_EXECUTION_CONTRACT.md) and [source reconciliation](pr-artifacts/perf-06-c/PERF06C1_SOURCE_AUDIT.md); then direct exact-term count/Top-K, guarded deferred scoring and consolidated warm qualification.
-| **PERF-04 (second investigation)** | Residual reader-state / validated access reuse | **PLANNED — SHORT AUDIT** | Compare accepted code against PR 15G-A/B already delivered; identify one still-repeated material operation or close without broad profiling |
-| **Earlier ordinal-sort feasibility** | Prior source-only hypothesis | **INCORPORATED AS PERF-06-B DESIGN INPUT** | Design remains to be proven in B1/B2; not a preapproved implementation or a PERF-02-B revival. |
-| **PERF-03 (fourth)** | Heap admission / comparison / ownership | **DEFERRED — NEW EVIDENCE REQUIRED** | Reopen only on a credible material remaining whole-query cost; historical heap-child shares alone do not qualify |
+| **PERF-06-C** | Integrated physical query executor | **C1–C4 MERGED; C4 PR #133** | Reuse the strict-term executor and guarded K-only scoring. C4 met 1/4 incremental primary targets; the later full cross-engine warm acquisition is exploratory after one A/A failure. |
+| **PERF-07** | Structural query-work reduction | **PLANNED — NEXT SERIES; A–I NOT STARTED** | Cover all five post-C4 opportunities in dependency order: selective projection, postings validation/detail, snapshot live state, demand-driven execution and bounded blocks; later conditional sort pruning; final warm qualification. |
+| **PERF-04 (historical investigation)** | Residual reader-state / validated access reuse | **REMAINING WORK TRANSFERRED TO PERF-07-A/C** | Selective multi-hit projection and snapshot effective-live preparation now belong to PERF-07; no separate PERF-04 implementation campaign. |
+| **Earlier ordinal-sort feasibility** | Prior source-only hypothesis | **DELIVERED THROUGH PERF-06-B** | Reuse shipped persistent/global ordinals and collector adoption; do not reintroduce ordinal mapping as new PERF-07 work. |
+| **PERF-03 (historical investigation)** | Heap admission / comparison / ownership | **DEFERRED — NEW EVIDENCE REQUIRED** | Historical heap-child shares do not justify tuning; no new heap/prefilter optimization is included in PERF-07. |
 
-**Sequence:** PERF-05 is the **merged baseline**. PERF-06 is a three-series initiative executed in dependency order **A → B → C**, with **one separate implementation PR for each numbered substage**; [draft PR #118](https://github.com/yduchesne/quervant/pull/118) is documentation/planning only. Earlier PERF-03 and PERF-04 entries remain independent/deferred; their identifiers are not automatically reused. The earlier ordinal-sort feasibility topic is now an input to PERF-06-B, with no implied design approval. This register authorizes planning, **not** autonomous architecture selection, implementation, benchmark acquisition, profiling or merge. Rejected earlier experiments require a materially different approved design before revival.
+**Current sequence:** completed PERF-05 → PERF-06-A → PERF-06-B → PERF-06-C, followed by the new **PERF-07-A through I** order and explicit predecessor table below. All post-C4 optimizations discussed in this review belong to PERF-07, including the remaining reader-state topics formerly listed under PERF-04. Historical plan/status text is preserved below as evidence of earlier decisions, not as a current instruction to restart completed work. Each implementation PR gets a source-specific detailed design and acceptance criteria; once authorized, it executes continuously within that design. Unknown conditions stop affected work rather than authorizing architectural improvisation.
 
 **PERF-05 precedent retained for PERF-06:** source-proven redundant or unnecessarily expensive work justifies a prescriptive, correctness-first engineering design **without speculative pre-implementation speedup estimates or per-PR real benchmarks**. Mocked/deterministic adversarial QA and source reviews occur after each implementation PR; one separately approved **consolidated warm qualification** concludes each A/B/C subseries. Reuse qualified historical baseline measurements when the work and provenance are truly compatible, measure the candidate only with same-build B/B stability controls, and label all resulting historical-relative estimates **descriptive and unpaired**. Such evidence must never be represented as a paired A/B CI or a universal causal attribution. When a causal paired claim is necessary, it requires a separately authorized same-session A/B study. Do not retune failures or run unrelated tests and services solely to complete a checklist.
 
-## PERF-06 — Architectural efficiency series [PLANNED; NO IMPLEMENTATION AUTHORIZED]
+## PERF-07 — Structural query-work reduction [PLANNED]
+
+**Planning date:** 2026-11-27 (America/Los_Angeles). **Starting lineage:** merged
+PERF-06-C4, [PR #133](https://github.com/yduchesne/quervant/pull/133), merge
+`44caa511f6e147836c446b970845f03de45eb515`. All new optimizations identified in the
+post-C4 review belong to **PERF-07**. In particular, the remaining PERF-04
+projection/reader-state opportunities are transferred into this series; they are
+not a parallel PERF-04 implementation campaign. PERF-06 remains a completed
+implementation/evidence lineage, with its measured qualifications preserved.
+
+**Objective:** remove whole-segment reconstruction, unused postings traversal,
+repeated request preparation and whole-match intermediates. Prioritize changes in
+the amount of work and data touched, not comparator, inlining or nanosecond-scale
+tuning. These are source-backed opportunities, not measured speedup estimates or
+a promise of Tantivy parity.
+
+This planning PR changes documentation only. Every implementation stage remains
+**PLANNED / NOT STARTED**. Its execution plan must follow
+[DETAILED_PR_PLAN_AUTHORING_GUIDE.md](DETAILED_PR_PLAN_AUTHORING_GUIDE.md), fix the
+design and exception decisions before coding, and authorize continuous execution
+through its prescribed work without routine reconfirmation. An unforeseen case
+outside that matrix stops affected work; the coding agent must not invent an
+architecture, weaken a contract or silently expand the stage.
+
+### Coverage of the five required opportunities
+
+| Review opportunity | PERF-07 ownership | Required outcome |
+| --- | --- | --- |
+| **1. Selective multi-hit projection** | **A** | Eliminate full owned-key reconstruction when returning selected hits; complete the concrete remaining PERF-04 projection work. |
+| **2. Postings detail and validation lifetime** | **B**, then **E** | Reuse full validation of immutable postings to omit unused positional reads; then add explicit per-field document/frequency/position capabilities. |
+| **3. Snapshot-prepared effective-live state** | **C** | Move repeated live-bitmap decoding, visibility intersection and counting to the correct immutable snapshot lifetime; complete the related PERF-04 reader-state work. |
+| **4. Bounded postings blocks into count/Top-K** | **F** | Remove remaining whole-match buffers and redundant traversals, using the established demand and postings contracts. |
+| **5. Query-demand-driven execution** | **D** | Explicitly distinguish count-only, field-sort without scores, field-sort with scores and relevance-ranked results; omit only work not required by the selected contract. |
+
+All five are core series scope. The later **G/H** count/seek and sort-pruning work
+is a conditional architectural extension, not a substitute for A–F. **I** is the
+final consolidated warm qualification. No new implementation is assigned back to
+PERF-04, and this series does not reopen PERF-03 heap tuning.
+
+### Priority and dependency order
+
+Execute the default sequence **A → B → C → D → E → F → G → H → I**. The predecessor
+column is authoritative: finish a prerequisite's implementation and applicable
+correctness acceptance before implementing its dependent. A, B and C have no
+mutual technical dependency; their serial order expresses priority. Later stages
+use the mechanisms actually delivered by their predecessors, with conservative
+fallbacks for unsupported data and formats.
+
+| Stage | Scope and priority | Required predecessors | Concrete completion evidence |
+| --- | --- | --- | --- |
+| **PERF-07-A** | **First: arbitrary-K selective key verification/projection.** Reuse accepted validated key offsets and preserve selected physical identities. | Merged C4 baseline. | Prepared-path owned key work scales with selected K, not segment N; unavailable offsets cause at most one validating scan per selected segment. |
+| **PERF-07-B** | **Second: postings validation lifetime and genuinely non-positional access.** Certify immutable postings and reuse existing split streams for document/frequency reads. | Merged C4 baseline. | After certification, eligible document/frequency reads perform zero positional-stream reads/decodes; first-use, refusal and corrupt-data behavior remain covered. |
+| **PERF-07-C** | **Third: snapshot effective-live preparation.** Retain decoded live state, effective-live intersection, exact count and all-live summary at their correct lifetimes. | Merged C4 baseline. | Repeated same-snapshot requests perform no N-sized live decode/intersection/recount; update/delete/PIT generations remain isolated. |
+| **PERF-07-D** | **Query-demand contract and planning.** Add explicit score demand and preserve legacy defaults; separate count/visibility requirements from BM25 requirements. | **B, C** for the selected access and count-summary design. | No-score requests omit BM25-specific preparation and score calls while preserving exact membership/count/sort/projection; existing requests retain their score and error contracts. |
+| **PERF-07-E** | **Per-field postings detail.** Explicit document-only, document-plus-frequency and positional capabilities, with versioned persistence and mixed-format behavior. | **B, D**. | Writer, reader, validation, merge/compaction and capability rejection agree; default/legacy fields preserve their semantics; requested data is absent only in explicitly configured modes. |
+| **PERF-07-F** | **Bounded block execution.** Feed validated postings blocks into live filtering, exact count and numeric Top-K; remove the remaining full-M posting array and redundant full-array passes. | **B, C, D, E**. | On the admitted streaming path, physical scratch is bounded by the chosen block size plus retained candidates rather than M; exact results, error precedence, logical limits and cancellation are preserved. First-use certification and conservative fallbacks are reported separately. |
+| **PERF-07-G** | **Conditional foundation: real block seek and exact visible counting.** Make existing block metadata operational and establish counts valid for the current visibility state. | **C, F**. | Seek avoids decoding skipped blocks only where validated; exact counts hold with all-live and masked data, or the conservative exact-count path is used. |
+| **PERF-07-H** | **Conditional extension: sort-aligned layout and/or sort-bound block pruning.** Avoid detailed processing of candidate ranges that cannot win. | **D, E, F, G**. | Ordered prefixes or block bounds preserve complete ordering/ties/cursors and exact totals, including nontrivial masks; physical insertion order is never assumed to prove sort order. |
+| **PERF-07-I** | **Final integrated warm qualification.** Compare the delivered stack with the merged C4 source and run the prescribed cross-engine comparison. | **A–F** correctness-complete; **G/H** completed or explicitly closed as not admitted, with no dependent optimization claiming their capability. | Full prescribed results, low-hit guards, construction/reuse and storage observations, control qualification and honest dispositions; no per-stage causal claim from the cumulative comparison. |
+
+**Integration choices:** B deliberately improves the existing score-returning
+document/frequency path before D/E add new demand or field capabilities; it does
+not require score omission. F follows E so its operator supports one settled
+capability/format matrix, rather than being redesigned after a new codec mode.
+That is the chosen integration order, not a claim that streaming inherently needs
+a new format. G is a prerequisite for H because skipping winner candidates does
+not by itself supply exact total hits. Split a stage into design/implementation
+PRs where necessary; every split keeps the same predecessor order and scope.
+
+### A — Complete the remaining projection work
+
+At the merged baseline, `project_selected_hits` in
+[`search/unified.rs`](../crates/quervant-core/src/search/unified.rs) opens a fresh
+reader and uses the selective key accessor only when exactly one hit is selected
+from a segment with at least 1,024 documents. For two or more selected hits,
+`doc_key` calls `doc_keys`, and
+[`segment/reader.rs`](../crates/quervant-core/src/segment/reader.rs) constructs all
+N owned document keys. Returning K=10 or K=100 from a 100K-document segment can
+therefore reconstruct 100K keys after the collector has already selected winners.
+
+Use the existing shared validated key-offset directory for arbitrary selected
+sets. On optional-directory refusal, perform **one** full validating pass owning
+only selected keys. Every fallback preserves that one-pass and selected-key
+ownership bound. Never turn this into K scalar fallback scans. Preserve selected-hit-order physical
+key parity before any STORED materialization, exact key bytes, unselected-key
+corruption detection, typed failure/resource semantics and output order. Reuse
+the existing selected-STORED implementation. This stage requires no new persistent
+offset format and does not revive rejected PR 15G variants unchanged.
+
+### B — Change the lifetime of positional validation
+
+[`PostingsReader::read_one_with`](../crates/quervant-core/src/segment/postings.rs)
+still reads position delta, position length, value index, start offset and end
+offset in document/frequency mode. A2 removed occurrence-vector allocations; A3
+split streams; neither removed that traversal. Keyword postings contain these
+occurrences too. B must remove **positional reads**, not merely another allocation.
+
+Reuse existing immutable segment ownership and bind a bounded validation
+certificate to the exact bytes, term/block extent, format/features and applicable
+limits. Full semantic validation remains required at the defined trust boundary;
+a checksum alone is insufficient. Certificates are published only when complete,
+are never shared across incompatible bytes/limits, and have metered retention and
+safe refusal behavior. First-use, cancellation, allocation refusal, concurrent
+initialization, corrupt unselected positions and later query-error precedence
+must be addressed explicitly. Existing positional/phrase access remains intact.
+Do not add an unbounded cache of decoded postings or weaken logical work charging.
+
+### C — Complete the remaining reader-state work
+
+[`ReaderSnapshot::effective_live_docs`](../crates/quervant-core/src/index/snapshot.rs)
+obtains a query-local decoded base bitmap and creates a fresh intersection when a
+snapshot visibility mask exists.
+[`compute_stats`](../crates/quervant-core/src/search/score.rs) then counts its live
+flags. B2's query-local live summary removed later recounts, not this initial work.
+
+Share validated physical-segment live data only where its identity allows, and
+own effective-live membership/count/all-live summaries at the snapshot/PIT
+generation lifetime. Different update/delete masks must not share an effective
+view merely because they reference the same segment. Keep reader admission,
+metadata retention/eviction, publication/cancellation and optional fallback
+bounded. Reuse already-persisted norm totals and dictionary frequencies on the
+all-live path; do not describe those shipped shortcuts as new work. The warm
+adapter already reuses a snapshot, so simply keeping an index open is not C.
+
+### D/E — Match execution and storage to explicit requirements
+
+**D is a request/planner capability; E is a field/schema/codec capability.** Keep
+them separately reviewable. D must define the supported demand matrix and preserve
+current defaults. Explicit field sorting alone does not authorize dropping scores
+from a response that currently promises them. Count-only and no-score paths still
+need exact visibility and membership summaries: the current strict dispatcher
+uses effective-live document frequency to prove `M > K+1`, so deleting
+`compute_stats` wholesale is not a design.
+
+E defines document-only, document/frequency and positional storage modes, including
+the current position-length, multivalue and offset obligations. A document-only
+field cannot silently satisfy scoring/frequency/phrase requirements it cannot
+represent. Freeze supported combinations and typed unsupported-query behavior.
+Version capability metadata; cover build, reopen, legacy/mixed indexes,
+merge/compaction, held PITs and affected local/RustFS recovery boundaries. Existing
+fields retain their behavior unless explicitly configured otherwise.
+
+The comparison motivating this work is concrete: the pinned Tantivy adapter uses
+`IndexRecordOption::Basic` and scoreless collectors for the exact-keyword output
+workload, while Quervant still carries positional/scoring preparation. But C3
+already scores only returned K hits on its certified route. D's structural goal
+is eliminating unnecessary **preparation and access requirements**, not claiming
+that all-match BM25 remains. Any new no-score or reduced-detail benchmark variant
+must disclose its request and index capabilities separately from legacy-compatible
+request improvement.
+
+### F — Remove the remaining whole-match intermediate
+
+[`build_leaf_data` and `visit_strict_term_payload_with`](../crates/quervant-core/src/search/execute.rs)
+still materialize M `(doc_id, frequency)` pairs, walk them for membership/cancel
+observations, and feed them through candidate collection. C2 already removed the
+physical matched/scored trees; F must identify and remove the **remaining** buffer
+and passes rather than rename existing execution as streaming.
+
+Use bounded blocks and the stable B–E access/demand contracts. Count every required
+match, preserve live filtering, and retain numeric top-K with late owned output.
+Resolve the full-validation-before-candidate-work error order before coding; a
+naive callback during decoding can expose a key/budget failure before a later
+corrupt posting. Retain the chosen logical resource/cancellation contract even
+where physical storage disappears. On the already-certified eligible path, do not
+add a second complete pass merely to recover omitted counts, frequencies or
+validation. B's prescribed first-use certification and explicitly retained
+conservative fallback paths remain permitted and must be reported separately;
+neither may be presented as meeting the certified reuse path's work bounds.
+Streaming still visits M matches and is not, by itself, an order-of-magnitude
+speedup claim.
+
+### G/H — Conditional reduction of candidate enumeration
+
+G provides genuine seek/count behavior; existing 128-posting directory metadata
+does not establish it because current advancing remains sequential. Exact count
+metadata must be valid for effective visibility. Dictionary `doc_freq` alone is
+not an exact live count after deletions or additional filters; retain a separate
+exact-count path where necessary.
+
+H owns both later options from the review: a declared physical order matching the
+requested sort/tie-break, and validated per-block sort bounds for pruning. The
+detailed design fixes which option or separately scoped substeps are admitted;
+the coding agent cannot choose a new layout or pruning algorithm while executing.
+Preserve ascending/descending order, missing/null/multivalue policy, exact duplicate
+handling, K+1 lookahead, cursor/PIT stability and corrupt unvisited tails. Skipping
+noncompetitive winners does not permit stopping exact counting after K matches.
+Layout changes require explicit writer, compaction and compatibility treatment.
+If applicability or correctness cannot be established, close that conditional
+option with a reasoned no-change disposition and qualify the completed core stack.
+
+### Common acceptance and final qualification
+
+- **Correctness before timing:** each implementation PR needs the prescribed
+  deterministic/adversarial unit and real-boundary integration coverage, including
+  optional refusals, boundary limits, cancellation and recovery. Structural counters
+  must prove the named removed work. The C4 benchmark-specific QA waiver is not a
+  standing waiver for future code-bearing PERF-07 PRs.
+- **Reusable contracts:** preserve exact counts, ordered results/ties, default
+  returned score bits, physical/logical key parity, projection, duplicates,
+  cursor/PIT visibility, typed corruption/error precedence and logical work/memory
+  limits. Explicit new request/field capabilities have their own frozen contracts.
+- **Repository validation:** future code PR plans name actual stable/MSRV checks,
+  relevant integration topology and the repository's 85% production coverage
+  requirement. This documentation-only PR runs document/diff/link checks; code
+  tests, coverage and benchmarks are not applicable to it.
+- **One final performance stage:** A–H do not each launch a real comparative
+  campaign. I owns the consolidated warm Quervant baseline/candidate and
+  Quervant/Tantivy/Lucene studies after correctness is complete. Its detailed
+  acquisition plan fixes inputs, repetitions, controls, thresholds, new immutable
+  result identities and the decision matrix before timing. Existing BM-10 tools
+  are reused; this is not a new benchmarking-framework series.
+- **Host and autonomy:** assume the benchmark host is idle and ready. Host-load
+  observations remain informational/non-blocking. Once execution is authorized,
+  the fixed plan proceeds through acquisition, analysis and delivery without
+  routine approval checkpoints. Statistical-control failure and genuine harness
+  failure remain distinct; any advisory statistical continuation must be declared
+  prospectively and keeps failed-control treatment exploratory.
+- **Interpretation:** select query optimizations by warm behavior; keep cold/open
+  and index-build/size observations separate. Preserve absent/rare guards, both
+  corpus sizes and K10/K100, optional-fallback behavior, and first-use versus warm
+  reuse costs. Separate default-compatible, explicit no-score, reduced-detail and
+  sort-layout variants. A cumulative result does not attribute a speedup to each
+  stage. The C4 exploratory cross-engine data motivates this work but cannot become
+  a retrospectively qualified baseline or a paired interval with a new run.
+
+**Existing work to reuse, not repeat:** shared `VerifiedSegmentState` and column
+geometry, validated STORED/DOC_KEYS offsets, snapshot ordinal maps, compact key
+fingerprints and exact collision handling, adaptive/split postings, C2 strict-term
+execution, C3 K-only scoring, and the existing duplicate prefilter. Generic heap
+tuning, unbounded result caching, distributed/vector work and cold-reader I/O
+redesign are outside this series' defined optimization scope.
+
+### C4 closeout and evidence continuity
+
+PR #133 merged on 2026-11-27 (America/Los_Angeles; 2026-11-28 UTC). Its integrated
+warm qualification remains `PERF06_C4_QUALIFIED_TARGETS_NOT_MET_REVIEW_REQUIRED`
+as a historical measured disposition: 1/4 primary targets met and 12/12 guards
+passed. Merge does not change those results. The first cross-engine warm attempt
+remains `INCOMPLETE`; the separate cold study remains `COMPLETE`; the later full
+warm acquisition remains `INCONCLUSIVE`, with 15/16 A/A controls passing and all
+32 treatment comparisons exploratory. No data is pooled or relabeled.
+
+The [autonomous C4 report](pr-artifacts/perf-06-c/PERF06C4_CROSS_ENGINE_AUTONOMOUS_EXECUTION_REPORT.md)
+receives only the three reviewed corrections: observed A/A bound crossing without
+an unsupported outlier explanation; Tantivy explicitly compared with Quervant;
+and D16 classified as applied. All numeric tables, configurations, raw samples and
+native dispositions are preserved. Its original draft/unmerged statements remain
+execution-time observations with a subsequent-merge clarification. Earlier
+sections and append-only historical amendments below are retained as history;
+the current register and PERF-07 section govern the next work.
+
+
+## PERF-06 — Architectural efficiency series [MERGED; HISTORICAL DESIGN AND EVIDENCE]
+
+> The original planning text and dated amendments below are retained as historical evidence. The current register and PERF-07 section above supersede old open/unmerged/unstarted status statements; historical measurement dispositions remain unchanged.
 
 **Authority and topology:** [PERF-06 planning PR #118](https://github.com/yduchesne/quervant/pull/118) and [series register](pr-artifacts/perf-06/PERF06_SERIES_REGISTER.md) record the agreed workstream structure. PR #118 is **planning/documentation only**; **A1–A4, B1–B4 and C1–C4 are twelve *planned, separately reviewable implementation/qualification PRs***, not twelve already-created GitHub PRs. No numbered PR can start until its source-specific detailed design is approved. Every next PR starts from the last accepted/merged dependency; do not carry unreviewed experiments forward.
 
@@ -191,7 +447,9 @@ Any eventual PERF-02 optimization must preserve byte-exact sort semantics, null/
 
 **Guardrails:** no duplicate bypass; preserve complete `total_hits`, exact ordering and ties, failed-admission atomicity, budget/peak accounting, cancellation, and corruption detection. Earlier candidate/materialization and DOC_KEYS-borrowing attempts failed important gates; do not relaunch them unchanged. If the marginal improvement is not material relative to measurement uncertainty and engineering risk, record `NO-OPTIMIZATION-REQUIRED`.
 
-## PERF-04 — Reusable query state and reader access [SECOND — SHORT SOURCE AUDIT]
+## PERF-04 — Reusable query state and reader access [HISTORICAL; FOLLOW-UPS IN PERF-07]
+
+**Current ownership:** the remaining selective-projection and snapshot-live opportunities are now PERF-07-A and PERF-07-C. The original investigation rationale below is retained; it does not authorize an additional PERF-04 implementation series.
 
 **Hypothesis.** Recreating validated geometry, per-query metadata and selected-document access structures, or expensive reopen/mutation-state work, may be avoidable in a source- and snapshot-safe way. This requires a clear lifetime/ownership model rather than simply widening a cache.
 
