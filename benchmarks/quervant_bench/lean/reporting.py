@@ -42,6 +42,53 @@ def _phase_lines(result: Mapping[str, Any]) -> list[str]:
     return rows
 
 
+def _aa_advisory_lines(result: Mapping[str, Any]) -> list[str]:
+    """Display the saved opt-in decision without changing any analysis value."""
+    config = result.get("configuration")
+    policy = config.get("policy") if isinstance(config, Mapping) else None
+    if not isinstance(policy, Mapping) or policy.get("aa_mode", "required") != "advisory":
+        return []
+    controls = result.get("controls")
+    gate = controls.get("aa_gate", {}) if isinstance(controls, Mapping) else {}
+    if not isinstance(gate, Mapping):
+        raise ArtifactError("saved advisory A/A decision is not an object")
+    status = gate.get("status", "NOT_REACHED")
+    rows = [
+        "", "## Predeclared advisory A/A policy", "",
+        f"- Actual A/A outcome: **{_cell(status)}**",
+        f"- Failed control lanes: {_cell(gate.get('failed_lanes', []))}",
+        f"- Gate continued after failure: {_cell(gate.get('continued_after_failure', False))}",
+        "- A/A samples, thresholds, native PASS/FAIL decisions and confidence intervals are unchanged.",
+    ]
+    if status == "FAIL":
+        rows.extend(["", "**EXPLORATORY: A/A CONTROL FAILED.** Treatment ratios and confidence "
+                     "intervals are reported as observed; they are not statistically qualified "
+                     "comparative conclusions. Completed acquisition is INCONCLUSIVE; any "
+                     "later structural failure remains INCOMPLETE."])
+    elif status == "PASS":
+        rows.append("- All control lanes passed despite the predeclared non-blocking statistical policy.")
+    else:
+        rows.append("- No admissible PASS/FAIL control decision was recorded; acquisition is incomplete.")
+    if result.get("status") == "INCOMPLETE":
+        rows.extend(["", "**ACQUISITION INCOMPLETE — no completed comparative claim.**",
+                     f"- Errors: {_cell(result.get('errors', []))}"])
+    analysis = controls.get("analysis", {}) if isinstance(controls, Mapping) else {}
+    lanes = analysis.get("lanes", {}) if isinstance(analysis, Mapping) else {}
+    if isinstance(lanes, Mapping) and lanes:
+        rows.extend(["", "| Control lane | Native status | Gain % | 95% gain CI |",
+                     "| --- | --- | ---: | --- |"])
+        for lane_id, lane in sorted(lanes.items(), key=lambda item: str(item[0])):
+            comparisons = lane.get("comparisons", {}) if isinstance(lane, Mapping) else {}
+            comparison = comparisons.get("AA2", {}) if isinstance(comparisons, Mapping) else {}
+            if not isinstance(comparison, Mapping):
+                comparison = {}
+            rows.append("| " + " | ".join(map(_cell, (
+                lane_id, comparison.get("status"), comparison.get("gain_percent"),
+                comparison.get("gain_ci_95_percent"),
+            ))) + " |")
+    return rows + [""]
+
+
 def _render_perf05(result: Mapping[str, Any], analysis: Mapping[str, Any]) -> str:
     """Presentation of saved B absolute values vs retained historical A."""
     control = result.get("controls", {})
@@ -111,6 +158,7 @@ def render_report(result: Mapping[str, Any]) -> str:
             f"- Errors: {_cell(result.get('errors', []))}",
             "", "This is incomplete evidence, not a performance comparison.", "",
         ]
+        incomplete.extend(_aa_advisory_lines(result))
         incomplete.extend(_phase_lines(result))
         return "\n".join(incomplete)
     if result.get("family") == "perf-05" and analysis.get("schema") == "bm10-b-only-analysis-v1":
@@ -123,11 +171,14 @@ def render_report(result: Mapping[str, Any]) -> str:
         f"- Executed (UTC): {_cell(result.get('executed_utc'))}",
         f"- Family: {_cell(result.get('family'))}",
         f"- Overall status: **{_cell(result.get('status'))}**", "",
+    ]
+    lines.extend(_aa_advisory_lines(result))
+    lines.extend([
         "Results show within-run treatment/baseline ratios (B/A). Positive gain means improvement.",
         "Separate runs must be compared using the change in within-run gain in percentage points, not absolute timings.", "",
         "| Lane | Metric | Arm | Absolute median per block (ns) | B/A | Gain % | 95% ratio CI | Status |",
         "| --- | --- | --- | ---: | ---: | ---: | --- | --- |",
-    ]
+    ])
     for lane_id, lane in analysis["lanes"].items():
         arm_absolute = lane.get("arm_absolute", {})
         metric = f"{lane.get('metric', 'latency')} ({lane.get('unit', 'ns')}; {lane.get('direction', 'lower')} better)"

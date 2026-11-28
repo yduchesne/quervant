@@ -500,3 +500,69 @@ branch are unchanged from the reviewed head
   live PR body and the external handoff. G10 remains maintainer-owned and open;
   C4 is unstarted; nothing merged, no readiness change, no performance claim or
   baseline promotion.
+
+## PERF-06-C4 integrated C-series warm qualification (2026-11-27)
+
+C2 and C3 merged at `f169fbba93e10d174cad8ab3bca55cdb7ae6aa03`.
+C4 executed **COMPLETE** using A=`8c9f51f311afa5b327f70432e32c0f6f5c205eab`
+(merged B4, accepted A+B) and B=`f169fbba93e10d174cad8ab3bca55cdb7ae6aa03`
+(merged C3) with `policy.readiness.mode="advisory"` and a binding native A/A
+control (16/16 PASS). Result
+[`quervant-perf06c4-paired-warm-2026-11-27-001.json`](../benchmarks/studies/perf-06/warm/results/quervant-perf06c4-paired-warm-2026-11-27-001.json),
+configuration
+[`quervant-perf06c4-paired-warm-2026-11-27.json`](../benchmarks/studies/perf-06/warm/configurations/quervant-perf06c4-paired-warm-2026-11-27.json),
+run `1331bb4d-fdd9-47e2-8784-fd4b94470bed`.
+Disposition **`PERF06_C4_QUALIFIED_TARGETS_NOT_MET_REVIEW_REQUIRED`**: 1/4 primary
+lanes met (`100000/common/k10/warm` +5.723%), 12/12 guards within the −10% bound
+and low-hit 8/8; medium K10 +2.675%, medium K100 +1.370% and common K100 +4.194%
+missed the +5% primary threshold. Unit/integration/quality checks were **not rerun**
+by explicit maintainer instruction; native benchmark correctness and the A/A control
+passed. Report: [PERF06C4_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C4_EXECUTION_REPORT.md).
+Independent acceptance/promotion pending. No automatic rollback, no baseline
+promotion, and no performance claim beyond the measured lanes; the cumulative
+pre-A1→C effect remains unmeasured.
+
+## PERF06_C4_CROSS_ENGINE separate Q/T/J comparison (2026-11-27)
+
+A separate post-C4 cross-engine comparison of production Quervant against
+Tantivy 0.25.0 and Lucene 9.12.3 was executed on the existing C4 branch at
+execution source `0148aaaa922c398a0b8b33581e72918ad212e67f` (the only executable
+change is the advisory host-observation extension to `cross-engine`). Native
+Quervant/Tantivy/Lucene exact-keyword string-sort warm
+(`quervant-perf06c4-tantivy-lucene-lexical-sort-warm`, UUID
+`0c67e2ea-f2be-4dc6-8a31-ef4f892f8008`) published **`INCOMPLETE`**: the binding
+native A/A control failed one of sixteen lanes
+(`10000/absent/k10/warm`, gain -1.140%, CI [-24.702, +0.434]%), so no warm
+comparison is claimed and the single warm invocation is exhausted. The separate
+process-cold study (`quervant-perf06c4-tantivy-lucene-lexical-sort-cold-start`,
+UUID `13cb8e69-0855-4239-b8ad-e78ef0ad62e0`) published **`COMPLETE`**:
+`10000/medium/k100/process-cold` T/Q ratio 0.049416 [0.048871, 0.050003]
+(native gain +95.06%, Tantivy faster) and J/Q ratio 15.331842 [15.295242,
+15.408109] (native gain -1433.18%, Lucene slower). Overall disposition
+**`PERF06_CROSS_ENGINE_PARTIAL`**. Results:
+[`warm`](../benchmarks/studies/cross-engine/warm/results/quervant-perf06c4-tantivy-lucene-lexical-sort-warm-2026-11-27-001.json),
+[`cold`](../benchmarks/studies/cross-engine/cold-start/results/quervant-perf06c4-tantivy-lucene-lexical-sort-cold-start-2026-11-27-001.json);
+report: [PERF06C4_CROSS_ENGINE_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C4_CROSS_ENGINE_EXECUTION_REPORT.md).
+General QA suites were not rerun by explicit maintainer instruction. This adds no
+optimization, no baseline promotion and no change to the earlier C4
+incremental-qualification verdict.
+
+## PERF06_C4_CROSS_ENGINE autonomous warm acquisition (2026-11-28)
+
+A prospectively authorized full warm Quervant/Tantivy 0.25.0/Lucene 9.12.3 acquisition
+ran at execution source `4a0d3b6f915ef8b756e023b0004bf2edf4804625` under configuration
+`quervant-perf06c4-tantivy-lucene-lexical-sort-warm-aa-advisory` (UUID
+`f56c9e49-2e38-4834-941b-1019877565dd`) with host observations and statistical A/A
+continuation both declared advisory in advance. Result
+[`quervant-perf06c4-tantivy-lucene-lexical-sort-warm-aa-advisory-2026-11-28-001.json`](../benchmarks/studies/cross-engine/warm/results/quervant-perf06c4-tantivy-lucene-lexical-sort-warm-aa-advisory-2026-11-28-001.json),
+run `efde9d26-4e00-4b5c-85b8-104d03ae0f54`.
+Native status **`INCONCLUSIVE`**: the full 32 warm comparisons and three serial-throughput
+windows were captured, but A/A was 15 PASS / 1 FAIL (`10000/absent/k10/warm`, gain
++1.864%, CI [-5.733, +19.529]%). Under the predeclared policy the acquisition completed
+and every treatment ratio/classification is **exploratory and statistically unqualified**
+(Tantivy faster than Quervant in all 16 lanes; Lucene faster in 4, inconclusive in 1,
+slower in 11). Disposition **`PERF06_CROSS_ENGINE_WARM_ACQUIRED_AA_FAIL_DESCRIPTIVE`**.
+Report: [PERF06C4_CROSS_ENGINE_AUTONOMOUS_EXECUTION_REPORT.md](pr-artifacts/perf-06-c/PERF06C4_CROSS_ENGINE_AUTONOMOUS_EXECUTION_REPORT.md).
+The earlier warm `INCOMPLETE`, cold `COMPLETE`, `PERF06_CROSS_ENGINE_PARTIAL` and the C4
+incremental verdict are unchanged. This adds no optimization, no baseline promotion and
+no adoption decision.

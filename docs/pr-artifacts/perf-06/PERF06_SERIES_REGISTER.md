@@ -388,3 +388,26 @@ the F1/A1 closeout. Results:
   Current final-head CI and closeout appear in the live PR body and the external
   handoff. C3/F1 historical evidence is preserved; G10 remains open; C4 is
   unstarted; no performance claim.
+
+## 2026-11-27 — C4 integrated C-series warm qualification
+
+- C2 and C3 merged at `f169fbba93e10d174cad8ab3bca55cdb7ae6aa03`. C4 executed
+  **COMPLETE** using A=`8c9f51f311afa5b327f70432e32c0f6f5c205eab` (merged B4,
+  accepted A+B) and B=`f169fbba93e10d174cad8ab3bca55cdb7ae6aa03` (merged C3) with
+  advisory host readiness and a binding native A/A control (16/16 PASS).
+- One native `perf-06/warm` acquisition: run `1331bb4d-fdd9-47e2-8784-fd4b94470bed`,
+  configuration `quervant-perf06c4-paired-warm-2026-11-27.json`
+  (`0e7980c4-a3d9-469e-94fd-716ee4f6890e`), result
+  [`quervant-perf06c4-paired-warm-2026-11-27-001.json`](../../../benchmarks/studies/perf-06/warm/results/quervant-perf06c4-paired-warm-2026-11-27-001.json).
+- Disposition **`PERF06_C4_QUALIFIED_TARGETS_NOT_MET_REVIEW_REQUIRED`**: 1/4 primary
+  lanes met (`100000/common/k10/warm` +5.723% [4.283, 6.930]), 12/12 guards within
+  the −10% bound, low-hit 8/8. Misses: medium K10 +2.675%, medium K100 +1.370%,
+  common K100 +4.194% (all positive but below the +5% primary threshold). Index size
+  B/A = 1.000000 (0-byte delta).
+- Unit/integration/quality checks were **not rerun** by explicit maintainer
+  instruction; native benchmark correctness, independent oracles and the A/A control
+  passed. Plan/report:
+  [plan](../perf-06-c/PERF06C4_DETAILED_QUALIFICATION_PLAN.md),
+  [report](../perf-06-c/PERF06C4_EXECUTION_REPORT.md). Independent acceptance and
+  promotion remain maintainer-owned and open; no automatic rollback and no
+  performance claim beyond the measured lanes.

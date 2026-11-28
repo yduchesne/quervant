@@ -104,7 +104,7 @@ The normal producer emits the following fields; the publisher adds the three ide
 | --- | --- |
 | `INCOMPLETE` | Acquisition/validation/host/process interruption or error. Collected measurements are preserved; do **not** present as accepted comparative performance. `analysis` may be `{}` or may already exist if failure came after analysis. |
 | `COMPLETE` | The runner finished mandatory stages without fatal measurement failure, and no per-lane status in the configured aggregate-ineligibility set forced `INCONCLUSIVE`. **This does not mean the candidate improved**. A measured slowdown (`REGRESSED`) or a per-lane `INCONCLUSIVE` may still be a valid completed result. |
-| `INCONCLUSIVE` | A completed run with no eligible comparisons or relevant structural/metric non-comparability or non-computability. Do not invent an overall winner. |
+| `INCONCLUSIVE` | A completed run with no eligible comparisons or relevant structural/metric non-comparability or non-computability; also a cross-engine warm run whose predeclared advisory A/A policy continued after a native FAIL. The latter preserves exploratory values without statistical qualification. Do not invent an overall winner. |
 
 **Within-run analysis comparison statuses:** `IMPROVED`, `REGRESSED`, `INCONCLUSIVE`, `NON_COMPARABLE`, `NOT_COMPUTABLE`; A/A comparisons use `PASS`/`FAIL`. Numeric comparisons retain point estimates and confidence intervals; non-comparable or non-computable comparisons may contain only a status and reason.
 
@@ -172,6 +172,7 @@ The response is verified against expected hit count/ordered IDs before its durat
 | `readiness_pre` | Checked real host before A/A | Pre-control contention. |
 | `raw_samples` | A/A acquisition began | A/A arm/slot/lane samples, with `AA` and `AA2` roles; same general record structure as §6. |
 | `analysis` | A/A analysis succeeded | Normal `bm10-analysis-v1` object, with `kind: "A/A"` and per-lane `PASS`/`FAIL`. |
+| `aa_gate` | Opt-in cross-engine warm advisory A/A reached a complete native PASS/FAIL decision | `{mode:"advisory", status: string, failed_lanes:[sorted lane IDs], continued_after_failure:boolean}`. Status is `PASS` or `FAIL`. The Boolean records the gate's continuation decision, not completed treatment. |
 | `readiness_treatment` | Checked real host before treatment | Contention before timed treatment slots. |
 | `readiness_post` | Checked real host after treatment | A failure invalidates the run while retaining raw samples/analysis. |
 | `readiness_throughput_pre` | Checked cross-engine real host before throughput | Contention before separately timed serial throughput. |
@@ -179,7 +180,7 @@ The response is verified against expected hit count/ordered IDs before its durat
 
 Readiness observations normally contain `cpu` (integer), `observations` (array of `{busy_percent, steal_percent}` numbers), `max_busy_percent`, `max_steal_percent` and `status` (`clear` or `busy`). Under deterministic test injections (`check_host=False`) these keys may be absent; such an injected test is **not** real-host qualification.
 
-An unstable A/A control blocks further comparative acquisition. The presence of an `analysis` object alone is **not** proof of valid readiness, correctness or complete acquisition; evaluate `status` and `controls`.
+An unstable A/A control blocks further comparative acquisition by default. Only a new cross-engine warm configuration with `policy.aa_mode="advisory"` may continue after native statistical FAIL outcomes. Its result records `context.aa_control_mode="advisory"` and the `controls.aa_gate` decision, preserves every native A/A/treatment value, and has top-level `INCONCLUSIVE` after completed acquisition if any control lane failed. Every structural/oracle/protocol/acquisition error still yields `INCOMPLETE`; `aa_gate` is absent if no admissible complete PASS/FAIL control decision was reached. Report rendering labels the failed-control comparison exploratory and statistically unqualified and lists the failed lanes. All-PASS advisory runs keep normal native status. The presence of an `analysis` object alone is **not** proof of valid readiness, correctness or complete acquisition; evaluate `status` and `controls`.
 
 ## 8. `analysis`: computed per-lane statistics and decisions
 

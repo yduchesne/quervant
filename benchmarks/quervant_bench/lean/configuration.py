@@ -49,10 +49,13 @@ def default_configuration(family: str, name: str, description: str, *,
                           baseline_revision: str | None = None,
                           candidate_revision: str | None = None,
                           quervant_revision: str | None = None,
-                          readiness_advisory: bool = False) -> dict[str, Any]:
+                          readiness_advisory: bool = False,
+                          aa_advisory: bool = False) -> dict[str, Any]:
     """Generate one *new* immutable configuration with its own UUID."""
-    if readiness_advisory and family != "perf-06":
-        raise ArtifactError("advisory host readiness is supported only for perf-06")
+    if readiness_advisory and family not in ("perf-06", "cross-engine"):
+        raise ArtifactError("advisory host readiness is supported only for perf-06 and cross-engine")
+    if aa_advisory and (family != "cross-engine" or regime != "warm"):
+        raise ArtifactError("advisory A/A is supported only for cross-engine warm")
     if family not in ("retained-key", "cross-engine", "perf-02", "perf-05", "perf-06"):
         raise ArtifactError("family must be retained-key, cross-engine, perf-02, perf-05 or perf-06")
     if regime not in ("warm", "process-cold") or (family != "cross-engine" and regime != "warm"):
@@ -77,6 +80,8 @@ def default_configuration(family: str, name: str, description: str, *,
                             "max_busy_percent": 25, "max_steal_percent": 2}}
     if readiness_advisory:
         policy["readiness"]["mode"] = "advisory"
+    if aa_advisory:
+        policy["aa_mode"] = "advisory"
     if family == "retained-key":
         arm_settings = {"A": {"engine": "quervant", "mode": "BASE", "source": "baseline"},
                         "L": {"engine": "quervant", "mode": "linear", "source": "current"},
@@ -275,6 +280,11 @@ def validate_configuration(config: Mapping[str, Any]) -> None:
             raise ArtifactError(f"policy.{field} must be a finite nonnegative number")
     if policy.get("control_arms") != []:
         raise ArtifactError("A/A is a separate control phase, not a treatment arm")
+    aa_mode = policy.get("aa_mode", "required")
+    if aa_mode not in ("required", "advisory"):
+        raise ArtifactError("unsupported A/A control mode")
+    if aa_mode == "advisory" and (family != "cross-engine" or workload["regimes"] != ["warm"]):
+        raise ArtifactError("advisory A/A is supported only for cross-engine warm")
     readiness = policy.get("readiness")
     if not isinstance(readiness, dict):
         raise ArtifactError("policy.readiness must be a declared object")
@@ -289,8 +299,8 @@ def validate_configuration(config: Mapping[str, Any]) -> None:
     mode = readiness.get("mode", "blocking")
     if mode not in ("blocking", "advisory"):
         raise ArtifactError("unsupported host readiness mode")
-    if mode == "advisory" and family != "perf-06":
-        raise ArtifactError("advisory host readiness is supported only for perf-06")
+    if mode == "advisory" and family not in ("perf-06", "cross-engine"):
+        raise ArtifactError("advisory host readiness is supported only for perf-06 and cross-engine")
     excluded = policy.get("exclude_blocks", {})
     if not isinstance(excluded, dict):
         raise ArtifactError("exclude_blocks must be a map")
@@ -333,11 +343,13 @@ def prepare_configuration(studies_root: Path, *, family: str, name: str,
                           baseline_revision: str | None = None,
                           candidate_revision: str | None = None,
                           quervant_revision: str | None = None,
-                          readiness_advisory: bool = False) -> Path:
+                          readiness_advisory: bool = False,
+                          aa_advisory: bool = False) -> Path:
     """Create under studies/<family>/<regime>/configurations automatically."""
     config = default_configuration(family, name, description, regime=regime,
                                    baseline_revision=baseline_revision,
                                    candidate_revision=candidate_revision,
                                    quervant_revision=quervant_revision,
-                                   readiness_advisory=readiness_advisory)
+                                   readiness_advisory=readiness_advisory,
+                                   aa_advisory=aa_advisory)
     return create_configuration(configuration_directory(studies_root, config), config)

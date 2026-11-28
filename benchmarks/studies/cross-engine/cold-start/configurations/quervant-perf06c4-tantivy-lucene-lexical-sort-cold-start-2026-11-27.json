@@ -1,0 +1,78 @@
+{
+  "arms": {
+    "J": {
+      "engine": "lucene",
+      "mode": "default",
+      "source": "current"
+    },
+    "Q": {
+      "engine": "quervant",
+      "mode": "by-top-k",
+      "source": "current"
+    },
+    "T": {
+      "engine": "tantivy",
+      "mode": "default",
+      "source": "current"
+    }
+  },
+  "baseline": "Q",
+  "build": {
+    "baseline_ref": null,
+    "locked": true,
+    "prefilter_profile": "P2",
+    "quervant_feature": null,
+    "release": true,
+    "sort_contract": "doc_id:keyword:utf8-lex-asc:v1",
+    "tantivy_version": "0.25.0"
+  },
+  "configuration_id": "13cb8e69-0855-4239-b8ad-e78ef0ad62e0",
+  "control": {
+    "baseline": "AA",
+    "enabled": true,
+    "equivalent": "AA2"
+  },
+  "created_utc": "2026-11-27T23:51:15Z",
+  "description": "Post-C4 production Quervant versus Tantivy 0.25.0 and Lucene 9.12.3; separate 10K medium K100 process-cold lane; host observations advisory",
+  "family": "cross-engine",
+  "name": "quervant-perf06c4-tantivy-lucene-lexical-sort-cold-start",
+  "policy": {
+    "blocks": 12,
+    "bootstrap_resamples": 10000,
+    "control_arms": [],
+    "exclude_blocks": {},
+    "max_aa_gain_percent": 15,
+    "max_regression_percent": 0,
+    "min_blocks": 4,
+    "min_gain_percent": 0,
+    "readiness": {
+      "interval_ms": 250,
+      "intervals": 4,
+      "max_busy_percent": 25,
+      "max_steal_percent": 2,
+      "mode": "advisory"
+    },
+    "samples": 20,
+    "seed": 20261122,
+    "slots_per_arm": 2,
+    "warmups": 5
+  },
+  "schema": "benchmark-configuration-v1",
+  "workload": {
+    "classes": [
+      "medium"
+    ],
+    "id": "pr15d-exact-keyword-v1",
+    "query_semantics": "exact-keyword-total-hits-and-ordered-doc-ids",
+    "regimes": [
+      "process-cold"
+    ],
+    "sizes": [
+      10000
+    ],
+    "timed_operation": "process-launch-to-first-jsonl-response",
+    "top_k": [
+      100
+    ]
+  }
+}
