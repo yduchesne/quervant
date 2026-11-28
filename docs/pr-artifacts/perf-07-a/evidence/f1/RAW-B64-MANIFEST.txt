@@ -1,0 +1,17 @@
+# Raw evidence committed losslessly as base64 (original raw bytes preserved under target/perf07-a-f1-evidence).
+# columns: committed_file	original_raw_file	sha256_of_original_bytes	original_bytes	git_diff_check_reason
+commands.tsv.b64	commands.tsv	5ae8c0722a432df59600915b14aaa02511e5bb6cdce3ffdd64374c2170ba9b92	13306	['trailing']
+f1-adapter-contract.log.b64	f1-adapter-contract.log	d7f10d6e52d79de186f0c7d9733b1feeab57a38c52df94b80c23c51dc755de75	1731	['blank-eof']
+f1-perf06-c2.log.b64	f1-perf06-c2.log	d9070aea8b65fdba87bc3489b36f814a705c1f6f5707694782b76768c7f382ba	2659	['blank-eof']
+f1-r-group.log.b64	f1-r-group.log	4756a810844127201ff5435727bc970f32e968895f51fabc1dde92444e208a7c	3133	['blank-eof']
+f1-rustfs-b1.log.b64	f1-rustfs-b1.log	9a517a7b4733cc032d3bdccea210ff180595cd9db106fe79619a7072615404b7	448	['blank-eof']
+f1-rustfs-gb-rf01.log.b64	f1-rustfs-gb-rf01.log	d96d8bc6b8549b11e925fb5d9c07c7d5eb49518c994b6b07c68b8e881db3447c	789	['blank-eof']
+f1-test-185-af.log.b64	f1-test-185-af.log	c12e11d07a1ccca68c56eaea5b182d768288f2367174d717a8931b359d254f2a	230084	['blank-eof']
+f1-test-185.log.b64	f1-test-185.log	aa95f2b0fb7829d4d3d80010dfc7bf64683f3f99da7a45a69651f44ac9421647	218001	['blank-eof']
+f1-test-198-af.log.b64	f1-test-198-af.log	d91628dec06aec043a22088506387c9ca8dd42cff89da614fcb7c79750719890	230084	['blank-eof']
+f1-test-198.log.b64	f1-test-198.log	096f8b411400091088beec5ba4b95f1eea0332fbc789329f80848a3b86bb36d5	218118	['blank-eof']
+f1-u-group.log.b64	f1-u-group.log	b75259459c84f8179449a614d5257e720463a126c1d5c63bcfd3d162d7d1e778	7324	['blank-eof']
+f1-u01.log.b64	f1-u01.log	4ea11634936aa84ed7dd5cce0df9ac3251891f302c2affb8a77bebd7896d2945	1111	['blank-eof']
+historical-count-excerpt.txt.b64	historical-count-excerpt.txt	9cc44ee5f293d47679a2785ac57a7dd91735ffe5c52ef85e756e4e25d6d1fed2	828	['trailing']
+historical-red-attribution.txt.b64	historical-red-attribution.txt	74c0ffe0341046a3e5934873ea5008315ddd5024c7086cc77fcb9ba1a4b3a63b	3204	['trailing']
+PERF07A_F1_DETAILED_FIXUP_PLAN.md.verbatim.b64	PERF07A_F1_DETAILED_FIXUP_PLAN.md	fe757b491f1220c3643437132904655c05fcd84d9196420658e9a1b21d070225	82383	verbatim plan input; trailing Markdown hard-break spaces stripped only in the readable committed copy

@@ -1,0 +1,4 @@
+PASS outside permitted function bodies: crates/quervant-core/src/segment/reader.rs
+PASS outside permitted function bodies: crates/quervant-core/src/search/unified.rs
+PASS outside permitted function bodies: crates/quervant-core/tests/pr15g_b_rustfs.rs
+PASS exact test-only path scope
